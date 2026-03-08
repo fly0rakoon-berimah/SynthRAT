@@ -23,9 +23,6 @@ jobs:
       - name: Build with Gradle
         run: ./gradlew assembleRelease
         
-      - name: List APK files
-        run: find app/build/outputs -name "*.apk" -type f | cat
-        
       - name: Create debug keystore
         run: |
           keytool -genkey -v -keystore debug.keystore -alias debug \
@@ -33,25 +30,30 @@ jobs:
             -storepass android -keypass android \
             -dname "CN=Debug, OU=Debug, O=Debug, L=Debug, ST=Debug, C=US"
       
-      - name: Sign APK
+      - name: Find and Sign APK
         run: |
           # Find the APK file
           APK_PATH=$(find app/build/outputs -name "*.apk" -type f | head -n 1)
-          echo "Signing: $APK_PATH"
+          echo "Found APK: $APK_PATH"
+          
+          # Create signed copy
+          SIGNED_PATH="${APK_PATH%.apk}-signed.apk"
+          cp "$APK_PATH" "$SIGNED_PATH"
           
           # Sign the APK
           jarsigner -verbose -sigalg SHA1withRSA -digestalg SHA1 \
             -keystore debug.keystore -storepass android \
-            "$APK_PATH" debug
+            "$SIGNED_PATH" debug
           
           # Verify signature
-          jarsigner -verify "$APK_PATH"
+          jarsigner -verify "$SIGNED_PATH"
           
-          echo "✅ APK signed successfully"
+          echo "✅ Signed APK created at: $SIGNED_PATH"
+          echo "SIGNED_APK=$SIGNED_PATH" >> $GITHUB_ENV
         
       - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
           name: app-release-signed
-          path: app/build/outputs/**/*.apk
+          path: app/build/outputs/**/*-signed.apk
           if-no-files-found: error
