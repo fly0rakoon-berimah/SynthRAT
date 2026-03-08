@@ -23,15 +23,35 @@ jobs:
       - name: Build with Gradle
         run: ./gradlew assembleRelease
         
-      - name: List APK files (debug)
-        run: |
-          echo "Looking for APK files..."
-          find app/build/outputs -name "*.apk" -type f | cat
-          echo "Done."
+      - name: List APK files
+        run: find app/build/outputs -name "*.apk" -type f | cat
         
-      - name: Upload APK
+      - name: Create debug keystore
+        run: |
+          keytool -genkey -v -keystore debug.keystore -alias debug \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass android -keypass android \
+            -dname "CN=Debug, OU=Debug, O=Debug, L=Debug, ST=Debug, C=US"
+      
+      - name: Sign APK
+        run: |
+          # Find the APK file
+          APK_PATH=$(find app/build/outputs -name "*.apk" -type f | head -n 1)
+          echo "Signing: $APK_PATH"
+          
+          # Sign the APK
+          jarsigner -verbose -sigalg SHA1withRSA -digestalg SHA1 \
+            -keystore debug.keystore -storepass android \
+            "$APK_PATH" debug
+          
+          # Verify signature
+          jarsigner -verify "$APK_PATH"
+          
+          echo "✅ APK signed successfully"
+        
+      - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-release
+          name: app-release-signed
           path: app/build/outputs/**/*.apk
-          if-no-files-found: warn
+          if-no-files-found: error
