@@ -17,12 +17,22 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
           
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+          
       - name: Make gradlew executable
         run: chmod +x gradlew
           
       - name: Build with Gradle
         run: ./gradlew assembleRelease
         
+      - name: Find APK
+        id: find-apk
+        run: |
+          APK_PATH=$(find app/build/outputs -name "*.apk" -type f | head -n 1)
+          echo "Found APK: $APK_PATH"
+          echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
+          
       - name: Create debug keystore
         run: |
           keytool -genkey -v -keystore debug.keystore -alias debug \
@@ -30,30 +40,27 @@ jobs:
             -storepass android -keypass android \
             -dname "CN=Debug, OU=Debug, O=Debug, L=Debug, ST=Debug, C=US"
       
-      - name: Find and Sign APK
+      - name: Sign APK with apksigner
         run: |
-          # Find the APK file
-          APK_PATH=$(find app/build/outputs -name "*.apk" -type f | head -n 1)
-          echo "Found APK: $APK_PATH"
+          # Find Android SDK build-tools
+          BUILD_TOOLS_DIR=$ANDROID_HOME/build-tools/*/
+          APKSIGNER=$(find $ANDROID_HOME/build-tools -name "apksigner" -type f | head -n 1)
           
-          # Create signed copy
-          SIGNED_PATH="${APK_PATH%.apk}-signed.apk"
-          cp "$APK_PATH" "$SIGNED_PATH"
+          echo "Using apksigner: $APKSIGNER"
           
           # Sign the APK
-          jarsigner -verbose -sigalg SHA1withRSA -digestalg SHA1 \
-            -keystore debug.keystore -storepass android \
-            "$SIGNED_PATH" debug
+          $APKSIGNER sign --ks debug.keystore --ks-pass pass:android \
+            --ks-key-alias debug --key-pass pass:android \
+            "${{ steps.find-apk.outputs.apk_path }}"
           
           # Verify signature
-          jarsigner -verify "$SIGNED_PATH"
+          $APKSIGNER verify "${{ steps.find-apk.outputs.apk_path }}"
           
-          echo "✅ Signed APK created at: $SIGNED_PATH"
-          echo "SIGNED_APK=$SIGNED_PATH" >> $GITHUB_ENV
-        
+          echo "✅ APK signed successfully"
+          
       - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
           name: app-release-signed
-          path: app/build/outputs/**/*-signed.apk
+          path: ${{ steps.find-apk.outputs.apk_path }}
           if-no-files-found: error
