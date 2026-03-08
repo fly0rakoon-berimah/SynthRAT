@@ -23,8 +23,15 @@ jobs:
       - name: Build with Gradle
         run: ./gradlew assembleRelease
         
+      - name: List APK files (debug)
+        run: |
+          echo "Looking for APK files..."
+          find app/build/outputs -name "*.apk" -type f | cat
+          echo "Done."
+        
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: app-release
-          path: app/build/outputs/apk/release/app-release.apk
+          path: app/build/outputs/**/*.apk
+          if-no-files-found: warn
