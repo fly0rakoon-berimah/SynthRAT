@@ -141,11 +141,19 @@
             </intent-filter>
         </receiver>
         
-        <!-- Alarm Receiver - For scheduled restarts -->
+        <!-- Alarm Receiver - For scheduled restarts and fast checks -->
         <receiver
             android:name=".RestartReceiver"
             android:enabled="true"
-            android:exported="false" />
+            android:exported="false">
+            <intent-filter>
+                <action android:name="CHECK_SERVICE" />
+                <action android:name="ALARM_RESTART" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
         
     </application>
 
