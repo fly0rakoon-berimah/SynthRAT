@@ -7,6 +7,7 @@ import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
+import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Environment;
 import android.os.StatFs;
@@ -23,8 +24,11 @@ import org.json.JSONException;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.InputStreamReader;
+import java.net.InetAddress;
 import java.net.NetworkInterface;
+import java.net.SocketException;
 import java.util.Collections;
+import java.util.Enumeration;
 import java.util.List;
 import java.util.Locale;
 
@@ -67,6 +71,9 @@ public class DeviceModule {
             // 9. Performance Metrics
             collectPerformanceMetrics(info);
             
+            // 10. Battery Information (FIXED)
+            collectBatteryInfo(info);
+            
             return info.toString(4);
             
         } catch (Exception e) {
@@ -98,23 +105,29 @@ public class DeviceModule {
         info.put("cpu_abi2", safeGet(() -> Build.CPU_ABI2, "Unknown"));
         info.put("cpu_cores", Runtime.getRuntime().availableProcessors());
         
-        // Get CPU info from /proc/cpuinfo
+        // Get CPU info from /proc/cpuinfo - FIXED to get actual processor info
         try {
             Process process = Runtime.getRuntime().exec("cat /proc/cpuinfo");
             BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
             String line;
+            StringBuilder cpuInfo = new StringBuilder();
             while ((line = reader.readLine()) != null) {
-                if (line.toLowerCase().contains("processor") || line.toLowerCase().contains("model name")) {
-                    String[] parts = line.split(":");
-                    if (parts.length > 1) {
-                        info.put("processor_info", parts[1].trim());
-                        break;
-                    }
+                if (line.toLowerCase().contains("processor") || line.toLowerCase().contains("model name") || 
+                    line.toLowerCase().contains("hardware") || line.toLowerCase().contains("features")) {
+                    cpuInfo.append(line).append("\n");
                 }
             }
             reader.close();
+            info.put("processor_info", cpuInfo.length() > 0 ? cpuInfo.toString() : "Unknown");
+            
+            // Also get specific processor model
+            String processorModel = getProcessorModel();
+            if (processorModel != null) {
+                info.put("processor_model", processorModel);
+            }
         } catch (Exception e) {
             info.put("processor_info", "Unknown");
+            Log.w(TAG, "Could not read CPU info", e);
         }
     }
     
@@ -155,18 +168,32 @@ public class DeviceModule {
             Log.w(TAG, "Could not get internal storage info", e);
         }
         
-        // External storage (if available)
+        // External storage - FIXED to properly detect external storage
         try {
-            if (Environment.getExternalStorageState().equals(Environment.MEDIA_MOUNTED)) {
+            File[] externalFiles = context.getExternalFilesDirs(null);
+            if (externalFiles != null && externalFiles.length > 1 && externalFiles[1] != null) {
+                // There is external storage
+                File externalDir = externalFiles[1];
+                StatFs externalStatFs = new StatFs(externalDir.getAbsolutePath());
+                info.put("external_total", formatBytes(externalStatFs.getTotalBytes()));
+                info.put("external_free", formatBytes(externalStatFs.getAvailableBytes()));
+                info.put("external_used", formatBytes(externalStatFs.getTotalBytes() - externalStatFs.getAvailableBytes()));
+                info.put("external_available", true);
+            } else if (Environment.getExternalStorageState().equals(Environment.MEDIA_MOUNTED)) {
+                // Fallback to old method
                 StatFs externalStatFs = new StatFs(Environment.getExternalStorageDirectory().getPath());
                 info.put("external_total", formatBytes(externalStatFs.getTotalBytes()));
                 info.put("external_free", formatBytes(externalStatFs.getAvailableBytes()));
                 info.put("external_used", formatBytes(externalStatFs.getTotalBytes() - externalStatFs.getAvailableBytes()));
+                info.put("external_available", true);
             } else {
+                info.put("external_available", false);
                 info.put("external_storage", "Not available");
             }
         } catch (Exception e) {
+            info.put("external_available", false);
             info.put("external_storage", "Error: " + e.getMessage());
+            Log.w(TAG, "Could not get external storage", e);
         }
     }
     
@@ -175,7 +202,7 @@ public class DeviceModule {
         JSONObject wifiInfo = new JSONObject();
         JSONObject mobileInfo = new JSONObject();
         
-        // Mobile network info
+        // Mobile network info - FIXED to include phone number
         try {
             TelephonyManager tm = (TelephonyManager) context.getSystemService(Context.TELEPHONY_SERVICE);
             if (tm != null) {
@@ -184,16 +211,41 @@ public class DeviceModule {
                 mobileInfo.put("network_type", getNetworkType(tm.getNetworkType()));
                 mobileInfo.put("phone_type", getPhoneType(tm.getPhoneType()));
                 
-                // IMEI/Device ID - handle permissions properly
+                // Get SIM state
+                int simState = tm.getSimState();
+                mobileInfo.put("sim_state", getSimState(simState));
+                
+                // IMEI/Device ID and Phone Number - with proper permission handling
                 if (checkPermission(android.Manifest.permission.READ_PHONE_STATE)) {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        // For Android 10+, we need special permission
                         mobileInfo.put("device_id", "Restricted (Android 10+)");
+                        mobileInfo.put("imei", "Restricted");
                     } else {
                         String deviceId = tm.getDeviceId();
                         mobileInfo.put("device_id", deviceId != null ? deviceId : "Unknown");
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            mobileInfo.put("imei", tm.getImei());
+                        }
+                    }
+                    
+                    // Get phone number - this works on most devices
+                    String phoneNumber = tm.getLine1Number();
+                    if (phoneNumber != null && !phoneNumber.isEmpty() && !phoneNumber.equals("")) {
+                        mobileInfo.put("phone_number", phoneNumber);
+                    } else {
+                        mobileInfo.put("phone_number", "Not available");
+                    }
+                    
+                    // Get subscriber ID (IMSI)
+                    String subscriberId = tm.getSubscriberId();
+                    if (subscriberId != null && !subscriberId.isEmpty()) {
+                        mobileInfo.put("subscriber_id", "Available");
                     }
                 } else {
                     mobileInfo.put("device_id", "Permission required");
+                    mobileInfo.put("phone_number", "Permission required");
+                    mobileInfo.put("imei", "Permission required");
                 }
             }
         } catch (Exception e) {
@@ -201,28 +253,40 @@ public class DeviceModule {
             mobileInfo.put("error", e.getMessage());
         }
         
-        // WiFi info - with permission check
+        // WiFi info - FIXED to get IP even when WiFi is off (mobile data IP)
         try {
             if (checkPermission(android.Manifest.permission.ACCESS_WIFI_STATE)) {
                 WifiManager wm = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
                 if (wm != null && wm.isWifiEnabled()) {
-                    wifiInfo.put("wifi_mac", getWifiMacAddress());
-                    wifiInfo.put("ip_address", Formatter.formatIpAddress(wm.getConnectionInfo().getIpAddress()));
-                    String ssid = wm.getConnectionInfo().getSSID();
-                    wifiInfo.put("ssid", ssid != null ? ssid.replace("\"", "") : "Unknown");
-                    wifiInfo.put("bssid", safeGet(() -> wm.getConnectionInfo().getBSSID(), "Unknown"));
-                    wifiInfo.put("link_speed", wm.getConnectionInfo().getLinkSpeed() + " Mbps");
-                    wifiInfo.put("rssi", wm.getConnectionInfo().getRssi() + " dBm");
+                    WifiInfo wifiConnection = wm.getConnectionInfo();
+                    if (wifiConnection != null) {
+                        wifiInfo.put("ssid", safeGet(() -> wifiConnection.getSSID().replace("\"", ""), "Unknown"));
+                        wifiInfo.put("bssid", safeGet(() -> wifiConnection.getBSSID(), "Unknown"));
+                        wifiInfo.put("link_speed", wifiConnection.getLinkSpeed() + " Mbps");
+                        wifiInfo.put("rssi", wifiConnection.getRssi() + " dBm");
+                        
+                        int ip = wifiConnection.getIpAddress();
+                        String ipAddress = String.format("%d.%d.%d.%d", 
+                            (ip & 0xff), (ip >> 8 & 0xff), (ip >> 16 & 0xff), (ip >> 24 & 0xff));
+                        wifiInfo.put("ip_address", ipAddress);
+                        
+                        wifiInfo.put("mac", getWifiMacAddress());
+                        wifiInfo.put("status", "Connected");
+                    }
                 } else {
                     wifiInfo.put("status", "WiFi disabled");
                 }
             } else {
                 wifiInfo.put("status", "Permission denied");
-                wifiInfo.put("message", "ACCESS_WIFI_STATE permission required");
             }
         } catch (Exception e) {
             Log.w(TAG, "Could not get WiFi info", e);
-            wifiInfo.put("error", e.getMessage());
+        }
+        
+        // Get IP address even if WiFi is off (mobile data)
+        String deviceIp = getDeviceIpAddress();
+        if (deviceIp != null && !deviceIp.isEmpty()) {
+            networkInfo.put("device_ip", deviceIp);
         }
         
         // Network connectivity
@@ -231,10 +295,23 @@ public class DeviceModule {
             if (cm != null) {
                 NetworkInfo activeNetwork = cm.getActiveNetworkInfo();
                 if (activeNetwork != null) {
-                    networkInfo.put("network_connected", activeNetwork.isConnected());
-                    networkInfo.put("network_type_name", activeNetwork.getTypeName());
-                    networkInfo.put("network_subtype_name", activeNetwork.getSubtypeName());
-                    networkInfo.put("network_roaming", activeNetwork.isRoaming());
+                    networkInfo.put("connected", activeNetwork.isConnected());
+                    networkInfo.put("connecting", activeNetwork.isConnectedOrConnecting());
+                    networkInfo.put("type", activeNetwork.getTypeName());
+                    networkInfo.put("subtype", activeNetwork.getSubtypeName());
+                    networkInfo.put("roaming", activeNetwork.isRoaming());
+                    networkInfo.put("failover", activeNetwork.isFailover());
+                    
+                    if (activeNetwork.getType() == ConnectivityManager.TYPE_WIFI) {
+                        networkInfo.put("connection_type", "WiFi");
+                    } else if (activeNetwork.getType() == ConnectivityManager.TYPE_MOBILE) {
+                        networkInfo.put("connection_type", "Mobile Data");
+                    } else {
+                        networkInfo.put("connection_type", "Other");
+                    }
+                } else {
+                    networkInfo.put("connected", false);
+                    networkInfo.put("type", "No connection");
                 }
             }
         } catch (Exception e) {
@@ -282,7 +359,18 @@ public class DeviceModule {
     
     private void collectLocalizationInfo(JSONObject info) throws JSONException {
         JSONObject localizationInfo = new JSONObject();
-        localizationInfo.put("country", safeGet(() -> Locale.getDefault().getCountry(), "Unknown"));
+        
+        // Get actual network country from TelephonyManager (FIXED)
+        String networkCountry = getNetworkCountry();
+        if (networkCountry != null && !networkCountry.isEmpty()) {
+            localizationInfo.put("country", networkCountry);
+            localizationInfo.put("country_source", "network");
+        } else {
+            // Fallback to locale
+            localizationInfo.put("country", safeGet(() -> Locale.getDefault().getCountry(), "Unknown"));
+            localizationInfo.put("country_source", "locale");
+        }
+        
         localizationInfo.put("language", safeGet(() -> Locale.getDefault().getLanguage(), "Unknown"));
         localizationInfo.put("display_language", safeGet(() -> Locale.getDefault().getDisplayLanguage(), "Unknown"));
         localizationInfo.put("timezone", safeGet(() -> java.util.TimeZone.getDefault().getID(), "Unknown"));
@@ -292,10 +380,101 @@ public class DeviceModule {
     
     private void collectPerformanceMetrics(JSONObject info) throws JSONException {
         JSONObject performanceInfo = new JSONObject();
-        performanceInfo.put("uptime", SystemClock.elapsedRealtime());
-        performanceInfo.put("boot_time", System.currentTimeMillis() - SystemClock.elapsedRealtime());
+        long uptime = SystemClock.elapsedRealtime();
+        performanceInfo.put("uptime_ms", uptime);
+        performanceInfo.put("uptime_seconds", uptime / 1000);
+        performanceInfo.put("uptime_minutes", uptime / (1000 * 60));
+        performanceInfo.put("uptime_hours", uptime / (1000 * 60 * 60));
+        performanceInfo.put("boot_time", System.currentTimeMillis() - uptime);
         
         info.put("performance", performanceInfo);
+    }
+    
+    // NEW: Battery information collection (FIXED)
+    private void collectBatteryInfo(JSONObject info) throws JSONException {
+        JSONObject batteryInfo = new JSONObject();
+        
+        try {
+            BatteryManager bm = (BatteryManager) context.getSystemService(Context.BATTERY_SERVICE);
+            if (bm != null) {
+                // Battery level
+                int level = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY);
+                batteryInfo.put("level", level);
+                
+                // Charging status
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    int status = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_STATUS);
+                    boolean isCharging = (status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                                          status == BatteryManager.BATTERY_STATUS_FULL);
+                    batteryInfo.put("is_charging", isCharging);
+                    
+                    String statusStr = "Unknown";
+                    switch (status) {
+                        case BatteryManager.BATTERY_STATUS_CHARGING:
+                            statusStr = "Charging";
+                            break;
+                        case BatteryManager.BATTERY_STATUS_DISCHARGING:
+                            statusStr = "Discharging";
+                            break;
+                        case BatteryManager.BATTERY_STATUS_FULL:
+                            statusStr = "Full";
+                            break;
+                        case BatteryManager.BATTERY_STATUS_NOT_CHARGING:
+                            statusStr = "Not charging";
+                            break;
+                    }
+                    batteryInfo.put("status", statusStr);
+                }
+                
+                // Battery health
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    int health = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_HEALTH);
+                    String healthStr = "Unknown";
+                    switch (health) {
+                        case BatteryManager.BATTERY_HEALTH_GOOD:
+                            healthStr = "Good";
+                            break;
+                        case BatteryManager.BATTERY_HEALTH_OVERHEAT:
+                            healthStr = "Overheat";
+                            break;
+                        case BatteryManager.BATTERY_HEALTH_DEAD:
+                            healthStr = "Dead";
+                            break;
+                        case BatteryManager.BATTERY_HEALTH_OVER_VOLTAGE:
+                            healthStr = "Over voltage";
+                            break;
+                        case BatteryManager.BATTERY_HEALTH_UNSPECIFIED_FAILURE:
+                            healthStr = "Failure";
+                            break;
+                        case BatteryManager.BATTERY_HEALTH_COLD:
+                            healthStr = "Cold";
+                            break;
+                    }
+                    batteryInfo.put("health", healthStr);
+                }
+                
+                // Temperature
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    int temp = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_TEMPERATURE);
+                    batteryInfo.put("temperature_celsius", temp / 10.0);
+                }
+                
+                // Voltage
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    int voltage = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_VOLTAGE);
+                    batteryInfo.put("voltage_mv", voltage);
+                }
+                
+                // Technology
+                batteryInfo.put("technology", "Li-ion"); // Default, can't get easily
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Could not get battery info", e);
+            batteryInfo.put("level", 0);
+            batteryInfo.put("is_charging", false);
+        }
+        
+        info.put("battery", batteryInfo);
     }
     
     private String getWifiMacAddress() {
@@ -306,24 +485,109 @@ public class DeviceModule {
         try {
             List<NetworkInterface> interfaces = Collections.list(NetworkInterface.getNetworkInterfaces());
             for (NetworkInterface nif : interfaces) {
-                if (!nif.getName().equalsIgnoreCase("wlan0"))
-                    continue;
-                byte[] macBytes = nif.getHardwareAddress();
-                if (macBytes == null)
-                    return "Unavailable";
-                
-                StringBuilder sb = new StringBuilder();
-                for (byte b : macBytes) {
-                    sb.append(String.format("%02X:", b));
+                if (nif.getName().equalsIgnoreCase("wlan0")) {
+                    byte[] macBytes = nif.getHardwareAddress();
+                    if (macBytes == null)
+                        return "Unavailable";
+                    
+                    StringBuilder sb = new StringBuilder();
+                    for (byte b : macBytes) {
+                        sb.append(String.format("%02X:", b));
+                    }
+                    if (sb.length() > 0)
+                        sb.deleteCharAt(sb.length() - 1);
+                    return sb.toString();
                 }
-                if (sb.length() > 0)
-                    sb.deleteCharAt(sb.length() - 1);
-                return sb.toString();
             }
         } catch (Exception e) {
             Log.w(TAG, "Error getting MAC address", e);
         }
         return "Unknown";
+    }
+    
+    // NEW: Get device IP address from any network interface
+    private String getDeviceIpAddress() {
+        try {
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            while (interfaces.hasMoreElements()) {
+                NetworkInterface intf = interfaces.nextElement();
+                Enumeration<InetAddress> addresses = intf.getInetAddresses();
+                while (addresses.hasMoreElements()) {
+                    InetAddress addr = addresses.nextElement();
+                    if (!addr.isLoopbackAddress() && !addr.isLinkLocalAddress()) {
+                        String ip = addr.getHostAddress();
+                        if (ip != null && !ip.contains(":")) { // IPv4 only
+                            return ip;
+                        }
+                    }
+                }
+            }
+        } catch (SocketException e) {
+            Log.w(TAG, "Error getting IP address", e);
+        }
+        return null;
+    }
+    
+    // NEW: Get network country from TelephonyManager
+    private String getNetworkCountry() {
+        try {
+            TelephonyManager tm = (TelephonyManager) context.getSystemService(Context.TELEPHONY_SERVICE);
+            if (tm != null) {
+                String country = tm.getNetworkCountryIso();
+                if (country != null && !country.isEmpty()) {
+                    return country.toUpperCase();
+                }
+                country = tm.getSimCountryIso();
+                if (country != null && !country.isEmpty()) {
+                    return country.toUpperCase();
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Could not get network country", e);
+        }
+        return null;
+    }
+    
+    // NEW: Get processor model
+    private String getProcessorModel() {
+        try {
+            Process process = Runtime.getRuntime().exec("getprop ro.chipname");
+            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+            String line = reader.readLine();
+            reader.close();
+            if (line != null && !line.isEmpty()) {
+                return line;
+            }
+            
+            process = Runtime.getRuntime().exec("getprop ro.board.platform");
+            reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+            line = reader.readLine();
+            reader.close();
+            return line;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+    
+    private String getSimState(int state) {
+        switch (state) {
+            case TelephonyManager.SIM_STATE_ABSENT:
+                return "Absent";
+            case TelephonyManager.SIM_STATE_PIN_REQUIRED:
+                return "PIN Required";
+            case TelephonyManager.SIM_STATE_PUK_REQUIRED:
+                return "PUK Required";
+            case TelephonyManager.SIM_STATE_NETWORK_LOCKED:
+                return "Network Locked";
+            case TelephonyManager.SIM_STATE_READY:
+                return "Ready";
+            case TelephonyManager.SIM_STATE_NOT_READY:
+                return "Not Ready";
+            case TelephonyManager.SIM_STATE_PERM_DISABLED:
+                return "Permanently Disabled";
+            default:
+                return "Unknown";
+        }
     }
     
     private String getNetworkType(int type) {
