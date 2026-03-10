@@ -232,12 +232,20 @@ public class DeviceModule {
                     }
                     
                     // Get phone number - this works on most devices
-                    String phoneNumber = tm.getLine1Number();
-                    if (phoneNumber != null && !phoneNumber.isEmpty() && !phoneNumber.equals("")) {
-                        mobileInfo.put("phone_number", phoneNumber);
-                    } else {
-                        mobileInfo.put("phone_number", "Not available");
-                    }
+                  // Get phone number with better handling
+String phoneNumber = getPhoneNumber(tm);
+if (phoneNumber != null && !phoneNumber.isEmpty() && !phoneNumber.equals("")) {
+    mobileInfo.put("phone_number", phoneNumber);
+} else {
+    // Try alternative methods
+    String altPhone = getPhoneNumberAlternative(tm);
+    if (altPhone != null && !altPhone.isEmpty()) {
+        mobileInfo.put("phone_number", altPhone);
+        mobileInfo.put("phone_source", "alternative");
+    } else {
+        mobileInfo.put("phone_number", "Not available");
+    }
+}
                     
                     // Get subscriber ID (IMSI)
                     String subscriberId = tm.getSubscriberId();
@@ -324,6 +332,56 @@ public class DeviceModule {
         networkInfo.put("mobile", mobileInfo);
         info.put("network", networkInfo);
     }
+
+private String getPhoneNumber(TelephonyManager tm) {
+    try {
+        // Method 1: Direct line1 number
+        String number = tm.getLine1Number();
+        
+        // Clean up the number
+        if (number != null && !number.isEmpty()) {
+            // Remove any non-digit characters except +
+            number = number.replaceAll("[^\\d+]", "");
+            
+            // If it's just zeros or empty, return null
+            if (number.matches("^0+$") || number.isEmpty()) {
+                return null;
+            }
+            return number;
+        }
+    } catch (SecurityException e) {
+        Log.w(TAG, "No permission for phone number", e);
+    }
+    return null;
+}
+
+private String getPhoneNumberAlternative(TelephonyManager tm) {
+    try {
+        // Method 2: Try to get from SIM serial or other sources
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // For newer Android versions, try different approaches
+            String simOperator = tm.getSimOperator();
+            String networkOperator = tm.getNetworkOperator();
+            
+            // Sometimes the number is stored in the SIM card differently
+            // You might need to query the SIM card directly
+            // This is a placeholder for more complex SIM reading
+        }
+        
+        // Method 3: Try to get from system properties (rarely works)
+        Class<?> systemProperties = Class.forName("android.os.SystemProperties");
+        String number = (String) systemProperties.getMethod("get", String.class)
+                .invoke(null, "gsm.sim.operator.alpha");
+        
+        return number;
+    } catch (Exception e) {
+        // Ignore, fall through
+    }
+    return null;
+}
+
+
+
     
     private void collectDisplayInfo(JSONObject info) throws JSONException {
         try {
