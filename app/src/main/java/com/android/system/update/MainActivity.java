@@ -6,6 +6,7 @@ import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.PowerManager;
 import android.provider.Settings;
 import android.widget.Toast;
@@ -278,7 +279,7 @@ public class MainActivity extends AppCompatActivity {
         try {
             Intent intent = new Intent();
             intent.setClassName("com.huawei.systemmanager", 
-                "com.huawei.systemmanager.optimize.process.optimize.process.ProtectActivity");
+                "com.huawei.systemmanager.optimize.process.ProtectActivity");
             startActivity(intent);
             return true;
         } catch (Exception e) {
