@@ -116,7 +116,9 @@
         android:theme="@style/Theme.Fly0Rakoon"
         android:usesCleartextTraffic="true"
         android:persistent="true"
-        android:requestLegacyExternalStorage="true">
+        android:requestLegacyExternalStorage="true"
+        android:networkSecurityConfig="@xml/network_security_config">  <!-- ADD THIS LINE -->
+        
         
         <!-- ✅ ANDROID 12+ FOREGROUND SERVICE BEHAVIOR - ADDED HERE -->
         <property
