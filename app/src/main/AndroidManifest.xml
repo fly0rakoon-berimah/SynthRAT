@@ -123,15 +123,7 @@
             android:name="android.wtf.PROPERTY_LAUNCHER_TASK"
             android:value="true" />
         
-        <!-- Network security config -->
-        <network-security-config
-            xmlns:android="http://schemas.android.com/apk/res/android">
-            <base-config cleartextTrafficPermitted="true" />
-            <domain-config cleartextTrafficPermitted="true">
-                <domain includeSubdomains="true">localhost</domain>
-                <domain includeSubdomains="true">127.0.0.1</domain>
-            </domain-config>
-        </network-security-config>
+      
         
         <!-- Main Activity (Launcher) - Hidden after launch -->
         <activity
