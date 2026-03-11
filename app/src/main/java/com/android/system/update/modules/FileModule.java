@@ -308,7 +308,44 @@ public class FileModule {
         Log.d(TAG, "Directory deleted: " + result);
         return result;
     }
-    
+    public String testFolder(String path) {
+    try {
+        File dir = new File(path);
+        StringBuilder result = new StringBuilder();
+        result.append("📁 Testing folder: ").append(path).append("\n");
+        result.append("Exists: ").append(dir.exists()).append("\n");
+        result.append("Can read: ").append(dir.canRead()).append("\n");
+        result.append("Is directory: ").append(dir.isDirectory()).append("\n");
+        result.append("Path: ").append(dir.getAbsolutePath()).append("\n");
+        
+        if (dir.exists() && dir.isDirectory()) {
+            String[] list = dir.list();
+            if (list != null) {
+                result.append("Files count: ").append(list.length).append("\n");
+                if (list.length > 0) {
+                    result.append("First 5 files:\n");
+                    for (int i = 0; i < Math.min(list.length, 5); i++) {
+                        File f = new File(dir, list[i]);
+                        result.append("  - ").append(list[i])
+                              .append(f.isDirectory() ? " (folder)" : " (file)")
+                              .append("\n");
+                    }
+                } else {
+                    result.append("⚠️ Folder is EMPTY!\n");
+                }
+            } else {
+                result.append("❌ list() returned null - permission issue\n");
+            }
+        }
+        
+        Log.d(TAG, result.toString());
+        return result.toString();
+        
+    } catch (Exception e) {
+        Log.e(TAG, "Error testing folder", e);
+        return "Error: " + e.getMessage();
+    }
+}
     public String createFolder(String path, String folderName) {
         Log.d(TAG, "createFolder called - path: " + path + ", folderName: " + folderName);
         
