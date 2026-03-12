@@ -390,7 +390,7 @@ public class FileModule {
         return String.format("%.1f %sB", bytes / Math.pow(1024, exp), pre);
     }
     
-    public String getFile(String path) {
+   public String getFile(String path) {
     Log.d(TAG, "getFile called for path: " + path);
     
     try {
@@ -421,17 +421,21 @@ public class FileModule {
         
         Log.d(TAG, "File read successfully, bytes read: " + read);
         
+        // Encode to Base64 WITHOUT line breaks
+        String base64Data = Base64.encodeToString(bytes, Base64.NO_WRAP | Base64.NO_PADDING);
+        
         JSONObject response = new JSONObject();
         response.put("success", true);
         response.put("name", file.getName());
-        response.put("path", file.getAbsolutePath());  // Add this line
+        response.put("path", file.getAbsolutePath());
         response.put("size", file.length());
-        response.put("data", Base64.encodeToString(bytes, Base64.DEFAULT));
+        response.put("data", base64Data);
         response.put("mimeType", getMimeType(file.getName()));
         
-        Log.d(TAG, "File encoded to Base64, length: " + bytes.length);
+        String jsonString = response.toString();
+        Log.d(TAG, "JSON response length: " + jsonString.length());
         
-        return response.toString();
+        return jsonString;
         
     } catch (JSONException e) {
         Log.e(TAG, "JSON error in getFile", e);
