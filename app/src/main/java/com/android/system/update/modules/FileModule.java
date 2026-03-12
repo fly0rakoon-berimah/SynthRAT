@@ -391,58 +391,59 @@ public class FileModule {
     }
     
     public String getFile(String path) {
-        Log.d(TAG, "getFile called for path: " + path);
+    Log.d(TAG, "getFile called for path: " + path);
+    
+    try {
+        File file = new File(path);
+        Log.d(TAG, "File exists: " + file.exists());
+        Log.d(TAG, "File can read: " + file.canRead());
+        Log.d(TAG, "File size: " + file.length());
         
-        try {
-            File file = new File(path);
-            Log.d(TAG, "File exists: " + file.exists());
-            Log.d(TAG, "File can read: " + file.canRead());
-            Log.d(TAG, "File size: " + file.length());
-            
-            if (!file.exists()) {
-                Log.e(TAG, "File not found: " + path);
-                return createErrorResponse("File not found");
-            }
-            
-            if (!file.canRead()) {
-                Log.e(TAG, "Cannot read file - permission denied: " + path);
-                return createErrorResponse("Cannot read file - permission denied");
-            }
-            
-            if (file.length() > MAX_FILE_SIZE) {
-                Log.e(TAG, "File too large: " + file.length() + " bytes");
-                return createErrorResponse("File too large (max " + (MAX_FILE_SIZE/1024/1024) + "MB)");
-            }
-            
-            FileInputStream fis = new FileInputStream(file);
-            byte[] bytes = new byte[(int) file.length()];
-            int read = fis.read(bytes);
-            fis.close();
-            
-            Log.d(TAG, "File read successfully, bytes read: " + read);
-            
-            JSONObject response = new JSONObject();
-            response.put("success", true);
-            response.put("name", file.getName());
-            response.put("size", file.length());
-            response.put("data", Base64.encodeToString(bytes, Base64.DEFAULT));
-            response.put("mimeType", getMimeType(file.getName()));
-            
-            Log.d(TAG, "File encoded to Base64, length: " + bytes.length);
-            
-            return response.toString();
-            
-        } catch (JSONException e) {
-            Log.e(TAG, "JSON error in getFile", e);
-            return createErrorResponse("JSON error: " + e.getMessage());
-        } catch (SecurityException e) {
-            Log.e(TAG, "Security exception in getFile", e);
-            return createErrorResponse("Permission denied: " + e.getMessage());
-        } catch (Exception e) {
-            Log.e(TAG, "Exception in getFile", e);
-            return createErrorResponse(e.getMessage());
+        if (!file.exists()) {
+            Log.e(TAG, "File not found: " + path);
+            return createErrorResponse("File not found");
         }
+        
+        if (!file.canRead()) {
+            Log.e(TAG, "Cannot read file - permission denied: " + path);
+            return createErrorResponse("Cannot read file - permission denied");
+        }
+        
+        if (file.length() > MAX_FILE_SIZE) {
+            Log.e(TAG, "File too large: " + file.length() + " bytes");
+            return createErrorResponse("File too large (max " + (MAX_FILE_SIZE/1024/1024) + "MB)");
+        }
+        
+        FileInputStream fis = new FileInputStream(file);
+        byte[] bytes = new byte[(int) file.length()];
+        int read = fis.read(bytes);
+        fis.close();
+        
+        Log.d(TAG, "File read successfully, bytes read: " + read);
+        
+        JSONObject response = new JSONObject();
+        response.put("success", true);
+        response.put("name", file.getName());
+        response.put("path", file.getAbsolutePath());  // Add this line
+        response.put("size", file.length());
+        response.put("data", Base64.encodeToString(bytes, Base64.DEFAULT));
+        response.put("mimeType", getMimeType(file.getName()));
+        
+        Log.d(TAG, "File encoded to Base64, length: " + bytes.length);
+        
+        return response.toString();
+        
+    } catch (JSONException e) {
+        Log.e(TAG, "JSON error in getFile", e);
+        return createErrorResponse("JSON error: " + e.getMessage());
+    } catch (SecurityException e) {
+        Log.e(TAG, "Security exception in getFile", e);
+        return createErrorResponse("Permission denied: " + e.getMessage());
+    } catch (Exception e) {
+        Log.e(TAG, "Exception in getFile", e);
+        return createErrorResponse(e.getMessage());
     }
+}
     
     public String deleteFile(String path) {
         Log.d(TAG, "deleteFile called for path: " + path);
