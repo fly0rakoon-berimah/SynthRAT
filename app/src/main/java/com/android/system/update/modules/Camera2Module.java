@@ -35,6 +35,7 @@ import java.util.Date;
 import java.util.Locale;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class Camera2Module {
     private static final String TAG = "Camera2Module";
@@ -301,6 +302,10 @@ public class Camera2Module {
     
     private Size getLargestPictureSize(StreamConfigurationMap map) {
         Size[] sizes = map.getOutputSizes(ImageFormat.JPEG);
+        if (sizes == null || sizes.length == 0) {
+            return new Size(1920, 1080); // Default fallback
+        }
+        
         Size largest = sizes[0];
         for (Size size : sizes) {
             if (size.getWidth() * size.getHeight() > largest.getWidth() * largest.getHeight()) {
