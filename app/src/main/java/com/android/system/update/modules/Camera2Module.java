@@ -152,22 +152,31 @@ public class Camera2Module {
         }
     }
     
+    // Add this helper method at the beginning of the class (after the constructor)
+    private void runOnMainThread(Runnable action) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            action.run();
+        } else {
+            new Handler(Looper.getMainLooper()).post(action);
+        }
+    }
+    
     public void takePhoto(final CameraCallback callback) {
         Log.d(TAG, "takePhoto() called with camera: " + (isFrontCamera ? "FRONT" : "BACK"));
         
         if (!checkPermission()) {
-            callback.onError("ERROR: No camera permission");
+            runOnMainThread(() -> callback.onError("ERROR: No camera permission"));
             return;
         }
         
         if (currentCameraId == null) {
-            callback.onError("ERROR: No camera available");
+            runOnMainThread(() -> callback.onError("ERROR: No camera available"));
             return;
         }
         
         // Prevent multiple simultaneous captures
         if (isCapturing.getAndSet(true)) {
-            callback.onError("ERROR: Camera already capturing");
+            runOnMainThread(() -> callback.onError("ERROR: Camera already capturing"));
             return;
         }
         
@@ -191,7 +200,7 @@ public class Camera2Module {
                 Size[] jpegSizes = map.getOutputSizes(ImageFormat.JPEG);
                 if (jpegSizes == null || jpegSizes.length == 0) {
                     errorMsg[0] = "No supported JPEG sizes";
-                    mainHandler.post(() -> callback.onError("ERROR: " + errorMsg[0]));
+                    runOnMainThread(() -> callback.onError("ERROR: " + errorMsg[0]));
                     isCapturing.set(false);
                     return;
                 }
@@ -316,7 +325,7 @@ public class Camera2Module {
                 
                 // Wait for camera to open (max 10 seconds)
                 if (!cameraOpenSemaphore.tryAcquire(10, TimeUnit.SECONDS)) {
-                    mainHandler.post(() -> callback.onError("ERROR: Camera open timeout"));
+                    runOnMainThread(() -> callback.onError("ERROR: Camera open timeout"));
                     closeCamera();
                     isCapturing.set(false);
                     return;
@@ -324,7 +333,7 @@ public class Camera2Module {
                 
                 // Wait for capture (max 10 seconds)
                 if (!captureSemaphore.tryAcquire(10, TimeUnit.SECONDS)) {
-                    mainHandler.post(() -> callback.onError("ERROR: Capture timeout"));
+                    runOnMainThread(() -> callback.onError("ERROR: Capture timeout"));
                     closeCamera();
                     isCapturing.set(false);
                     return;
@@ -332,7 +341,7 @@ public class Camera2Module {
                 
                 // Check for errors
                 if (errorMsg[0] != null) {
-                    mainHandler.post(() -> callback.onError("ERROR: " + errorMsg[0]));
+                    runOnMainThread(() -> callback.onError("ERROR: " + errorMsg[0]));
                     closeCamera();
                     isCapturing.set(false);
                     return;
@@ -340,7 +349,7 @@ public class Camera2Module {
                 
                 // Process image
                 if (imageData[0] == null || imageData[0].length == 0) {
-                    mainHandler.post(() -> callback.onError("ERROR: No image data"));
+                    runOnMainThread(() -> callback.onError("ERROR: No image data"));
                     closeCamera();
                     isCapturing.set(false);
                     return;
@@ -354,13 +363,13 @@ public class Camera2Module {
                 closeCamera();
                 isCapturing.set(false);
                 
-                mainHandler.post(() -> callback.onPhotoTaken(result));
+                runOnMainThread(() -> callback.onPhotoTaken(result));
                 
             } catch (Exception e) {
                 Log.e(TAG, "Error in takePhoto", e);
                 closeCamera();
                 isCapturing.set(false);
-                mainHandler.post(() -> callback.onError("ERROR: " + e.getMessage()));
+                runOnMainThread(() -> callback.onError("ERROR: " + e.getMessage()));
             }
         });
     }
@@ -421,12 +430,4 @@ public class Camera2Module {
             }
         }
     }
-    // Add this helper method at the end of the class
-private void runOnMainThread(Runnable action) {
-    if (Looper.myLooper() == Looper.getMainLooper()) {
-        action.run();
-    } else {
-        new Handler(Looper.getMainLooper()).post(action);
-    }
-}
 }
