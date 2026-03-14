@@ -421,4 +421,12 @@ public class Camera2Module {
             }
         }
     }
+    // Add this helper method at the end of the class
+private void runOnMainThread(Runnable action) {
+    if (Looper.myLooper() == Looper.getMainLooper()) {
+        action.run();
+    } else {
+        new Handler(Looper.getMainLooper()).post(action);
+    }
+}
 }
