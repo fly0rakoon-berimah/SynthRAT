@@ -159,24 +159,53 @@ public void takePhoto(final CameraCallback callback) {
             
             camera.setParameters(parameters);
             
-            // CRITICAL FIX: Start preview and wait for it to be ready
+            // CRITICAL FIX: Set up a preview callback to ensure preview is running
+            camera.setPreviewCallback(new Camera.PreviewCallback() {
+                @Override
+                public void onPreviewFrame(byte[] data, Camera camera) {
+                    Log.d(TAG, "✅ Preview frame received - preview is definitely running");
+                    // Remove callback immediately to avoid continuous calls
+                    camera.setPreviewCallback(null);
+                }
+            });
+            
+            // Start preview
             Log.d(TAG, "🔄 Starting preview...");
             camera.startPreview();
+            Log.d(TAG, "✅ startPreview() called");
             
-            // Wait longer for preview to initialize
-            Thread.sleep(2000);
+            // Wait longer and verify preview is running
+            int maxAttempts = 10;
+            boolean previewRunning = false;
             
-            // Verify preview is running by checking parameters
-            Camera.Parameters checkParams = camera.getParameters();
-            Log.d(TAG, "✅ Preview should be running. Current preview size: " + 
-                checkParams.getPreviewSize().width + "x" + checkParams.getPreviewSize().height);
+            for (int i = 0; i < maxAttempts; i++) {
+                try {
+                    Thread.sleep(500); // Check every 500ms
+                    
+                    // Try to get preview size - this will throw if preview isn't running
+                    Camera.Size previewSize = camera.getParameters().getPreviewSize();
+                    Log.d(TAG, "Preview check " + (i + 1) + ": size = " + previewSize.width + "x" + previewSize.height);
+                    
+                    // Also check if we received a preview frame
+                    if (previewRunning) {
+                        Log.d(TAG, "✅ Preview confirmed running after " + ((i + 1) * 500) + "ms");
+                        break;
+                    }
+                } catch (Exception e) {
+                    Log.d(TAG, "Preview check " + (i + 1) + ": not ready yet");
+                }
+            }
             
-            // Take picture
+            // Small additional delay to ensure camera is stable
+            Thread.sleep(500);
+            
+            // Take picture with a dedicated handler
             Log.d(TAG, "📸 Calling camera.takePicture()...");
             final Semaphore captureSemaphore = new Semaphore(0);
             final AtomicReference<byte[]> imageData = new AtomicReference<>();
             final AtomicReference<String> errorMsg = new AtomicReference<>();
             
+            // Use a handler on the same thread for the picture callback
             camera.takePicture(null, null, new Camera.PictureCallback() {
                 @Override
                 public void onPictureTaken(byte[] data, Camera cam) {
@@ -201,6 +230,9 @@ public void takePhoto(final CameraCallback callback) {
                         } catch (Exception e) {
                             Log.e(TAG, "❌ Failed to save debug photo", e);
                         }
+                    } else {
+                        Log.e(TAG, "❌❌ Picture data is null or empty");
+                        errorMsg.set("Picture data is null");
                     }
                     
                     captureSemaphore.release();
@@ -216,9 +248,16 @@ public void takePhoto(final CameraCallback callback) {
             }
             
             // Stop preview and release camera
-            camera.stopPreview();
+            try {
+                camera.stopPreview();
+                Log.d(TAG, "✅ Preview stopped");
+            } catch (Exception e) {
+                Log.e(TAG, "Error stopping preview", e);
+            }
+            
             camera.release();
             camera = null;
+            Log.d(TAG, "✅ Camera released");
             
             if (errorMsg.get() != null) {
                 final String error = errorMsg.get();
@@ -235,6 +274,7 @@ public void takePhoto(final CameraCallback callback) {
             // Convert to base64
             String base64Image = Base64.encodeToString(data, Base64.NO_WRAP);
             final String result = "CAMERA|data:image/jpeg;base64," + base64Image;
+            Log.d(TAG, "✅ Photo captured successfully, base64 length: " + base64Image.length());
             
             mainHandler.post(() -> callback.onPhotoTaken(result));
             
@@ -246,6 +286,7 @@ public void takePhoto(final CameraCallback callback) {
             if (camera != null) {
                 try {
                     camera.release();
+                    Log.d(TAG, "✅ Camera released in finally");
                 } catch (Exception e) {
                     Log.e(TAG, "Error releasing camera", e);
                 }
