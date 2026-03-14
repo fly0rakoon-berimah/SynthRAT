@@ -11,6 +11,7 @@ import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.Image;
@@ -35,6 +36,9 @@ import java.util.Locale;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+
+// Add this import for CaptureFailure
+import android.hardware.camera2.CaptureFailure;
 
 public class Camera2Module {
     private static final String TAG = "Camera2Module";
@@ -179,6 +183,12 @@ public class Camera2Module {
                 
                 // Choose the largest image size that's not too big (to avoid memory issues)
                 Size[] jpegSizes = map.getOutputSizes(ImageFormat.JPEG);
+                if (jpegSizes == null || jpegSizes.length == 0) {
+                    errorMsg.set("No supported JPEG sizes");
+                    mainHandler.post(() -> callback.onError("ERROR: No supported JPEG sizes"));
+                    return;
+                }
+                
                 Size largest = jpegSizes[0];
                 for (Size size : jpegSizes) {
                     if (size.getWidth() * size.getHeight() > largest.getWidth() * largest.getHeight()) {
