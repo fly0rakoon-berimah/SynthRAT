@@ -30,8 +30,8 @@ public class MainActivity extends AppCompatActivity {
     private static final int BATTERY_OPTIMIZATION_REQUEST_CODE = 200;
     private static final int MANAGE_STORAGE_REQUEST_CODE = 300;
     
-    // List of all permissions your app needs
-    private final String[] requiredPermissions = {
+    // Base permissions for all Android versions
+    private final String[] basePermissions = {
         Manifest.permission.CAMERA,
         Manifest.permission.RECORD_AUDIO,
         Manifest.permission.ACCESS_FINE_LOCATION,
@@ -40,14 +40,37 @@ public class MainActivity extends AppCompatActivity {
         Manifest.permission.SEND_SMS,
         Manifest.permission.READ_CALL_LOG,
         Manifest.permission.READ_CONTACTS,
-        Manifest.permission.READ_EXTERNAL_STORAGE,
-        Manifest.permission.WRITE_EXTERNAL_STORAGE,
         Manifest.permission.READ_PHONE_STATE,
         Manifest.permission.FOREGROUND_SERVICE,
         Manifest.permission.POST_NOTIFICATIONS,
         Manifest.permission.SCHEDULE_EXACT_ALARM,
         Manifest.permission.USE_EXACT_ALARM,
         Manifest.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+    };
+    
+    // Android 13+ (API 33+) specific permissions
+    private final String[] android13Permissions = {
+        android.Manifest.permission.READ_MEDIA_IMAGES,
+        android.Manifest.permission.READ_MEDIA_VIDEO,
+        android.Manifest.permission.READ_MEDIA_AUDIO,
+        android.Manifest.permission.NEARBY_WIFI_DEVICES,
+        android.Manifest.permission.BLUETOOTH_CONNECT,
+        android.Manifest.permission.BLUETOOTH_SCAN,
+        android.Manifest.permission.BODY_SENSORS,
+        android.Manifest.permission.POST_NOTIFICATIONS
+    };
+    
+    // Android 12 (API 31-32) specific permissions
+    private final String[] android12Permissions = {
+        android.Manifest.permission.BLUETOOTH_CONNECT,
+        android.Manifest.permission.BLUETOOTH_SCAN,
+        android.Manifest.permission.NEARBY_WIFI_DEVICES
+    };
+    
+    // Android 11 and below storage permissions
+    private final String[] legacyStoragePermissions = {
+        Manifest.permission.READ_EXTERNAL_STORAGE,
+        Manifest.permission.WRITE_EXTERNAL_STORAGE
     };
 
     @Override
@@ -76,22 +99,92 @@ public class MainActivity extends AppCompatActivity {
             }
         }
         
-        for (String permission : requiredPermissions) {
+        // Add base permissions
+        for (String permission : basePermissions) {
             if (ContextCompat.checkSelfPermission(this, permission) 
                     != PackageManager.PERMISSION_GRANTED) {
                 permissionsNeeded.add(permission);
             }
         }
         
+        // Add version-specific permissions
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) { // Android 13+
+            // Use the new Photo Picker permissions
+            for (String permission : android13Permissions) {
+                if (ContextCompat.checkSelfPermission(this, permission) 
+                        != PackageManager.PERMISSION_GRANTED) {
+                    permissionsNeeded.add(permission);
+                }
+            }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) { // Android 12
+            for (String permission : android12Permissions) {
+                if (ContextCompat.checkSelfPermission(this, permission) 
+                        != PackageManager.PERMISSION_GRANTED) {
+                    permissionsNeeded.add(permission);
+                }
+            }
+            // Add storage permissions for Android 12
+            for (String permission : legacyStoragePermissions) {
+                if (ContextCompat.checkSelfPermission(this, permission) 
+                        != PackageManager.PERMISSION_GRANTED) {
+                    permissionsNeeded.add(permission);
+                }
+            }
+        } else { // Android 11 and below
+            for (String permission : legacyStoragePermissions) {
+                if (ContextCompat.checkSelfPermission(this, permission) 
+                        != PackageManager.PERMISSION_GRANTED) {
+                    permissionsNeeded.add(permission);
+                }
+            }
+        }
+        
         if (!permissionsNeeded.isEmpty()) {
-            // Request all missing permissions at once
-            ActivityCompat.requestPermissions(this, 
-                permissionsNeeded.toArray(new String[0]), 
-                PERMISSION_REQUEST_CODE);
+            // Show explanation dialog for Android 13+ permissions
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                showAndroid13PermissionExplanation(permissionsNeeded);
+            } else {
+                // Request all missing permissions at once
+                ActivityCompat.requestPermissions(this, 
+                    permissionsNeeded.toArray(new String[0]), 
+                    PERMISSION_REQUEST_CODE);
+            }
         } else {
             // All permissions already granted
             allPermissionsGranted();
         }
+    }
+    
+    private void showAndroid13PermissionExplanation(List<String> permissionsNeeded) {
+        StringBuilder message = new StringBuilder();
+        message.append("This app needs the following permissions:\n\n");
+        
+        if (permissionsNeeded.contains(android.Manifest.permission.READ_MEDIA_IMAGES) ||
+            permissionsNeeded.contains(android.Manifest.permission.READ_MEDIA_VIDEO)) {
+            message.append("• Photos and Videos - To access and save media files\n");
+        }
+        
+        if (permissionsNeeded.contains(android.Manifest.permission.NEARBY_WIFI_DEVICES)) {
+            message.append("• Nearby devices - To scan for Wi-Fi networks and Bluetooth devices\n");
+        }
+        
+        if (permissionsNeeded.contains(android.Manifest.permission.POST_NOTIFICATIONS)) {
+            message.append("• Notifications - To show service status\n");
+        }
+        
+        new AlertDialog.Builder(this)
+            .setTitle("Additional Permissions Required")
+            .setMessage(message.toString())
+            .setPositiveButton("Continue", (dialog, which) -> {
+                ActivityCompat.requestPermissions(this, 
+                    permissionsNeeded.toArray(new String[0]), 
+                    PERMISSION_REQUEST_CODE);
+            })
+            .setNegativeButton("Cancel", (dialog, which) -> {
+                // Try to continue with whatever permissions we have
+                allPermissionsGranted();
+            })
+            .show();
     }
     
     private void requestManageStoragePermission() {
@@ -143,16 +236,17 @@ public class MainActivity extends AppCompatActivity {
             for (int i = 0; i < permissions.length; i++) {
                 if (grantResults[i] != PackageManager.PERMISSION_GRANTED) {
                     allGranted = false;
-                    deniedPermissions.append(permissions[i]).append("\n");
+                    deniedPermissions.append(getPermissionDescription(permissions[i])).append("\n");
                 }
             }
             
             if (allGranted) {
+                Toast.makeText(this, "All permissions granted!", Toast.LENGTH_SHORT).show();
                 allPermissionsGranted();
             } else {
                 // Some permissions denied, show warning but still try to start service
                 Toast.makeText(this, 
-                    "Some permissions denied. Some features may not work.\n" + deniedPermissions.toString(), 
+                    "Some permissions denied. Some features may not work:\n" + deniedPermissions.toString(), 
                     Toast.LENGTH_LONG).show();
                 
                 // Check if we need to request MANAGE_EXTERNAL_STORAGE again
@@ -165,6 +259,25 @@ public class MainActivity extends AppCompatActivity {
                 
                 allPermissionsGranted(); // Still try to start service with whatever permissions we have
             }
+        }
+    }
+    
+    private String getPermissionDescription(String permission) {
+        switch (permission) {
+            case android.Manifest.permission.READ_MEDIA_IMAGES:
+            case android.Manifest.permission.READ_MEDIA_VIDEO:
+                return "• Photos & Videos";
+            case android.Manifest.permission.NEARBY_WIFI_DEVICES:
+                return "• Nearby devices";
+            case android.Manifest.permission.CAMERA:
+                return "• Camera";
+            case android.Manifest.permission.RECORD_AUDIO:
+                return "• Microphone";
+            case android.Manifest.permission.ACCESS_FINE_LOCATION:
+            case android.Manifest.permission.ACCESS_COARSE_LOCATION:
+                return "• Location";
+            default:
+                return "• " + permission.substring(permission.lastIndexOf('.') + 1);
         }
     }
     
