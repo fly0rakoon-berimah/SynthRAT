@@ -23,7 +23,6 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -239,7 +238,9 @@ public class MicModule {
             audioRecord.startRecording();
             isStreaming = true;
             
-            backgroundHandler.post(() -> streamAudioData(bufferSize));
+            // Make a final copy of bufferSize for the lambda
+            final int finalBufferSize = bufferSize;
+            backgroundHandler.post(() -> streamAudioData(finalBufferSize));
             
             Log.d(TAG, "✅ Streaming started");
             return "SUCCESS: Streaming started";
