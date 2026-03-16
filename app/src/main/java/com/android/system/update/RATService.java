@@ -875,7 +875,7 @@ case "apps_kill_all":
     } else {
         sendCommand("APPS_ACTION|{\"success\":false,\"error\":\"App manager not available\"}");
     }
-    break;;
+    break;
 
 
                 
