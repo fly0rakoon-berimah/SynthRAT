@@ -18,7 +18,7 @@ import androidx.core.app.ActivityCompat;
 import android.graphics.ImageFormat;
 import android.os.Looper;
 import android.util.Log;
-
+import java.util.Arrays; // ADD THIS IMPORT
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
