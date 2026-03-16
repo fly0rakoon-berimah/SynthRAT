@@ -123,7 +123,28 @@ public class CameraModule {
             return "ERROR: " + e.getMessage();
         }
     }
+    // Add a test method
+public String testCamera() {
+    Log.d(TAG, "🔧 Testing camera module");
+    if (!checkPermission()) {
+        return "ERROR: No camera permission";
+    }
     
+    try {
+        String[] cameraIds = cameraManager.getCameraIdList();
+        Log.d(TAG, "Available cameras: " + Arrays.toString(cameraIds));
+        
+        if (cameraId == null) {
+            return "ERROR: No back camera found";
+        }
+        
+        CameraCharacteristics chars = cameraManager.getCameraCharacteristics(cameraId);
+        return "SUCCESS: Camera " + cameraId + " is available";
+    } catch (Exception e) {
+        Log.e(TAG, "❌ Camera test failed", e);
+        return "ERROR: " + e.getMessage();
+    }
+}
     private void capturePhotoSync(File photoFile, CountDownLatch latch, AtomicReference<String> result) {
         CameraDevice cameraDevice = null;
         ImageReader imageReader = null;
