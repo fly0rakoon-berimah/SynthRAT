@@ -59,11 +59,14 @@ public class CameraModule {
     }
     
     public String takePhoto() {
+         Log.d(TAG, "📸 takePhoto() called");
         if (!checkPermission()) {
+             Log.e(TAG, "❌ No camera permission");
+     
             return "ERROR: No camera permission";
         }
         
-        Log.d(TAG, "Starting photo capture");
+       Log.d(TAG, "Starting photo capture with cameraId: " + cameraId);
         
         try {
             // Create a latch to wait for the photo to be captured
