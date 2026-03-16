@@ -199,7 +199,59 @@ public class MicModule {
         }
         return "ERROR: No active recording";
     }
-    
+    public String listRecordingsDetailed() {
+    try {
+        File recordingsDir = new File(context.getExternalFilesDir(null), "recordings");
+        JSONObject result = new JSONObject();
+        JSONArray recordingsArray = new JSONArray();
+        
+        if (!recordingsDir.exists()) {
+            result.put("status", "error");
+            result.put("message", "Recordings directory does not exist");
+            return result.toString();
+        }
+        
+        File[] files = recordingsDir.listFiles((dir, name) -> 
+            name.endsWith(".mp3") || name.endsWith(".3gp") || name.endsWith(".wav") || name.endsWith(".aac"));
+        
+        if (files == null || files.length == 0) {
+            result.put("status", "success");
+            result.put("message", "No recordings found");
+            result.put("recordings", recordingsArray);
+            result.put("directory", recordingsDir.getAbsolutePath());
+            return result.toString();
+        }
+        
+        for (File file : files) {
+            JSONObject recording = new JSONObject();
+            recording.put("name", file.getName());
+            recording.put("path", file.getAbsolutePath());
+            recording.put("size", file.length());
+            recording.put("last_modified", file.lastModified());
+            recording.put("readable", file.canRead());
+            recordingsArray.put(recording);
+            Log.d(TAG, "Found recording: " + file.getName() + " - " + file.length() + " bytes");
+        }
+        
+        result.put("status", "success");
+        result.put("recordings", recordingsArray);
+        result.put("count", files.length);
+        result.put("directory", recordingsDir.getAbsolutePath());
+        
+        return result.toString();
+        
+    } catch (Exception e) {
+        Log.e(TAG, "Error listing recordings", e);
+        try {
+            JSONObject error = new JSONObject();
+            error.put("status", "error");
+            error.put("message", e.getMessage());
+            return error.toString();
+        } catch (JSONException je) {
+            return "ERROR: " + e.getMessage();
+        }
+    }
+}
     public String startStreaming(int sampleRate, int bitRate, String format, StreamDataCallback callback) {
         Log.d(TAG, "🎤 startStreaming() called");
         
