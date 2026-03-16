@@ -132,92 +132,276 @@ public class CameraModule {
         return isUsingFrontCamera ? "front" : "back";
     }
     
-    public String takePhoto() {
-        Log.d(TAG, "📸 takePhoto() called with camera: " + currentCameraId + (isUsingFrontCamera ? " (front)" : " (back)"));
+  public String takePhoto() {
+    Log.d(TAG, "📸 takePhoto() called with camera: " + currentCameraId + (isUsingFrontCamera ? " (front)" : " (back)"));
+    
+    if (!checkPermission()) {
+        Log.e(TAG, "❌ No camera permission");
+        return "ERROR: No camera permission";
+    }
+    
+    if (currentCameraId == null) {
+        Log.e(TAG, "❌ No camera ID available");
+        return "ERROR: No camera available";
+    }
+    
+    File photoFile = null;
+    CameraDevice cameraDevice = null;
+    ImageReader imageReader = null;
+    CameraCaptureSession captureSession = null;
+    
+    try {
+        // Create temp file
+        photoFile = File.createTempFile("photo", ".jpg", 
+            context.getExternalFilesDir(null));
+        Log.d(TAG, "📁 Temp file created: " + photoFile.getAbsolutePath());
         
-        if (!checkPermission()) {
-            Log.e(TAG, "❌ No camera permission");
-            return "ERROR: No camera permission";
-        }
+        // Get the largest size
+        Size largest = getLargestSize();
+        Log.d(TAG, "📐 Using size: " + largest.getWidth() + "x" + largest.getHeight());
         
-        if (currentCameraId == null) {
-            Log.e(TAG, "❌ No camera ID available");
-            return "ERROR: No camera available";
-        }
+        // Create ImageReader
+        imageReader = ImageReader.newInstance(largest.getWidth(), 
+            largest.getHeight(), ImageFormat.JPEG, 2);
+        Log.d(TAG, "🖼️ ImageReader created");
         
-        try {
-            // Create temp file
-            File photoFile = File.createTempFile("photo", ".jpg", 
-                context.getExternalFilesDir(null));
-            Log.d(TAG, "📁 Temp file created: " + photoFile.getAbsolutePath());
-            
-            // Create a latch to wait for the photo to be captured
-            CountDownLatch latch = new CountDownLatch(1);
-            AtomicReference<String> result = new AtomicReference<>("ERROR: Timeout");
-            
-            // Open camera and capture on background thread
-            backgroundHandler.post(() -> {
-                try {
-                    Log.d(TAG, "🔄 Starting capture on background thread");
-                    capturePhotoSync(photoFile, latch, result);
-                } catch (Exception e) {
-                    Log.e(TAG, "❌ Error in capture thread", e);
-                    result.set("ERROR: " + e.getMessage());
-                    latch.countDown();
+        // Use CountDownLatch to wait for image
+        CountDownLatch imageLatch = new CountDownLatch(1);
+        AtomicReference<byte[]> imageBytes = new AtomicReference<>();
+        AtomicReference<String> imageError = new AtomicReference<>();
+        
+        // Set up the ImageAvailableListener
+        imageReader.setOnImageAvailableListener(reader -> {
+            Log.d(TAG, "📸 Image available listener triggered");
+            try (Image image = reader.acquireLatestImage()) {
+                if (image == null) {
+                    Log.e(TAG, "❌ Acquired image is null");
+                    imageError.set("Acquired image is null");
+                    imageLatch.countDown();
+                    return;
                 }
-            });
-            
-            Log.d(TAG, "⏳ Waiting for capture to complete...");
-            // Wait for capture to complete (max 15 seconds)
-            if (latch.await(15000, TimeUnit.MILLISECONDS)) {
-                String photoResult = result.get();
-                Log.d(TAG, "✅ Capture completed with result: " + photoResult);
                 
-                // Check if file exists and has content
-                if (photoFile.exists()) {
-                    long fileSize = photoFile.length();
-                    Log.d(TAG, "📁 File exists, size: " + fileSize + " bytes");
-                    
-                    if (fileSize > 0) {
-                        try {
-                            byte[] bytes = readFileToBytes(photoFile);
-                            Log.d(TAG, "📸 Read " + bytes.length + " bytes from file");
-                            
-                            if (bytes.length > 0) {
-                                String base64 = Base64.encodeToString(bytes, Base64.DEFAULT);
-                                Log.d(TAG, "✅ Base64 encoded, length: " + base64.length());
-                                
-                                // Clean up the file
-                                photoFile.delete();
-                                Log.d(TAG, "📁 Temp file deleted");
-                                
-                                return "data:image/jpeg;base64," + base64;
-                            } else {
-                                Log.e(TAG, "❌ Captured photo is empty");
-                                return "ERROR: Captured photo is empty";
-                            }
-                        } catch (Exception e) {
-                            Log.e(TAG, "❌ Error reading photo file", e);
-                            return "ERROR: Failed to read photo: " + e.getMessage();
-                        }
-                    } else {
-                        Log.e(TAG, "❌ Photo file is empty");
-                        return "ERROR: Photo file is empty";
-                    }
-                } else {
-                    Log.e(TAG, "❌ Photo file does not exist");
-                    return "ERROR: Photo file not created";
-                }
-            } else {
-                Log.e(TAG, "❌ Camera timeout - took too long to capture");
-                return "ERROR: Camera timeout - took too long to capture";
+                Log.d(TAG, "📸 Image acquired, format: " + image.getFormat() + 
+                      ", size: " + image.getWidth() + "x" + image.getHeight());
+                
+                ByteBuffer buffer = image.getPlanes()[0].getBuffer();
+                byte[] bytes = new byte[buffer.remaining()];
+                buffer.get(bytes);
+                
+                Log.d(TAG, "📸 Image bytes read: " + bytes.length);
+                imageBytes.set(bytes);
+                imageLatch.countDown();
+                
+            } catch (Exception e) {
+                Log.e(TAG, "❌ Error processing image", e);
+                imageError.set(e.getMessage());
+                imageLatch.countDown();
+            }
+        }, backgroundHandler);
+        
+        // Open camera
+        Log.d(TAG, "🔓 Opening camera: " + currentCameraId);
+        CountDownLatch openLatch = new CountDownLatch(1);
+        AtomicReference<CameraDevice> deviceRef = new AtomicReference<>();
+        AtomicReference<String> openError = new AtomicReference<>();
+        
+        cameraManager.openCamera(currentCameraId, new CameraDevice.StateCallback() {
+            @Override
+            public void onOpened(CameraDevice device) {
+                Log.d(TAG, "✅ Camera opened successfully");
+                deviceRef.set(device);
+                openLatch.countDown();
             }
             
+            @Override
+            public void onDisconnected(CameraDevice device) {
+                Log.w(TAG, "⚠️ Camera disconnected");
+                device.close();
+                openError.set("Camera disconnected");
+                openLatch.countDown();
+            }
+            
+            @Override
+            public void onError(CameraDevice device, int error) {
+                Log.e(TAG, "❌ Camera error: " + error);
+                device.close();
+                openError.set("Camera error: " + error);
+                openLatch.countDown();
+            }
+        }, backgroundHandler);
+        
+        // Wait for camera to open
+        if (!openLatch.await(5000, TimeUnit.MILLISECONDS)) {
+            Log.e(TAG, "❌ Camera open timeout");
+            return "ERROR: Camera open timeout";
+        }
+        
+        if (openError.get() != null) {
+            Log.e(TAG, "❌ Camera open error: " + openError.get());
+            return "ERROR: " + openError.get();
+        }
+        
+        cameraDevice = deviceRef.get();
+        if (cameraDevice == null) {
+            Log.e(TAG, "❌ Camera device is null");
+            return "ERROR: Camera device is null";
+        }
+        
+        // Create capture session
+        Log.d(TAG, "🔧 Creating capture session");
+        CountDownLatch sessionLatch = new CountDownLatch(1);
+        AtomicReference<CameraCaptureSession> sessionRef = new AtomicReference<>();
+        AtomicReference<String> sessionError = new AtomicReference<>();
+        
+        cameraDevice.createCaptureSession(
+            java.util.Collections.singletonList(imageReader.getSurface()),
+            new CameraCaptureSession.StateCallback() {
+                @Override
+                public void onConfigured(CameraCaptureSession session) {
+                    Log.d(TAG, "✅ Capture session configured");
+                    sessionRef.set(session);
+                    sessionLatch.countDown();
+                }
+                
+                @Override
+                public void onConfigureFailed(CameraCaptureSession session) {
+                    Log.e(TAG, "❌ Capture session configure failed");
+                    sessionError.set("Session configure failed");
+                    sessionLatch.countDown();
+                }
+            }, backgroundHandler
+        );
+        
+        // Wait for session to be configured
+        if (!sessionLatch.await(5000, TimeUnit.MILLISECONDS)) {
+            Log.e(TAG, "❌ Session configure timeout");
+            return "ERROR: Session configure timeout";
+        }
+        
+        if (sessionError.get() != null) {
+            Log.e(TAG, "❌ Session error: " + sessionError.get());
+            return "ERROR: " + sessionError.get();
+        }
+        
+        captureSession = sessionRef.get();
+        if (captureSession == null) {
+            Log.e(TAG, "❌ Capture session is null");
+            return "ERROR: Capture session is null";
+        }
+        
+        // Create capture request
+        Log.d(TAG, "📸 Creating capture request");
+        CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(
+            CameraDevice.TEMPLATE_STILL_CAPTURE);
+        builder.addTarget(imageReader.getSurface());
+        builder.set(CaptureRequest.JPEG_QUALITY, (byte) 100);
+        
+        // Set auto-focus if available
+        CameraCharacteristics chars = cameraManager.getCameraCharacteristics(currentCameraId);
+        int[] afModes = chars.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES);
+        if (afModes != null && afModes.length > 0) {
+            builder.set(CaptureRequest.CONTROL_AF_MODE, 
+                CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
+            Log.d(TAG, "🔍 Auto-focus enabled");
+        }
+        
+        // Set auto-exposure
+        builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
+        
+        // Capture
+        Log.d(TAG, "📸 Capturing...");
+        CountDownLatch captureLatch = new CountDownLatch(1);
+        captureSession.capture(builder.build(), new CameraCaptureSession.CaptureCallback() {
+            @Override
+            public void onCaptureStarted(CameraCaptureSession session, 
+                    CaptureRequest request, long timestamp, long frameNumber) {
+                Log.d(TAG, "📸 Capture started at timestamp: " + timestamp);
+            }
+            
+            @Override
+            public void onCaptureCompleted(CameraCaptureSession session, 
+                    CaptureRequest request, TotalCaptureResult result) {
+                Log.d(TAG, "✅ Capture completed");
+                captureLatch.countDown();
+            }
+            
+            @Override
+            public void onCaptureFailed(CameraCaptureSession session, 
+                    CaptureRequest request, CaptureFailure failure) {
+                Log.e(TAG, "❌ Capture failed: " + failure.getReason());
+                captureLatch.countDown();
+            }
+        }, backgroundHandler);
+        
+        // Wait for capture to complete
+        if (!captureLatch.await(5000, TimeUnit.MILLISECONDS)) {
+            Log.e(TAG, "❌ Capture timeout");
+            return "ERROR: Capture timeout";
+        }
+        
+        // Wait for image to be available
+        if (!imageLatch.await(5000, TimeUnit.MILLISECONDS)) {
+            Log.e(TAG, "❌ Image timeout");
+            return "ERROR: Image timeout";
+        }
+        
+        if (imageError.get() != null) {
+            Log.e(TAG, "❌ Image error: " + imageError.get());
+            return "ERROR: " + imageError.get();
+        }
+        
+        byte[] bytes = imageBytes.get();
+        if (bytes == null || bytes.length == 0) {
+            Log.e(TAG, "❌ No image data");
+            return "ERROR: No image data";
+        }
+        
+        // Write to file
+        try (FileOutputStream fos = new FileOutputStream(photoFile)) {
+            fos.write(bytes);
+            fos.flush();
+            Log.d(TAG, "✅ Photo saved: " + photoFile.getAbsolutePath() + 
+                  " size: " + bytes.length + " bytes");
         } catch (Exception e) {
-            Log.e(TAG, "❌ Error taking photo", e);
-            return "ERROR: " + e.getMessage();
+            Log.e(TAG, "❌ Error saving photo", e);
+            return "ERROR: Failed to save: " + e.getMessage();
+        }
+        
+        // Read file and convert to base64
+        byte[] fileBytes = readFileToBytes(photoFile);
+        String base64 = Base64.encodeToString(fileBytes, Base64.DEFAULT);
+        Log.d(TAG, "✅ Base64 encoded, length: " + base64.length());
+        
+        // Clean up
+        photoFile.delete();
+        Log.d(TAG, "📁 Temp file deleted");
+        
+        return "data:image/jpeg;base64," + base64;
+        
+    } catch (Exception e) {
+        Log.e(TAG, "❌ Error taking photo", e);
+        return "ERROR: " + e.getMessage();
+    } finally {
+        // Clean up resources
+        Log.d(TAG, "🧹 Cleaning up camera resources");
+        try {
+            if (captureSession != null) {
+                captureSession.close();
+                Log.d(TAG, "✅ Capture session closed");
+            }
+            if (imageReader != null) {
+                imageReader.close();
+                Log.d(TAG, "✅ ImageReader closed");
+            }
+            if (cameraDevice != null) {
+                cameraDevice.close();
+                Log.d(TAG, "✅ Camera device closed");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "❌ Error closing camera resources", e);
         }
     }
+}
     public String testCapture() {
     Log.d(TAG, "📸 testCapture() called");
     if (!checkPermission()) {
@@ -533,7 +717,35 @@ public class CameraModule {
             return "ERROR: " + e.getMessage();
         }
     }
-    
+    public String checkCameraStatus() {
+    Log.d(TAG, "🔍 Checking camera status");
+    try {
+        String[] cameraIds = cameraManager.getCameraIdList();
+        StringBuilder status = new StringBuilder();
+        status.append("Cameras: ").append(Arrays.toString(cameraIds)).append("\n");
+        
+        for (String id : cameraIds) {
+            CameraCharacteristics chars = cameraManager.getCameraCharacteristics(id);
+            Integer facing = chars.get(CameraCharacteristics.LENS_FACING);
+            String facingStr = facing == CameraCharacteristics.LENS_FACING_BACK ? "BACK" : 
+                              (facing == CameraCharacteristics.LENS_FACING_FRONT ? "FRONT" : "OTHER");
+            
+            // Check if camera is available
+            Integer availability = chars.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL);
+            status.append("Camera ").append(id).append(" (").append(facingStr).append(")");
+            
+            if (id.equals(currentCameraId)) {
+                status.append(" [CURRENT]");
+            }
+            status.append("\n");
+        }
+        
+        return "SUCCESS: " + status.toString();
+    } catch (Exception e) {
+        Log.e(TAG, "❌ Camera status check failed", e);
+        return "ERROR: " + e.getMessage();
+    }
+}
     public String simpleTest() {
         Log.d(TAG, "🔧 Simple camera test");
         if (!checkPermission()) {
