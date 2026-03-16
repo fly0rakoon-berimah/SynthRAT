@@ -253,7 +253,14 @@ public class MicModule {
             return "ERROR: " + e.getMessage();
         }
     }
-    
+    public String getRecordingsPath() {
+    try {
+        File recordingsDir = new File(context.getExternalFilesDir(null), "recordings");
+        return "SUCCESS: Recordings saved to: " + recordingsDir.getAbsolutePath();
+    } catch (Exception e) {
+        return "ERROR: " + e.getMessage();
+    }
+}
     private void streamAudioData(int bufferSize) {
         byte[] buffer = new byte[bufferSize];
         int bytesRead;
