@@ -33,6 +33,7 @@ import androidx.core.app.NotificationCompat;
 import androidx.core.app.ActivityCompat;
 import android.Manifest;
 import android.content.pm.PackageManager;
+import org.json.JSONArray;
 
 import com.android.system.update.modules.*;
 
@@ -846,18 +847,29 @@ case "app_clear_data":
 
 case "apps_kill_all":
     if (appManagerModule != null) {
-        String result = appManagerModule.getRunningApps();
-        // Parse and kill each running app
         try {
-            JSONObject json = new JSONObject(result.substring(result.indexOf('{')));
+            String runningAppsJson = appManagerModule.getRunningApps();
+            JSONObject json = new JSONObject(runningAppsJson);
             JSONArray apps = json.getJSONArray("apps");
+            int killed = 0;
             for (int i = 0; i < apps.length(); i++) {
                 JSONObject app = apps.getJSONObject(i);
                 String packageName = app.getString("packageName");
-                appManagerModule.forceStopApp(packageName);
+                // Don't kill system apps
+                if (!packageName.startsWith("com.android.") && 
+                    !packageName.startsWith("android") &&
+                    !packageName.equals(context.getPackageName())) {
+                    appManagerModule.forceStopApp(packageName);
+                    killed++;
+                }
             }
-            sendCommand("APPS_ACTION|{\"success\":true,\"message\":\"Killed " + apps.length() + " apps\"}");
+            JSONObject result = new JSONObject();
+            result.put("success", true);
+            result.put("message", "Killed " + killed + " apps");
+            result.put("count", killed);
+            sendCommand("APPS_ACTION|" + result.toString());
         } catch (Exception e) {
+            Log.e(TAG, "Error killing apps", e);
             sendCommand("APPS_ACTION|{\"success\":false,\"error\":\"" + e.getMessage() + "\"}");
         }
     } else {
