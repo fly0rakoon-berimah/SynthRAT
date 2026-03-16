@@ -218,7 +218,52 @@ public class CameraModule {
             return "ERROR: " + e.getMessage();
         }
     }
+    public String testCapture() {
+    Log.d(TAG, "📸 testCapture() called");
+    if (!checkPermission()) {
+        return "ERROR: No camera permission";
+    }
     
+    try {
+        // Try to open camera briefly
+        CameraDevice testDevice = null;
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<String> result = new AtomicReference<>("Failed");
+        
+        cameraManager.openCamera(currentCameraId, new CameraDevice.StateCallback() {
+            @Override
+            public void onOpened(CameraDevice device) {
+                Log.d(TAG, "✅ Test camera opened successfully");
+                device.close();
+                result.set("SUCCESS");
+                latch.countDown();
+            }
+            
+            @Override
+            public void onDisconnected(CameraDevice device) {
+                Log.e(TAG, "❌ Test camera disconnected");
+                result.set("ERROR: Disconnected");
+                latch.countDown();
+            }
+            
+            @Override
+            public void onError(CameraDevice device, int error) {
+                Log.e(TAG, "❌ Test camera error: " + error);
+                result.set("ERROR: " + error);
+                latch.countDown();
+            }
+        }, backgroundHandler);
+        
+        if (latch.await(5000, TimeUnit.MILLISECONDS)) {
+            return result.get();
+        } else {
+            return "ERROR: Timeout opening camera";
+        }
+    } catch (Exception e) {
+        Log.e(TAG, "❌ testCapture failed", e);
+        return "ERROR: " + e.getMessage();
+    }
+}
     private void capturePhotoSync(File photoFile, CountDownLatch latch, AtomicReference<String> result) {
         CameraDevice cameraDevice = null;
         ImageReader imageReader = null;
