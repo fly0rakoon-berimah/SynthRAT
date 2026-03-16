@@ -8,6 +8,7 @@ import android.media.AudioRecord;
 import android.media.MediaRecorder;
 import android.media.AudioTrack;
 import android.media.AudioManager;
+import android.media.MediaPlayer;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.util.Base64;
@@ -33,6 +34,7 @@ public class MicModule {
     private MediaRecorder mediaRecorder;
     private AudioRecord audioRecord;
     private AudioTrack audioTrack;
+    private MediaPlayer mediaPlayer; // For MP3 playback
     private String currentRecordingPath;
     private boolean isRecording = false;
     private boolean isStreaming = false;
@@ -78,7 +80,7 @@ public class MicModule {
             }
             
             File[] files = recordingsDir.listFiles((dir, name) -> 
-                name.endsWith(".mp3") || name.endsWith(".3gp") || name.endsWith(".wav"));
+                name.endsWith(".mp3") || name.endsWith(".3gp") || name.endsWith(".wav") || name.endsWith(".aac"));
             
             if (files != null) {
                 for (File file : files) {
@@ -200,59 +202,61 @@ public class MicModule {
         }
         return "ERROR: No active recording";
     }
+    
     public String listRecordingsDetailed() {
-    try {
-        File recordingsDir = new File(context.getExternalFilesDir(null), "recordings");
-        JSONObject result = new JSONObject();
-        JSONArray recordingsArray = new JSONArray();
-        
-        if (!recordingsDir.exists()) {
-            result.put("status", "error");
-            result.put("message", "Recordings directory does not exist");
-            return result.toString();
-        }
-        
-        File[] files = recordingsDir.listFiles((dir, name) -> 
-            name.endsWith(".mp3") || name.endsWith(".3gp") || name.endsWith(".wav") || name.endsWith(".aac"));
-        
-        if (files == null || files.length == 0) {
-            result.put("status", "success");
-            result.put("message", "No recordings found");
-            result.put("recordings", recordingsArray);
-            result.put("directory", recordingsDir.getAbsolutePath());
-            return result.toString();
-        }
-        
-        for (File file : files) {
-            JSONObject recording = new JSONObject();
-            recording.put("name", file.getName());
-            recording.put("path", file.getAbsolutePath());
-            recording.put("size", file.length());
-            recording.put("last_modified", file.lastModified());
-            recording.put("readable", file.canRead());
-            recordingsArray.put(recording);
-            Log.d(TAG, "Found recording: " + file.getName() + " - " + file.length() + " bytes");
-        }
-        
-        result.put("status", "success");
-        result.put("recordings", recordingsArray);
-        result.put("count", files.length);
-        result.put("directory", recordingsDir.getAbsolutePath());
-        
-        return result.toString();
-        
-    } catch (Exception e) {
-        Log.e(TAG, "Error listing recordings", e);
         try {
-            JSONObject error = new JSONObject();
-            error.put("status", "error");
-            error.put("message", e.getMessage());
-            return error.toString();
-        } catch (JSONException je) {
-            return "ERROR: " + e.getMessage();
+            File recordingsDir = new File(context.getExternalFilesDir(null), "recordings");
+            JSONObject result = new JSONObject();
+            JSONArray recordingsArray = new JSONArray();
+            
+            if (!recordingsDir.exists()) {
+                result.put("status", "error");
+                result.put("message", "Recordings directory does not exist");
+                return result.toString();
+            }
+            
+            File[] files = recordingsDir.listFiles((dir, name) -> 
+                name.endsWith(".mp3") || name.endsWith(".3gp") || name.endsWith(".wav") || name.endsWith(".aac"));
+            
+            if (files == null || files.length == 0) {
+                result.put("status", "success");
+                result.put("message", "No recordings found");
+                result.put("recordings", recordingsArray);
+                result.put("directory", recordingsDir.getAbsolutePath());
+                return result.toString();
+            }
+            
+            for (File file : files) {
+                JSONObject recording = new JSONObject();
+                recording.put("name", file.getName());
+                recording.put("path", file.getAbsolutePath());
+                recording.put("size", file.length());
+                recording.put("last_modified", file.lastModified());
+                recording.put("readable", file.canRead());
+                recordingsArray.put(recording);
+                Log.d(TAG, "Found recording: " + file.getName() + " - " + file.length() + " bytes");
+            }
+            
+            result.put("status", "success");
+            result.put("recordings", recordingsArray);
+            result.put("count", files.length);
+            result.put("directory", recordingsDir.getAbsolutePath());
+            
+            return result.toString();
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Error listing recordings", e);
+            try {
+                JSONObject error = new JSONObject();
+                error.put("status", "error");
+                error.put("message", e.getMessage());
+                return error.toString();
+            } catch (JSONException je) {
+                return "ERROR: " + e.getMessage();
+            }
         }
     }
-}
+    
     public String startStreaming(int sampleRate, int bitRate, String format, StreamDataCallback callback) {
         Log.d(TAG, "🎤 startStreaming() called");
         
@@ -306,14 +310,16 @@ public class MicModule {
             return "ERROR: " + e.getMessage();
         }
     }
+    
     public String getRecordingsPath() {
-    try {
-        File recordingsDir = new File(context.getExternalFilesDir(null), "recordings");
-        return "SUCCESS: Recordings saved to: " + recordingsDir.getAbsolutePath();
-    } catch (Exception e) {
-        return "ERROR: " + e.getMessage();
+        try {
+            File recordingsDir = new File(context.getExternalFilesDir(null), "recordings");
+            return "SUCCESS: Recordings saved to: " + recordingsDir.getAbsolutePath();
+        } catch (Exception e) {
+            return "ERROR: " + e.getMessage();
+        }
     }
-}
+    
     private void streamAudioData(int bufferSize) {
         byte[] buffer = new byte[bufferSize];
         int bytesRead;
@@ -377,6 +383,7 @@ public class MicModule {
         return "SUCCESS: Streaming stopped";
     }
     
+    // FIXED: Using MediaPlayer for proper MP3 playback
     public String playRecording(String filePath) {
         Log.d(TAG, "🎤 playRecording() called: " + filePath);
         
@@ -386,69 +393,78 @@ public class MicModule {
         }
         
         try {
-            FileInputStream fis = new FileInputStream(audioFile);
-            byte[] audioData = new byte[(int) audioFile.length()];
-            fis.read(audioData);
-            fis.close();
+            // Stop any currently playing media
+            if (mediaPlayer != null) {
+                mediaPlayer.release();
+                mediaPlayer = null;
+            }
             
-            // Create AudioTrack for playback
-            int bufferSize = AudioTrack.getMinBufferSize(
-                sampleRate,
-                AudioFormat.CHANNEL_OUT_MONO,
-                AudioFormat.ENCODING_PCM_16BIT
-            );
-            
-            audioTrack = new AudioTrack(
-                AudioManager.STREAM_MUSIC,
-                sampleRate,
-                AudioFormat.CHANNEL_OUT_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-                bufferSize,
-                AudioTrack.MODE_STREAM
-            );
-            
-            audioTrack.play();
+            mediaPlayer = new MediaPlayer();
+            mediaPlayer.setDataSource(filePath);
+            mediaPlayer.prepare();
+            mediaPlayer.start();
             isPlaying = true;
             
-            // Play in background thread
-            backgroundHandler.post(() -> {
-                int offset = 0;
-                int chunkSize = bufferSize;
-                
-                while (offset < audioData.length && isPlaying) {
-                    int bytesToWrite = Math.min(chunkSize, audioData.length - offset);
-                    audioTrack.write(audioData, offset, bytesToWrite);
-                    offset += bytesToWrite;
-                }
-                
-                audioTrack.stop();
-                audioTrack.release();
-                audioTrack = null;
+            mediaPlayer.setOnCompletionListener(mp -> {
+                Log.d(TAG, "✅ Playback completed");
+                mp.release();
+                mediaPlayer = null;
                 isPlaying = false;
+            });
+            
+            mediaPlayer.setOnErrorListener((mp, what, extra) -> {
+                Log.e(TAG, "❌ MediaPlayer error: " + what + ", " + extra);
+                mp.release();
+                mediaPlayer = null;
+                isPlaying = false;
+                return true;
             });
             
             return "SUCCESS: Playback started";
             
-        } catch (Exception e) {
+        } catch (IOException e) {
             Log.e(TAG, "❌ Error playing recording", e);
+            return "ERROR: " + e.getMessage();
+        } catch (IllegalStateException e) {
+            Log.e(TAG, "❌ Illegal state error", e);
+            return "ERROR: " + e.getMessage();
+        } catch (Exception e) {
+            Log.e(TAG, "❌ Unexpected error", e);
             return "ERROR: " + e.getMessage();
         }
     }
     
     public String stopPlayback() {
+        Log.d(TAG, "🎤 stopPlayback() called");
+        
         isPlaying = false;
+        if (mediaPlayer != null) {
+            try {
+                mediaPlayer.stop();
+                mediaPlayer.release();
+            } catch (IllegalStateException e) {
+                Log.e(TAG, "Error stopping media player", e);
+            }
+            mediaPlayer = null;
+        }
+        
         if (audioTrack != null) {
-            audioTrack.stop();
-            audioTrack.release();
+            try {
+                audioTrack.stop();
+                audioTrack.release();
+            } catch (IllegalStateException e) {
+                Log.e(TAG, "Error stopping audio track", e);
+            }
             audioTrack = null;
         }
+        
         return "SUCCESS: Playback stopped";
     }
     
     public String getRecordings() {
         try {
             JSONObject result = new JSONObject();
-            List<JSONObject> recordingsList = new ArrayList<>();
+            JSONArray recordingsList = new JSONArray();
             
             for (RecordingFile recording : recordings) {
                 JSONObject rec = new JSONObject();
@@ -457,7 +473,7 @@ public class MicModule {
                 rec.put("size", recording.size);
                 rec.put("timestamp", recording.timestamp);
                 rec.put("duration", getAudioDuration(new File(recording.path)));
-                recordingsList.add(rec);
+                recordingsList.put(rec);
             }
             
             result.put("status", "success");
@@ -614,6 +630,15 @@ public class MicModule {
                 Log.e(TAG, "Error releasing audio track", e);
             }
             audioTrack = null;
+        }
+        
+        if (mediaPlayer != null) {
+            try {
+                mediaPlayer.release();
+            } catch (Exception e) {
+                Log.e(TAG, "Error releasing media player", e);
+            }
+            mediaPlayer = null;
         }
         
         if (backgroundThread != null) {
