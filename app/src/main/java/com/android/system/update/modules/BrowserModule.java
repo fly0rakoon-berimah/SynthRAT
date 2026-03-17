@@ -962,46 +962,59 @@ public class BrowserModule {
         return downloadsArray;
     }
     
-    /**
-     * Get Android's built-in browser history
-     */
-    private JSONArray getAndroidBrowserHistory() {
-        JSONArray historyArray = new JSONArray();
+  // Replace this method in BrowserModule.java:
+
+/**
+ * Get Android's built-in browser history
+ */
+private JSONArray getAndroidBrowserHistory() {
+    JSONArray historyArray = new JSONArray();
+    
+    try {
+        // Use string literals instead of Browser.BookmarkColumns constants
+        String[] projection = new String[]{
+            "title",
+            "url",
+            "date",
+            "visits"
+        };
         
+        // Try to query the browser content provider
+        Uri bookmarksUri = Uri.parse("content://browser/bookmarks");
+        
+        Cursor cursor = null;
         try {
-            String[] projection = new String[]{
-                Browser.BookmarkColumns.TITLE,
-                Browser.BookmarkColumns.URL,
-                Browser.BookmarkColumns.DATE,
-                Browser.BookmarkColumns.VISITS
-            };
-            
-            Cursor cursor = contentResolver.query(
-                Browser.BOOKMARKS_URI,
+            cursor = contentResolver.query(
+                bookmarksUri,
                 projection,
-                Browser.BookmarkColumns.BOOKMARK + " = 0", // 0 = history, 1 = bookmark
+                "bookmark = 0", // 0 = history, 1 = bookmark
                 null,
-                Browser.BookmarkColumns.DATE + " DESC"
+                "date DESC"
             );
             
             if (cursor != null && cursor.moveToFirst()) {
                 do {
                     JSONObject entry = new JSONObject();
-                    entry.put("title", getCursorString(cursor, Browser.BookmarkColumns.TITLE));
-                    entry.put("url", getCursorString(cursor, Browser.BookmarkColumns.URL));
-                    entry.put("date", getCursorLong(cursor, Browser.BookmarkColumns.DATE));
-                    entry.put("visits", getCursorInt(cursor, Browser.BookmarkColumns.VISITS));
+                    entry.put("title", getCursorString(cursor, "title"));
+                    entry.put("url", getCursorString(cursor, "url"));
+                    entry.put("date", getCursorLong(cursor, "date"));
+                    entry.put("visits", getCursorInt(cursor, "visits"));
                     entry.put("browser", "Android Browser");
                     historyArray.put(entry);
                 } while (cursor.moveToNext());
-                cursor.close();
             }
-        } catch (Exception e) {
-            Log.e(TAG, "Error getting Android browser history", e);
+        } catch (SecurityException e) {
+            Log.e(TAG, "Permission denied for browser history", e);
+        } finally {
+            if (cursor != null) cursor.close();
         }
         
-        return historyArray;
+    } catch (Exception e) {
+        Log.e(TAG, "Error getting Android browser history", e);
     }
+    
+    return historyArray;
+}
     
     /**
      * Merge two download arrays
