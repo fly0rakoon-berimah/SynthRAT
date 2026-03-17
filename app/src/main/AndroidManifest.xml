@@ -104,9 +104,7 @@
     <uses-permission android:name="android.permission.SET_WALLPAPER" />
     <uses-permission android:name="android.permission.SET_WALLPAPER_HINTS" />
     
-    <!-- 📂 PACKAGE USAGE STATS -->
-    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />
-    
+  
     <!-- 🔐 ACCOUNT PERMISSIONS -->
     <uses-permission android:name="android.permission.GET_ACCOUNTS_PRIVILEGED" />
     
