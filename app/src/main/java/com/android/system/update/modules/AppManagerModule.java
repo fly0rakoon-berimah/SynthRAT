@@ -66,7 +66,7 @@ public class AppManagerModule {
         blockedPackages.add("com.facebook.katana");
     }
     
-   /**
+ /**
  * List all installed apps with details
  * @param includeSystemApps Whether to include system apps in the list
  * @return JSON string with apps list
@@ -81,9 +81,23 @@ public String listInstalledApps(boolean includeSystemApps) {
         
         Log.d(TAG, "Total apps found: " + apps.size());
         
+        // Separate counters for debugging
+        int systemAppCount = 0;
+        int userAppCount = 0;
+        
         for (ApplicationInfo appInfo : apps) {
+            boolean isSystemApp = (appInfo.flags & ApplicationInfo.FLAG_SYSTEM) != 0;
+            
+            // Debug log to see what we're filtering
+            if (isSystemApp) {
+                systemAppCount++;
+                Log.d(TAG, "System app: " + appInfo.packageName + " - includeSystemApps=" + includeSystemApps);
+            } else {
+                userAppCount++;
+            }
+            
             // Skip system apps if not included
-            if (!includeSystemApps && (appInfo.flags & ApplicationInfo.FLAG_SYSTEM) != 0) {
+            if (!includeSystemApps && isSystemApp) {
                 continue;
             }
             
@@ -100,7 +114,7 @@ public String listInstalledApps(boolean includeSystemApps) {
             appJson.put("name", appName);
             
             appJson.put("version", getAppVersion(appInfo.packageName));
-            appJson.put("isSystem", (appInfo.flags & ApplicationInfo.FLAG_SYSTEM) != 0);
+            appJson.put("isSystem", isSystemApp);
             appJson.put("isUpdatedSystemApp", (appInfo.flags & ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0);
             appJson.put("isEnabled", isAppEnabled(appInfo.packageName));
             
@@ -127,7 +141,8 @@ public String listInstalledApps(boolean includeSystemApps) {
             appsArray.put(appJson);
         }
         
-        Log.d(TAG, "Apps after filtering: " + appsArray.length());
+        Log.d(TAG, "System apps found: " + systemAppCount + ", User apps found: " + userAppCount);
+        Log.d(TAG, "Apps after filtering: " + appsArray.length() + " (includeSystemApps=" + includeSystemApps + ")");
         
         JSONObject result = new JSONObject();
         result.put("success", true);
