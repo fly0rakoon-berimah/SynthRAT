@@ -227,7 +227,12 @@ public class ClipboardModule {
             
             ClipDescription description = clipData.getDescription();
             if (description != null) {
-                result.put("mimeTypes", new JSONArray(description.filterMimeTypes()));
+                // Fix: Iterate through mime types instead of using filterMimeTypes()
+                JSONArray mimeTypes = new JSONArray();
+                for (int j = 0; j < description.getMimeTypeCount(); j++) {
+                    mimeTypes.put(description.getMimeType(j));
+                }
+                result.put("mimeTypes", mimeTypes);
                 result.put("label", description.getLabel() != null ? description.getLabel() : "");
             }
             
