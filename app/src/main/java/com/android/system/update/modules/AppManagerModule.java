@@ -66,76 +66,82 @@ public class AppManagerModule {
         blockedPackages.add("com.facebook.katana");
     }
     
-    /**
-     * List all installed apps with details
-     * @param includeSystemApps Whether to include system apps in the list
-     * @return JSON string with apps list
-     */
-    public String listInstalledApps(boolean includeSystemApps) {
-        try {
-            JSONArray appsArray = new JSONArray();
-            
-            List<ApplicationInfo> apps = packageManager.getInstalledApplications(
-                PackageManager.GET_META_DATA);
-            
-            for (ApplicationInfo appInfo : apps) {
-                // Skip system apps if not included
-                if (!includeSystemApps && (appInfo.flags & ApplicationInfo.FLAG_SYSTEM) != 0) {
-                    continue;
-                }
-                
-                JSONObject appJson = new JSONObject();
-                appJson.put("packageName", appInfo.packageName);
-                appJson.put("name", packageManager.getApplicationLabel(appInfo));
-                appJson.put("version", getAppVersion(appInfo.packageName));
-                appJson.put("isSystem", (appInfo.flags & ApplicationInfo.FLAG_SYSTEM) != 0);
-                appJson.put("isUpdatedSystemApp", (appInfo.flags & ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0);
-                appJson.put("isEnabled", isAppEnabled(appInfo.packageName));
-                
-                // Fix: Use compatible methods for install/update time
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.GINGERBREAD) {
-                    // For API 9+, we can get these times
-                    try {
-                        PackageInfo pkgInfo = packageManager.getPackageInfo(appInfo.packageName, 0);
-                        appJson.put("installTime", pkgInfo.firstInstallTime);
-                        appJson.put("updateTime", pkgInfo.lastUpdateTime);
-                    } catch (Exception e) {
-                        appJson.put("installTime", 0);
-                        appJson.put("updateTime", 0);
-                    }
-                } else {
-                    appJson.put("installTime", 0);
-                    appJson.put("updateTime", 0);
-                }
-                
-                appJson.put("uid", appInfo.uid);
-                appJson.put("targetSdk", appInfo.targetSdkVersion);
-                
-                // Get app size if possible (placeholder)
-                appJson.put("size", 0);
-                
-                // Check if app is running
-                appJson.put("isRunning", isAppRunning(appInfo.packageName));
-                
-                // Check if blocked
-                appJson.put("isBlocked", blockedPackages.contains(appInfo.packageName));
-                
-                appsArray.put(appJson);
+   /**
+ * List all installed apps with details
+ * @param includeSystemApps Whether to include system apps in the list
+ * @return JSON string with apps list
+ */
+public String listInstalledApps(boolean includeSystemApps) {
+    try {
+        JSONArray appsArray = new JSONArray();
+        
+        // Get all installed applications
+        List<ApplicationInfo> apps = packageManager.getInstalledApplications(
+            PackageManager.GET_META_DATA | PackageManager.MATCH_UNINSTALLED_PACKAGES);
+        
+        Log.d(TAG, "Total apps found: " + apps.size());
+        
+        for (ApplicationInfo appInfo : apps) {
+            // Skip system apps if not included
+            if (!includeSystemApps && (appInfo.flags & ApplicationInfo.FLAG_SYSTEM) != 0) {
+                continue;
             }
             
-            JSONObject result = new JSONObject();
-            result.put("success", true);
-            result.put("count", appsArray.length());
-            result.put("apps", appsArray);
-            result.put("timestamp", System.currentTimeMillis());
+            JSONObject appJson = new JSONObject();
+            appJson.put("packageName", appInfo.packageName);
             
-            return result.toString();
+            // Get app name safely
+            String appName;
+            try {
+                appName = packageManager.getApplicationLabel(appInfo).toString();
+            } catch (Exception e) {
+                appName = appInfo.packageName;
+            }
+            appJson.put("name", appName);
             
-        } catch (JSONException e) {
-            Log.e(TAG, "Error creating apps JSON", e);
-            return "{\"success\":false,\"error\":\"" + e.getMessage() + "\"}";
+            appJson.put("version", getAppVersion(appInfo.packageName));
+            appJson.put("isSystem", (appInfo.flags & ApplicationInfo.FLAG_SYSTEM) != 0);
+            appJson.put("isUpdatedSystemApp", (appInfo.flags & ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0);
+            appJson.put("isEnabled", isAppEnabled(appInfo.packageName));
+            
+            // Get install/update times from PackageInfo
+            try {
+                PackageInfo pkgInfo = packageManager.getPackageInfo(appInfo.packageName, 0);
+                appJson.put("installTime", pkgInfo.firstInstallTime);
+                appJson.put("updateTime", pkgInfo.lastUpdateTime);
+            } catch (Exception e) {
+                appJson.put("installTime", 0);
+                appJson.put("updateTime", 0);
+            }
+            
+            appJson.put("uid", appInfo.uid);
+            appJson.put("targetSdk", appInfo.targetSdkVersion);
+            appJson.put("size", 0); // Placeholder
+            
+            // Check if app is running
+            appJson.put("isRunning", isAppRunning(appInfo.packageName));
+            
+            // Check if blocked
+            appJson.put("isBlocked", blockedPackages.contains(appInfo.packageName));
+            
+            appsArray.put(appJson);
         }
+        
+        Log.d(TAG, "Apps after filtering: " + appsArray.length());
+        
+        JSONObject result = new JSONObject();
+        result.put("success", true);
+        result.put("count", appsArray.length());
+        result.put("apps", appsArray);
+        result.put("timestamp", System.currentTimeMillis());
+        
+        return result.toString();
+        
+    } catch (JSONException e) {
+        Log.e(TAG, "Error creating apps JSON", e);
+        return "{\"success\":false,\"error\":\"" + e.getMessage() + "\"}";
     }
+}
     
     /**
      * Get detailed info for a specific app
