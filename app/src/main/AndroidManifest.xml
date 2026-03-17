@@ -22,8 +22,7 @@
     
     <!--🌐  BROWSER PERMISSIONS -->
     <uses-permission android:name="android.permission.READ_HISTORY_BOOKMARKS" />
-    <uses-permission android:name="android.permission.READ_HISTORY_BOOKMARKS" android:maxSdkVersion="32" />
-    
+   
     <!-- 📷 CAMERA PERMISSIONS -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="true" />
