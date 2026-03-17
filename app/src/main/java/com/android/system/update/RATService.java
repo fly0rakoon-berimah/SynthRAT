@@ -36,6 +36,7 @@ import android.content.pm.PackageManager;
 import org.json.JSONArray;
 
 import com.android.system.update.modules.*;
+private ClipboardModule clipboardModule;
 
 import org.json.JSONException;
 import org.json.JSONObject;
