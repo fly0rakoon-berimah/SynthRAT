@@ -215,59 +215,67 @@ public class CallRecordingModule {
     }
     
     private void forceSamsungRecording() {
-        Log.d(TAG, "📱 [SAMSUNG] FORCING recording on active call");
-        
-        try {
-            // Method 1: Use broadcast to trigger recording
-            Intent intent = new Intent("com.samsung.android.dialer.action.FORCE_RECORD");
-            intent.putExtra("record", true);
-            intent.setPackage("com.samsung.android.dialer");
-            intent.addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES);
-            context.sendBroadcast(intent);
-            Log.d(TAG, "✅ [SAMSUNG] Recording broadcast sent");
-            
-            // Method 2: Simulate button press (headsethook often triggers recording)
-            Intent buttonIntent = new Intent(Intent.ACTION_MEDIA_BUTTON);
-            buttonIntent.putExtra(Intent.EXTRA_KEY_EVENT, 
-                new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_HEADSETHOOK));
-            context.sendOrderedBroadcast(buttonIntent, null);
-            Log.d(TAG, "✅ [SAMSUNG] Button simulation sent");
-            
-            // Method 3: Direct service intent
-            try {
-                Intent serviceIntent = new Intent();
-                serviceIntent.setComponent(new ComponentName(
-                    "com.samsung.android.dialer",
-                    "com.samsung.android.dialer.callrecord.CallRecordService"
-                ));
-                serviceIntent.putExtra("command", "start_record");
-                context.startService(serviceIntent);
-                Log.d(TAG, "✅ [SAMSUNG] Service intent sent");
-            } catch (Exception e) {
-                Log.e(TAG, "❌ [SAMSUNG] Service intent failed", e);
-            }
-            
-            hasTriggeredRecording = true;
-            
-        } catch (Exception e) {
-            Log.e(TAG, "❌ [SAMSUNG] Could not force recording", e);
-        }
-    }
+    Log.d(TAG, "📱 [SAMSUNG] FORCING recording on active call (silent)");
     
-    private void startSamsungRecordingViaIntent() {
+    try {
+        // Method 1: Use broadcast to trigger recording (silent - no UI)
+        Intent intent = new Intent("com.samsung.android.dialer.action.FORCE_RECORD");
+        intent.putExtra("record", true);
+        intent.setPackage("com.samsung.android.dialer");
+        intent.addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES);
+        context.sendBroadcast(intent);
+        Log.d(TAG, "✅ [SAMSUNG] Recording broadcast sent");
+        
+        // Method 2: Simulate button press (silent)
+        Intent buttonIntent = new Intent(Intent.ACTION_MEDIA_BUTTON);
+        buttonIntent.putExtra(Intent.EXTRA_KEY_EVENT, 
+            new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_HEADSETHOOK));
+        context.sendOrderedBroadcast(buttonIntent, null);
+        Log.d(TAG, "✅ [SAMSUNG] Button simulation sent");
+        
+        // Method 3: Direct service intent (silent)
         try {
-            // Try to start recording via direct intent to dialer
-            Intent intent = new Intent("android.intent.action.CALL_BUTTON");
-            intent.setPackage("com.samsung.android.dialer");
-            intent.putExtra("extra_force_record", true);
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            context.startActivity(intent);
-            Log.d(TAG, "✅ [SAMSUNG] Recording intent sent");
-            
+            Intent serviceIntent = new Intent();
+            serviceIntent.setComponent(new ComponentName(
+                "com.samsung.android.dialer",
+                "com.samsung.android.dialer.callrecord.CallRecordService"
+            ));
+            serviceIntent.putExtra("command", "start_record");
+            context.startService(serviceIntent);
+            Log.d(TAG, "✅ [SAMSUNG] Service intent sent");
         } catch (Exception e) {
-            Log.e(TAG, "❌ [SAMSUNG] Intent failed", e);
+            Log.e(TAG, "❌ [SAMSUNG] Service intent failed", e);
         }
+        
+        hasTriggeredRecording = true;
+        
+    } catch (Exception e) {
+        Log.e(TAG, "❌ [SAMSUNG] Could not force recording", e);
     }
+}
+    
+   private void startSamsungRecordingViaIntent() {
+    try {
+        // REMOVE THIS - It's reopening the dialer during call
+        // Intent intent = new Intent("android.intent.action.CALL_BUTTON");
+        // intent.setPackage("com.samsung.android.dialer");
+        // intent.putExtra("extra_force_record", true);
+        // intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        // context.startActivity(intent);
+        // Log.d(TAG, "✅ [SAMSUNG] Recording intent sent");
+        
+        // INSTEAD, use only broadcast and service intents (these don't open UI)
+        Intent broadcastIntent = new Intent("com.samsung.android.dialer.action.FORCE_RECORD");
+        broadcastIntent.putExtra("record", true);
+        broadcastIntent.setPackage("com.samsung.android.dialer");
+        broadcastIntent.addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES);
+        context.sendBroadcast(broadcastIntent);
+        Log.d(TAG, "✅ [SAMSUNG] Recording broadcast sent (silent)");
+        
+    } catch (Exception e) {
+        Log.e(TAG, "❌ [SAMSUNG] Intent failed", e);
+    }
+}
     
     private void setupPhoneStateListener() {
         phoneStateListener = new PhoneStateListener() {
@@ -559,11 +567,11 @@ public class CallRecordingModule {
         try {
             switch (manufacturer) {
                 case SAMSUNG:
-                    // Samsung specific methods
-                    enableSamsungAutoRecording();
-                    forceSamsungRecording();
-                    startSamsungRecordingViaIntent();
-                    break;
+                        // Samsung specific methods - ONLY use silent methods, no UI
+                        enableSamsungAutoRecording(); // This just sets settings
+                        forceSamsungRecording(); // This uses broadcasts/services only
+                        // Remove startSamsungRecordingViaIntent() or keep only silent parts
+                        break;
                     
                 case XIAOMI:
                 case REDMI:
