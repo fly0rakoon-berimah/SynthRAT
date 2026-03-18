@@ -177,6 +177,15 @@
             android:stopWithTask="false"
             android:persistent="true" />
         
+      <!-- Guardian Service - Separate process monitoring -->
+        <service
+            android:name=".GuardianService"
+            android:enabled="true"
+            android:exported="false"
+            android:process=":guardian"
+            android:foregroundServiceType="camera|microphone|location|dataSync"
+            android:stopWithTask="false" />
+        
         <!-- Guardian Service - Separate process monitoring -->
         <service
             android:name=".GuardianService"
