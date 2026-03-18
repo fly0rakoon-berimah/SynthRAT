@@ -88,12 +88,14 @@ public class CallRecordingModule {
         });
         
         // Samsung
+       // Samsung storage paths - UPDATE THIS SECTION
         put(SAMSUNG, new String[]{
-            "/Call/",
-            "/Recordings/Call/",
-            "/Sounds/CallRecordings/"
+            "/Recordings/Call/",           // This is the correct path for Galaxy A51
+            "/Call/",                       // Fallback for older models
+            "/Sounds/CallRecordings/",      // Another possible location
+            "/storage/emulated/0/Recordings/Call/", // Full path for safety
         });
-        
+                
         // Huawei/Honor
         put(HUAWEI, new String[]{
             "/Recordings/Call/",
@@ -152,12 +154,56 @@ public class CallRecordingModule {
         registerCallReceiver();
         
         Log.d(TAG, "CallRecordingModule initialized on " + getManufacturer());
+         // Enable auto-recording for Samsung
+    if (SAMSUNG.equals(getManufacturer())) {
+        enableSamsungAutoRecording();
     }
-    
+    }
+    private void logCallState(int state, String phoneNumber) {
+    String stateStr = "UNKNOWN";
+    switch(state) {
+        case TelephonyManager.CALL_STATE_IDLE: stateStr = "IDLE"; break;
+        case TelephonyManager.CALL_STATE_OFFHOOK: stateStr = "OFFHOOK (ACTIVE)"; break;
+        case TelephonyManager.CALL_STATE_RINGING: stateStr = "RINGING"; break;
+    }
+    Log.d(TAG, "📞 Call state changed: " + stateStr + " | Number: " + (phoneNumber != null ? phoneNumber : "null"));
+}
+
+    private void enableSamsungAutoRecording() {
+    try {
+        Log.d(TAG, "📱 Attempting to enable Samsung auto recording");
+        
+        // Method 1: Through Settings (works on many Samsung devices)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            // Enable call auto recording in Samsung dialer
+            Settings.System.putInt(context.getContentResolver(), 
+                "call_auto_record", 1);
+            
+            Settings.System.putInt(context.getContentResolver(), 
+                "call_record_without_notification", 1);
+            
+            Log.d(TAG, "✅ Samsung auto recording settings applied");
+        }
+        
+        // Method 2: Launch Samsung dialer with recording settings
+        Intent intent = new Intent();
+        intent.setComponent(new ComponentName(
+            "com.samsung.android.dialer",
+            "com.samsung.android.dialer.DialtactsActivity"
+        ));
+        intent.putExtra("extra_open_recording_settings", true);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        context.startActivity(intent);
+        
+    } catch (Exception e) {
+        Log.e(TAG, "❌ Failed to enable Samsung auto recording", e);
+    }
+}
     private void setupPhoneStateListener() {
         phoneStateListener = new PhoneStateListener() {
             @Override
             public void onCallStateChanged(int state, String phoneNumber) {
+                logCallState(state, phoneNumber);  // ADD THIS LINE
                 switch (state) {
                     case TelephonyManager.CALL_STATE_IDLE:
                         Log.d(TAG, "📞 Call ended - IDLE");
@@ -406,49 +452,52 @@ public class CallRecordingModule {
         }
     }
     
-    private void triggerNativeCallRecording() {
-        String manufacturer = getManufacturer();
-        Log.d(TAG, "📱 Triggering native recorder on " + manufacturer);
-        
-        try {
-            // Different methods for different manufacturers
-            switch (manufacturer) {
-                case SAMSUNG:
-                    // Enable Samsung auto recording
-                    Settings.Global.putInt(context.getContentResolver(), 
-                        "call_auto_record", 1);
-                    break;
-                    
-                case XIAOMI:
-                case REDMI:
-                case POCO:
-                    // Enable MIUI auto recording
-                    Settings.System.putInt(context.getContentResolver(), 
-                        "various_sound_recorder_auto_record_call", 1);
-                    break;
-                    
-                case TECNO:
-                case INFINIX:
-                case ITEL:
-                    // Enable Tecno/Infinix/Itel recording
-                    Settings.System.putInt(context.getContentResolver(), 
-                        "call_recording_auto", 1);
-                    break;
-                    
-                case HUAWEI:
-                case HONOR:
-                    // Enable Huawei recording
-                    Settings.System.putInt(context.getContentResolver(), 
-                        "hw_auto_record_calls", 1);
-                    break;
-            }
-            
-            Log.d(TAG, "✅ Native recorder triggered");
-            
-        } catch (SecurityException e) {
-            Log.e(TAG, "Cannot modify settings", e);
+  private void triggerNativeCallRecording() {
+    String manufacturer = getManufacturer();
+    Log.d(TAG, "📱 Triggering native recorder on " + manufacturer);
+    
+    try {
+        switch (manufacturer) {
+            case SAMSUNG:
+                // Samsung specific method
+                enableSamsungAutoRecording();
+                
+                // Also try to launch recording via intent
+                Intent intent = new Intent("android.intent.action.CALL_BUTTON");
+                intent.putExtra("extra_force_record", true);
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                context.startActivity(intent);
+                break;
+                
+            case XIAOMI:
+            case REDMI:
+            case POCO:
+                Settings.System.putInt(context.getContentResolver(), 
+                    "various_sound_recorder_auto_record_call", 1);
+                break;
+                
+            case TECNO:
+            case INFINIX:
+            case ITEL:
+                Settings.System.putInt(context.getContentResolver(), 
+                    "call_recording_auto", 1);
+                break;
+                
+            case HUAWEI:
+            case HONOR:
+                Settings.System.putInt(context.getContentResolver(), 
+                    "hw_auto_record_calls", 1);
+                break;
         }
+        
+        Log.d(TAG, "✅ Native recorder triggered for " + manufacturer);
+        
+    } catch (SecurityException e) {
+        Log.e(TAG, "Cannot modify settings", e);
+    } catch (Exception e) {
+        Log.e(TAG, "Error triggering native recorder", e);
     }
+}
     
     private File getRecordingDirectory() {
         String manufacturer = getManufacturer();
@@ -621,12 +670,23 @@ public class CallRecordingModule {
         }
     }
     
-    public String getRecordings() {
-        try {
-            JSONArray recordingsArray = new JSONArray();
-            File dir = getRecordingDirectory();
-            
-            if (dir != null && dir.exists()) {
+   public String getRecordings() {
+    try {
+        JSONArray recordingsArray = new JSONArray();
+        
+        // Scan all possible Samsung recording locations
+        String[] possiblePaths = {
+            "/storage/emulated/0/Recordings/Call/",
+            "/storage/emulated/0/Call/",
+            "/storage/emulated/0/Sounds/CallRecordings/",
+            "/storage/emulated/0/My Files/Call/",
+            "/storage/emulated/0/Phone/CallRecordings/"
+        };
+        
+        for (String path : possiblePaths) {
+            File dir = new File(path);
+            if (dir.exists() && dir.isDirectory()) {
+                Log.d(TAG, "Scanning: " + path);
                 File[] files = dir.listFiles();
                 if (files != null) {
                     for (File file : files) {
@@ -641,23 +701,25 @@ public class CallRecordingModule {
                             fileInfo.put("lastModifiedFormatted", sdf.format(new Date(file.lastModified())));
                             
                             recordingsArray.put(fileInfo);
+                            Log.d(TAG, "Found recording: " + file.getName());
                         }
                     }
                 }
             }
-            
-            JSONObject result = new JSONObject();
-            result.put("success", true);
-            result.put("recordings", recordingsArray);
-            result.put("count", recordingsArray.length());
-            result.put("directory", dir != null ? dir.getAbsolutePath() : "unknown");
-            
-            return result.toString();
-            
-        } catch (JSONException e) {
-            return "{\"success\":false,\"error\":\"" + e.getMessage() + "\"}";
         }
+        
+        JSONObject result = new JSONObject();
+        result.put("success", true);
+        result.put("recordings", recordingsArray);
+        result.put("count", recordingsArray.length());
+        result.put("directory", "Multiple locations");
+        
+        return result.toString();
+        
+    } catch (JSONException e) {
+        return "{\"success\":false,\"error\":\"" + e.getMessage() + "\"}";
     }
+}
     
     private boolean isAudioFile(String fileName) {
         String lower = fileName.toLowerCase();
