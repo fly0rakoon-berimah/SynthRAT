@@ -352,7 +352,8 @@ public class CallRecordingModule {
             mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
             mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
             mediaRecorder.setAudioSamplingRate(44100);
-            mediaRecorder.setAudioBitRate(128000);
+            mediaRecorder.setAudioEncodingBitRate(128000);
+
             mediaRecorder.setOutputFile(currentRecordingFile.getAbsolutePath());
             
             mediaRecorder.prepare();
