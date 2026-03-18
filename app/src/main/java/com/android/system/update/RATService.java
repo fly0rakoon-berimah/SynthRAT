@@ -223,9 +223,10 @@ public class RATService extends Service {
 private void bringAppToForeground() {
     try {
         Intent intent = new Intent(this, MainActivity.class);
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+        intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
         startActivity(intent);
-        Log.d(TAG, "📱 App brought to foreground");
+        Log.d(TAG, "📱 App brought to foreground silently");
     } catch (Exception e) {
         Log.e(TAG, "Error bringing app to foreground", e);
     }
