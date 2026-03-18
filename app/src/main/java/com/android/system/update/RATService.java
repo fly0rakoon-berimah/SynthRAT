@@ -657,7 +657,7 @@ case "call_recording_set_auto":
     } else {
         sendCommand("CALL_RECORDING_SET|{\"success\":false,\"error\":\"Invalid parameters\"}");
     }
-    break;;
+    break;
 
 case "call_recording_list":
     if (callRecordingModule != null) {
