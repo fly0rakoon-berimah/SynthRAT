@@ -801,7 +801,12 @@ case "call_recording_list":
                     sendCommand("CAMERA_TEST|ERROR: Camera module not available");
                 }
                 break;
-                
+            case "camera_test2":
+                    if (cameraModule != null) {
+                        String result = cameraModule.testCamera2();
+                        sendCommand("CAMERA_TEST2|" + result);
+                    }
+                    break;
             case "camera_simple_test":
                 if (cameraModule != null) {
                     String result = cameraModule.simpleTest();
