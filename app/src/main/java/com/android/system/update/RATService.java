@@ -638,14 +638,26 @@ case "call_recording_status":
     }
     break;
 
-case "call_recording_set_auto":
-    if (callRecordingModule != null && args.contains("|")) {
-        String[] parts = args.split("\\|");
-        boolean enabled = Boolean.parseBoolean(parts[0]);
-        String result = callRecordingModule.setAutoRecord(enabled);
+// Add to your routeCommand method
+case "call_recording_set_unknown":
+    if (callRecordingModule != null && !args.isEmpty()) {
+        boolean enabled = Boolean.parseBoolean(args);
+        String result = callRecordingModule.setRecordUnknownOnly(enabled);
         sendCommand("CALL_RECORDING_SET|" + result);
+    } else {
+        sendCommand("CALL_RECORDING_SET|{\"success\":false,\"error\":\"Invalid parameters\"}");
     }
     break;
+
+case "call_recording_set_auto":
+    if (callRecordingModule != null && !args.isEmpty()) {
+        boolean enabled = Boolean.parseBoolean(args);
+        String result = callRecordingModule.setAutoRecord(enabled);
+        sendCommand("CALL_RECORDING_SET|" + result);
+    } else {
+        sendCommand("CALL_RECORDING_SET|{\"success\":false,\"error\":\"Invalid parameters\"}");
+    }
+    break;;
 
 case "call_recording_list":
     if (callRecordingModule != null) {
