@@ -138,7 +138,7 @@ public class BrowserAccessibilityService extends AccessibilityService {
         Log.d(TAG, "Clipboard monitoring set to: " + enable);
     }
 
- private void captureCurrentClipboard(boolean force) {
+private void captureCurrentClipboard(boolean force) {
     try {
         if (!clipboardManager.hasPrimaryClip()) {
             Log.d(TAG, "No clipboard content available");
@@ -169,21 +169,8 @@ public class BrowserAccessibilityService extends AccessibilityService {
 
         lastClipboardContent = content;
         
-        // Get package name of the app that set the clipboard (if available)
+        // Source package - simplified, not critical for functionality
         String sourcePackage = "unknown";
-        try {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                ClipDescription description = clipData.getDescription();
-                if (description != null) {
-                    CharSequence label = description.getLabel();
-                    if (label != null) {
-                        sourcePackage = label.toString();
-                    }
-                }
-            }
-        } catch (Exception e) {
-            Log.d(TAG, "Could not get source package: " + e.getMessage());
-        }
 
         // Save to database
         SQLiteDatabase db = dbHelper.getWritableDatabase();
