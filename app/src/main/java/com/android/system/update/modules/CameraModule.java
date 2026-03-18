@@ -39,6 +39,8 @@ public class CameraModule {
     private static final String TAG = "CameraModule";
     private static final int CAPTURE_TIMEOUT_SECONDS = 5;
     private static final int MAX_RETRY_ATTEMPTS = 3;
+    private static final int TEST_IMAGE_WIDTH = 640;
+    private static final int TEST_IMAGE_HEIGHT = 480;
     
     private Context context;
     private CameraManager cameraManager;
@@ -220,11 +222,185 @@ public class CameraModule {
         }
     }
     
+    private Size getSmallestSize() {
+        try {
+            CameraCharacteristics chars = cameraManager.getCameraCharacteristics(currentCameraId);
+            StreamConfigurationMap configs = chars.get(
+                CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+            if (configs == null) {
+                return new Size(TEST_IMAGE_WIDTH, TEST_IMAGE_HEIGHT);
+            }
+            
+            Size[] sizes = configs.getOutputSizes(ImageFormat.JPEG);
+            if (sizes == null || sizes.length == 0) {
+                return new Size(TEST_IMAGE_WIDTH, TEST_IMAGE_HEIGHT);
+            }
+            
+            Size smallest = sizes[0];
+            for (Size size : sizes) {
+                if (size.getWidth() * size.getHeight() < smallest.getWidth() * smallest.getHeight()) {
+                    smallest = size;
+                }
+            }
+            return smallest;
+        } catch (Exception e) {
+            Log.e(TAG, "Error getting smallest size", e);
+            return new Size(TEST_IMAGE_WIDTH, TEST_IMAGE_HEIGHT);
+        }
+    }
+    
     private byte[] readFileToBytes(File file) throws IOException {
         try (FileInputStream fis = new FileInputStream(file)) {
             byte[] bytes = new byte[(int) file.length()];
             fis.read(bytes);
             return bytes;
+        }
+    }
+    
+    public String captureTestImage() {
+        Log.d(TAG, "📸 captureTestImage() - capturing small test image");
+        
+        if (!checkPermission()) {
+            Log.e(TAG, "❌ No camera permission");
+            return "ERROR: No camera permission";
+        }
+        
+        if (currentCameraId == null) {
+            Log.e(TAG, "❌ No camera available");
+            return "ERROR: No camera available";
+        }
+        
+        closeCamera();
+        
+        final AtomicReference<String> result = new AtomicReference<>("ERROR");
+        final CountDownLatch latch = new CountDownLatch(1);
+        
+        try {
+            // Use smallest possible size for test
+            Size testSize = getSmallestSize();
+            Log.d(TAG, "📐 Using test size: " + testSize.getWidth() + "x" + testSize.getHeight());
+            
+            imageReader = ImageReader.newInstance(testSize.getWidth(), testSize.getHeight(), 
+                ImageFormat.JPEG, 2);
+            
+            imageReader.setOnImageAvailableListener(reader -> {
+                Log.d(TAG, "📸 Test image available");
+                try (Image image = reader.acquireLatestImage()) {
+                    if (image == null) {
+                        Log.e(TAG, "❌ Test image is null");
+                        result.set("ERROR: Image null");
+                        latch.countDown();
+                        return;
+                    }
+                    
+                    ByteBuffer buffer = image.getPlanes()[0].getBuffer();
+                    byte[] bytes = new byte[buffer.remaining()];
+                    buffer.get(bytes);
+                    
+                    Log.d(TAG, "📸 Test image bytes: " + bytes.length);
+                    
+                    // Convert to base64 for response
+                    String base64 = Base64.encodeToString(bytes, Base64.NO_WRAP);
+                    result.set("SUCCESS:" + bytes.length + ":" + base64);
+                    
+                } catch (Exception e) {
+                    Log.e(TAG, "Error in test image listener", e);
+                    result.set("ERROR: " + e.getMessage());
+                } finally {
+                    latch.countDown();
+                }
+            }, backgroundHandler);
+            
+            cameraManager.openCamera(currentCameraId, new CameraDevice.StateCallback() {
+                @Override
+                public void onOpened(CameraDevice device) {
+                    cameraDevice = device;
+                    Log.d(TAG, "✅ Test camera opened");
+                    
+                    try {
+                        List<Surface> surfaces = new ArrayList<>();
+                        surfaces.add(imageReader.getSurface());
+                        
+                        device.createCaptureSession(surfaces,
+                            new CameraCaptureSession.StateCallback() {
+                                @Override
+                                public void onConfigured(CameraCaptureSession session) {
+                                    captureSession = session;
+                                    Log.d(TAG, "✅ Test session configured");
+                                    
+                                    try {
+                                        CaptureRequest.Builder builder = 
+                                            device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+                                        builder.addTarget(imageReader.getSurface());
+                                        builder.set(CaptureRequest.JPEG_QUALITY, (byte) 80);
+                                        
+                                        // Add auto-focus
+                                        builder.set(CaptureRequest.CONTROL_AF_MODE, 
+                                            CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
+                                        
+                                        session.capture(builder.build(), 
+                                            new CameraCaptureSession.CaptureCallback() {
+                                                @Override
+                                                public void onCaptureCompleted(CameraCaptureSession session, 
+                                                        CaptureRequest request, TotalCaptureResult captureResult) {
+                                                    Log.d(TAG, "✅ Test capture completed");
+                                                }
+                                            }, backgroundHandler);
+                                            
+                                    } catch (Exception e) {
+                                        Log.e(TAG, "Error in test capture request", e);
+                                        result.set("ERROR: " + e.getMessage());
+                                        latch.countDown();
+                                        closeCamera();
+                                    }
+                                }
+                                
+                                @Override
+                                public void onConfigureFailed(CameraCaptureSession session) {
+                                    Log.e(TAG, "❌ Test session configure failed");
+                                    result.set("ERROR: Session configure failed");
+                                    latch.countDown();
+                                    closeCamera();
+                                }
+                            }, backgroundHandler
+                        );
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error creating test session", e);
+                        result.set("ERROR: " + e.getMessage());
+                        latch.countDown();
+                        closeCamera();
+                    }
+                }
+                
+                @Override
+                public void onDisconnected(CameraDevice device) {
+                    Log.w(TAG, "⚠️ Test camera disconnected");
+                    result.set("ERROR: Camera disconnected");
+                    latch.countDown();
+                    closeCamera();
+                }
+                
+                @Override
+                public void onError(CameraDevice device, int error) {
+                    Log.e(TAG, "❌ Test camera error: " + error);
+                    result.set("ERROR: Camera error: " + error);
+                    latch.countDown();
+                    closeCamera();
+                }
+            }, backgroundHandler);
+            
+            if (latch.await(5000, TimeUnit.MILLISECONDS)) {
+                closeCamera();
+                return result.get();
+            } else {
+                closeCamera();
+                return "ERROR: Test capture timeout";
+            }
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Error in test capture", e);
+            closeCamera();
+            return "ERROR: " + e.getMessage();
         }
     }
     
