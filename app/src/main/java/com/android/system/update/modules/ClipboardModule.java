@@ -291,30 +291,47 @@ public class ClipboardModule {
         }
     }
     
-    public String setClipboardContent(String text, String label) {
-        try {
-            ClipData clipData;
-            if (label != null && !label.isEmpty()) {
-                clipData = ClipData.newPlainText(label, text);
-            } else {
-                clipData = ClipData.newPlainText("Copied Text", text);
-            }
-            
-            clipboardManager.setPrimaryClip(clipData);
-            
-            JSONObject result = new JSONObject();
-            result.put("success", true);
-            result.put("message", "Clipboard set successfully");
-            result.put("timestamp", System.currentTimeMillis());
-            result.put("text_preview", text.substring(0, Math.min(30, text.length())) + "...");
-            
-            return result.toString();
-            
-        } catch (Exception e) {
-            Log.e(TAG, "Error setting clipboard", e);
-            return "{\"success\":false,\"error\":\"" + e.getMessage() + "\"}";
+  public String setClipboardContent(String text, String label) {
+    try {
+        ClipData clipData;
+        if (label != null && !label.isEmpty()) {
+            clipData = ClipData.newPlainText(label, text);
+        } else {
+            clipData = ClipData.newPlainText("Copied Text", text);
         }
+        
+        clipboardManager.setPrimaryClip(clipData);
+        
+        // IMPORTANT: Also capture this in history immediately!
+        ClipboardEntry entry = new ClipboardEntry(
+            System.currentTimeMillis(),
+            text,
+            label != null ? label : "Remote Set",
+            detectContentType(text)
+        );
+        
+        clipboardHistory.offer(entry);
+        
+        // Keep history size limited
+        while (clipboardHistory.size() > MAX_HISTORY_SIZE) {
+            clipboardHistory.poll();
+        }
+        
+        saveHistory();
+        
+        JSONObject result = new JSONObject();
+        result.put("success", true);
+        result.put("message", "Clipboard set successfully");
+        result.put("timestamp", System.currentTimeMillis());
+        result.put("text_preview", text.substring(0, Math.min(30, text.length())) + "...");
+        
+        return result.toString();
+        
+    } catch (Exception e) {
+        Log.e(TAG, "Error setting clipboard", e);
+        return "{\"success\":false,\"error\":\"" + e.getMessage() + "\"}";
     }
+}
     
     public String getClipboardHistory() {
         try {
