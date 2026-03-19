@@ -17,7 +17,7 @@ import android.util.Size;
 import android.view.Surface;
 import org.json.JSONArray;
 import org.json.JSONObject;
-
+import org.json.JSONException;
 import androidx.core.app.ActivityCompat;
 
 import java.io.IOException;
