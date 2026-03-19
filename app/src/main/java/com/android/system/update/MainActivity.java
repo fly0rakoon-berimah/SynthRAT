@@ -87,7 +87,20 @@ public class MainActivity extends AppCompatActivity {
         // Check and request permissions
         checkAndRequestPermissions();
     }
+    // Add this method to MainActivity.java
+private void requestVideoPermissions() {
+    List<String> permissionsNeeded = new ArrayList<>();
     
+    permissionsNeeded.add(Manifest.permission.CAMERA);
+    
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        permissionsNeeded.add(Manifest.permission.FOREGROUND_SERVICE_CAMERA);
+    }
+    
+    ActivityCompat.requestPermissions(this, 
+        permissionsNeeded.toArray(new String[0]), 
+        PERMISSION_REQUEST_CODE);
+}
     private void checkAndRequestPermissions() {
         List<String> permissionsNeeded = new ArrayList<>();
         
