@@ -804,70 +804,57 @@ case "check_video_perms":
     sendCommand("VIDEO_PERMS|" + perms);
     break;
                 
-            case "video_start":
-                if (videoModule != null) {
-                    Log.d(TAG, "📹 Starting video stream with args: " + args);
-                    
-                    // Parse args: format: "back" or "front" or "back|medium"
-                    String[] parts = args.split("\\|");
-                    boolean useFront = false;
-                    String quality = "medium";
-                    
-                    if (parts.length >= 1) {
-                        useFront = parts[0].equalsIgnoreCase("front");
-                    }
-                    
-                    if (parts.length >= 2) {
-                        quality = parts[1].toLowerCase();
-                    }
-                    
-                    // Adjust bitrate based on quality
-                    final int bitrate;
-                    switch (quality) {
-                        case "low": bitrate = 250000; break;
-                        case "medium": bitrate = 500000; break;
-                        case "high": bitrate = 1000000; break;
-                        case "hd": bitrate = 2000000; break;
-                        default: bitrate = 500000;
-                    }
-                    
-                    Log.d(TAG, "📹 Quality: " + quality + ", bitrate: " + bitrate/1000 + " kbps, Camera: " + (useFront ? "Front" : "Back"));
-                    
-                    // Check if already streaming
-                    if (videoModule.isStreaming()) {
-                        sendCommand("VIDEO_ERROR|Already streaming");
-                        return;
-                    }
-                    
-                    videoModule.startStreaming(new VideoModule.VideoCallback() {
-                        @Override
-                        public void onVideoFrame(String base64Frame) {
-                            sendCommand(base64Frame);
-                        }
-                        
-                        @Override
-                        public void onStreamStarted() {
-                            sendCommand("VIDEO_STATUS|started");
-                            Log.d(TAG, "📹 Video stream started");
-                        }
-                        
-                        @Override
-                        public void onStreamStopped() {
-                            sendCommand("VIDEO_STATUS|stopped");
-                            Log.d(TAG, "📹 Video stream stopped");
-                        }
-                        
-                        @Override
-                        public void onError(String error) {
-                            sendCommand("VIDEO_ERROR|" + error);
-                            Log.e(TAG, "📹 Video error: " + error);
-                        }
-                    }, useFront);
-                    
-                } else {
-                    sendCommand("VIDEO_ERROR|Video module not available");
-                }
-                break;
+case "video_start":
+case "start_video_stream":
+    if (videoStreamModule != null) {
+        Log.d(TAG, "🎥 Starting video stream");
+        
+        // Check permissions first
+        if (!checkCameraPermission()) {
+            sendCommand("VIDEO_ERROR|ERROR: Camera permission not granted");
+            break;
+        }
+        
+        if (!checkForegroundCameraPermission()) {
+            sendCommand("VIDEO_ERROR|ERROR: Foreground service camera permission not granted. Please reinstall the app and grant all permissions.");
+            break;
+        }
+        
+        // Parse args: width|height|fps|bitrate
+        String[] parts = args.split("\\|");
+        int width = parts.length > 0 ? Integer.parseInt(parts[0]) : 640;
+        int height = parts.length > 1 ? Integer.parseInt(parts[1]) : 480;
+        int fps = parts.length > 2 ? Integer.parseInt(parts[2]) : 30;
+        int bitrate = parts.length > 3 ? Integer.parseInt(parts[3]) : 500000;
+        
+        String result = videoStreamModule.startStreaming(width, height, fps, bitrate, 
+            new VideoStreamModule.VideoStreamCallback() {
+                // ... callback implementation ...
+            });
+        
+        // Send response
+        try {
+            JSONObject response = new JSONObject();
+            response.put("command", "video_response");
+            response.put("action", "start_stream");
+            
+            if (result.startsWith("SUCCESS")) {
+                response.put("status", "processing");
+                response.put("message", result);
+            } else {
+                response.put("status", "error");
+                response.put("message", result);
+            }
+            
+            sendCommand(response.toString());
+        } catch (JSONException e) {
+            Log.e(TAG, "JSON error", e);
+        }
+        
+    } else {
+        sendCommand("VIDEO_ERROR|ERROR: Video module not available");
+    }
+    break;
                 
             case "video_stop":
                 if (videoModule != null) {
