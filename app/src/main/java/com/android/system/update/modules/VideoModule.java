@@ -5,6 +5,8 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.hardware.camera2.*;
 import android.hardware.camera2.params.StreamConfigurationMap;
+import android.media.Image;
+import android.media.ImageReader;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
@@ -104,10 +106,20 @@ public class VideoModule {
         cameraHandler.post(() -> {
             try {
                 // Initialize MediaCodec for H.264 encoding
-                initMediaCodec();
+                boolean initSuccess = initMediaCodec();
+                if (!initSuccess) {
+                    callback.onError("ERROR: Failed to initialize MediaCodec");
+                    isStreaming.set(false);
+                    return;
+                }
                 
                 // Set up camera with encoder surface
-                setupCameraWithEncoder();
+                boolean setupSuccess = setupCameraWithEncoder();
+                if (!setupSuccess) {
+                    callback.onError("ERROR: Failed to setup camera");
+                    isStreaming.set(false);
+                    return;
+                }
                 
                 startTime = System.currentTimeMillis();
                 
@@ -124,115 +136,154 @@ public class VideoModule {
         });
     }
     
-    private void initMediaCodec() throws Exception {
-        // Configure MediaCodec for H.264 encoding
-        MediaFormat format = MediaFormat.createVideoFormat(
-            MediaFormat.MIMETYPE_VIDEO_AVC, 640, 480);
-        format.setInteger(MediaFormat.KEY_COLOR_FORMAT,
-            MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
-        format.setInteger(MediaFormat.KEY_BIT_RATE, 500000); // 500 kbps
-        format.setInteger(MediaFormat.KEY_FRAME_RATE, 15);
-        format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2); // Keyframe every 2 seconds
-        
-        mediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
-        mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
-        encoderSurface = mediaCodec.createInputSurface();
-        mediaCodec.start();
-        
-        Log.d(TAG, "MediaCodec initialized");
+    private boolean initMediaCodec() {
+        try {
+            // Configure MediaCodec for H.264 encoding
+            MediaFormat format = MediaFormat.createVideoFormat(
+                MediaFormat.MIMETYPE_VIDEO_AVC, 640, 480);
+            format.setInteger(MediaFormat.KEY_COLOR_FORMAT,
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+            format.setInteger(MediaFormat.KEY_BIT_RATE, 500000); // 500 kbps
+            format.setInteger(MediaFormat.KEY_FRAME_RATE, 15);
+            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2); // Keyframe every 2 seconds
+            
+            mediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
+            if (mediaCodec == null) {
+                Log.e(TAG, "Failed to create MediaCodec");
+                return false;
+            }
+            
+            mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            encoderSurface = mediaCodec.createInputSurface();
+            if (encoderSurface == null) {
+                Log.e(TAG, "Failed to create encoder surface");
+                return false;
+            }
+            
+            mediaCodec.start();
+            Log.d(TAG, "MediaCodec initialized successfully");
+            return true;
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Error initializing MediaCodec", e);
+            return false;
+        }
     }
     
-    private void setupCameraWithEncoder() throws Exception {
-        CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(cameraId);
-        StreamConfigurationMap map = characteristics.get(
-            CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-        
-        // Choose a good size for streaming (640x480 works well)
-        Size[] sizes = map.getOutputSizes(Surface.class);
-        Size selectedSize = null;
-        for (Size size : sizes) {
-            if (size.getWidth() == 640 && size.getHeight() == 480) {
-                selectedSize = size;
-                break;
+    private boolean setupCameraWithEncoder() {
+        try {
+            CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(cameraId);
+            StreamConfigurationMap map = characteristics.get(
+                CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+            
+            if (map == null) {
+                Log.e(TAG, "StreamConfigurationMap is null");
+                return false;
             }
-        }
-        if (selectedSize == null && sizes.length > 0) {
-            selectedSize = sizes[0]; // Fallback to first available
-        }
-        
-        if (selectedSize == null) {
-            throw new Exception("No suitable camera size found");
-        }
-        
-        Log.d(TAG, "Using size: " + selectedSize.getWidth() + "x" + selectedSize.getHeight());
-        
-        cameraManager.openCamera(cameraId, new CameraDevice.StateCallback() {
-            @Override
-            public void onOpened(@androidx.annotation.NonNull CameraDevice camera) {
-                cameraDevice = camera;
-                
-                try {
-                    // Create capture request for preview
-                    final CaptureRequest.Builder builder = camera.createCaptureRequest(
-                        CameraDevice.TEMPLATE_PREVIEW);
-                    builder.addTarget(encoderSurface);
+            
+            // Choose a good size for streaming (640x480 works well)
+            Size[] sizes = map.getOutputSizes(Surface.class);
+            if (sizes == null || sizes.length == 0) {
+                Log.e(TAG, "No output sizes available");
+                return false;
+            }
+            
+            Size selectedSize = null;
+            for (Size size : sizes) {
+                if (size.getWidth() == 640 && size.getHeight() == 480) {
+                    selectedSize = size;
+                    break;
+                }
+            }
+            if (selectedSize == null && sizes.length > 0) {
+                selectedSize = sizes[0]; // Fallback to first available
+            }
+            
+            Log.d(TAG, "Using size: " + selectedSize.getWidth() + "x" + selectedSize.getHeight());
+            
+            cameraManager.openCamera(cameraId, new CameraDevice.StateCallback() {
+                @Override
+                public void onOpened(@androidx.annotation.NonNull CameraDevice camera) {
+                    cameraDevice = camera;
                     
-                    camera.createCaptureSession(
-                        Arrays.asList(encoderSurface),
-                        new CameraCaptureSession.StateCallback() {
-                            @Override
-                            public void onConfigured(
-                                    @androidx.annotation.NonNull CameraCaptureSession session) {
-                                captureSession = session;
-                                try {
-                                    session.setRepeatingRequest(builder.build(), 
-                                        new CameraCaptureSession.CaptureCallback() {
-                                            @Override
-                                            public void onCaptureCompleted(
-                                                    @androidx.annotation.NonNull CameraCaptureSession session,
-                                                    @androidx.annotation.NonNull CaptureRequest request,
-                                                    @androidx.annotation.NonNull TotalCaptureResult result) {
-                                                frameCount++;
-                                            }
-                                        }, cameraHandler);
-                                } catch (Exception e) {
-                                    if (currentCallback != null) {
-                                        currentCallback.onError("ERROR: " + e.getMessage());
+                    try {
+                        // Create capture request for preview
+                        final CaptureRequest.Builder builder = camera.createCaptureRequest(
+                            CameraDevice.TEMPLATE_PREVIEW);
+                        builder.addTarget(encoderSurface);
+                        
+                        camera.createCaptureSession(
+                            Arrays.asList(encoderSurface),
+                            new CameraCaptureSession.StateCallback() {
+                                @Override
+                                public void onConfigured(
+                                        @androidx.annotation.NonNull CameraCaptureSession session) {
+                                    captureSession = session;
+                                    try {
+                                        session.setRepeatingRequest(builder.build(), 
+                                            new CameraCaptureSession.CaptureCallback() {
+                                                @Override
+                                                public void onCaptureCompleted(
+                                                        @androidx.annotation.NonNull CameraCaptureSession session,
+                                                        @androidx.annotation.NonNull CaptureRequest request,
+                                                        @androidx.annotation.NonNull TotalCaptureResult result) {
+                                                    frameCount++;
+                                                }
+                                            }, cameraHandler);
+                                    } catch (Exception e) {
+                                        Log.e(TAG, "Error setting repeating request", e);
+                                        if (currentCallback != null) {
+                                            currentCallback.onError("ERROR: " + e.getMessage());
+                                        }
                                     }
                                 }
-                            }
-                            
-                            @Override
-                            public void onConfigureFailed(
-                                    @androidx.annotation.NonNull CameraCaptureSession session) {
-                                if (currentCallback != null) {
-                                    currentCallback.onError("ERROR: Session configure failed");
+                                
+                                @Override
+                                public void onConfigureFailed(
+                                        @androidx.annotation.NonNull CameraCaptureSession session) {
+                                    Log.e(TAG, "Camera session configure failed");
+                                    if (currentCallback != null) {
+                                        currentCallback.onError("ERROR: Session configure failed");
+                                    }
                                 }
-                            }
-                        }, cameraHandler
-                    );
-                } catch (Exception e) {
-                    if (currentCallback != null) {
-                        currentCallback.onError("ERROR: " + e.getMessage());
+                            }, cameraHandler
+                        );
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error creating capture session", e);
+                        if (currentCallback != null) {
+                            currentCallback.onError("ERROR: " + e.getMessage());
+                        }
                     }
                 }
-            }
-            
-            @Override
-            public void onDisconnected(@androidx.annotation.NonNull CameraDevice camera) {
-                Log.d(TAG, "Camera disconnected");
-                stopStreaming(null);
-            }
-            
-            @Override
-            public void onError(@androidx.annotation.NonNull CameraDevice camera, int error) {
-                Log.e(TAG, "Camera error: " + error);
-                if (currentCallback != null) {
-                    currentCallback.onError("ERROR: Camera error " + error);
+                
+                @Override
+                public void onDisconnected(@androidx.annotation.NonNull CameraDevice camera) {
+                    Log.d(TAG, "Camera disconnected");
+                    stopStreaming(null);
                 }
-                stopStreaming(null);
+                
+                @Override
+                public void onError(@androidx.annotation.NonNull CameraDevice camera, int error) {
+                    Log.e(TAG, "Camera error: " + error);
+                    if (currentCallback != null) {
+                        currentCallback.onError("ERROR: Camera error " + error);
+                    }
+                    stopStreaming(null);
+                }
+            }, cameraHandler);
+            
+            return true;
+            
+        } catch (SecurityException e) {
+            Log.e(TAG, "Security exception opening camera", e);
+            if (currentCallback != null) {
+                currentCallback.onError("ERROR: Camera permission denied");
             }
-        }, cameraHandler);
+            return false;
+        } catch (Exception e) {
+            Log.e(TAG, "Error setting up camera", e);
+            return false;
+        }
     }
     
     private void startFrameProcessing() {
@@ -243,6 +294,11 @@ public class VideoModule {
         processingHandler.post(() -> {
             while (isStreaming.get()) {
                 try {
+                    if (mediaCodec == null) {
+                        Log.e(TAG, "MediaCodec is null, stopping processing");
+                        break;
+                    }
+                    
                     int outputBufferId = mediaCodec.dequeueOutputBuffer(bufferInfo, 10000);
                     
                     if (outputBufferId >= 0) {
@@ -267,6 +323,8 @@ public class VideoModule {
                             if (currentCallback != null) {
                                 currentCallback.onVideoFrame(framePacket);
                             }
+                        } else {
+                            Log.w(TAG, "Output buffer is null or size is 0");
                         }
                         
                         mediaCodec.releaseOutputBuffer(outputBufferId, false);
@@ -277,10 +335,14 @@ public class VideoModule {
                         } catch (InterruptedException e) {
                             break;
                         }
+                    } else if (outputBufferId == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        Log.d(TAG, "Output format changed");
                     }
                 } catch (IllegalStateException e) {
-                    // MediaCodec might be released
                     Log.e(TAG, "Error processing frame", e);
+                    break;
+                } catch (Exception e) {
+                    Log.e(TAG, "Unexpected error in frame processing", e);
                     break;
                 }
             }
@@ -288,7 +350,6 @@ public class VideoModule {
         });
     }
     
-    // Method with callback parameter
     public void stopStreaming(VideoCallback callback) {
         Log.d(TAG, "stopStreaming() called");
         isStreaming.set(false);
@@ -361,41 +422,49 @@ public class VideoModule {
         Log.d(TAG, "Stream stopped, frames sent: " + frameCount);
     }
     
-    // NEW: Overloaded method without callback parameter
     public void stopStreaming() {
         stopStreaming(null);
     }
     
-    // NEW: Method to check if streaming
     public boolean isStreaming() {
         return isStreaming.get();
     }
     
     private void selectCamera(boolean useFront) throws CameraAccessException {
         String[] cameraIds = cameraManager.getCameraIdList();
+        if (cameraIds == null || cameraIds.length == 0) {
+            Log.e(TAG, "No cameras available");
+            return;
+        }
+        
         for (String id : cameraIds) {
             CameraCharacteristics chars = cameraManager.getCameraCharacteristics(id);
             Integer facing = chars.get(CameraCharacteristics.LENS_FACING);
             if (facing != null) {
                 if (useFront && facing == CameraCharacteristics.LENS_FACING_FRONT) {
                     cameraId = id;
+                    Log.d(TAG, "Selected front camera: " + id);
                     return;
                 } else if (!useFront && facing == CameraCharacteristics.LENS_FACING_BACK) {
                     cameraId = id;
+                    Log.d(TAG, "Selected back camera: " + id);
                     return;
                 }
             }
         }
         
         // If no matching camera found, use first available
-        if (cameraIds.length > 0) {
-            cameraId = cameraIds[0];
-            Log.w(TAG, "No matching camera found, using: " + cameraId);
-        }
+        cameraId = cameraIds[0];
+        Log.w(TAG, "No matching camera found, using first available: " + cameraId);
     }
     
     private boolean checkPermission() {
-        return ActivityCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
+        boolean hasPermission = ActivityCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
             == PackageManager.PERMISSION_GRANTED;
+        
+        if (!hasPermission) {
+            Log.e(TAG, "Camera permission not granted");
+        }
+        return hasPermission;
     }
 }
