@@ -10,6 +10,7 @@ import android.media.ImageReader;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
+import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.util.Base64;
@@ -18,6 +19,7 @@ import android.util.Size;
 import android.view.Surface;
 
 import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 
 import java.nio.ByteBuffer;
 import java.util.Arrays;
@@ -64,10 +66,11 @@ public class VideoModule {
     }
     
     public void startStreaming(final VideoCallback callback, boolean useFrontCamera) {
-        Log.d(TAG, "startStreaming() called");
+        Log.d(TAG, "startStreaming() called - useFrontCamera: " + useFrontCamera);
         
-        if (!checkPermission()) {
-            callback.onError("ERROR: No camera permission");
+        // Check all permissions thoroughly
+        if (!checkAllPermissions()) {
+            callback.onError("ERROR: Missing required permissions (Camera or Foreground Service)");
             return;
         }
         
@@ -87,6 +90,7 @@ public class VideoModule {
                 isStreaming.set(false);
                 return;
             }
+            Log.d(TAG, "Selected camera ID: " + cameraId);
         } catch (Exception e) {
             callback.onError("ERROR: " + e.getMessage());
             isStreaming.set(false);
@@ -127,7 +131,12 @@ public class VideoModule {
                 startFrameProcessing();
                 
                 callback.onStreamStarted();
+                Log.d(TAG, "Video stream started successfully");
                 
+            } catch (SecurityException e) {
+                Log.e(TAG, "Security exception starting stream", e);
+                callback.onError("ERROR: Camera permission denied");
+                isStreaming.set(false);
             } catch (Exception e) {
                 Log.e(TAG, "Error starting stream", e);
                 callback.onError("ERROR: " + e.getMessage());
@@ -136,8 +145,46 @@ public class VideoModule {
         });
     }
     
+    private boolean checkAllPermissions() {
+        // Check camera permission
+        boolean hasCameraPermission = ActivityCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
+                == PackageManager.PERMISSION_GRANTED;
+        
+        Log.d(TAG, "Camera permission granted: " + hasCameraPermission);
+        
+        if (!hasCameraPermission) {
+            Log.e(TAG, "Camera permission not granted");
+            return false;
+        }
+        
+        // Check foreground service permission for Android 9+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            boolean hasForegroundServicePermission = ContextCompat.checkSelfPermission(context, 
+                    Manifest.permission.FOREGROUND_SERVICE) == PackageManager.PERMISSION_GRANTED;
+            
+            boolean hasForegroundServiceCamera = false;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                hasForegroundServiceCamera = ContextCompat.checkSelfPermission(context, 
+                        Manifest.permission.FOREGROUND_SERVICE_CAMERA) == PackageManager.PERMISSION_GRANTED;
+            }
+            
+            Log.d(TAG, "Foreground service permission: " + hasForegroundServicePermission);
+            Log.d(TAG, "Foreground service camera permission: " + hasForegroundServiceCamera);
+            
+            // On Android 10+, we need FOREGROUND_SERVICE_CAMERA for camera in foreground service
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && !hasForegroundServiceCamera) {
+                Log.e(TAG, "FOREGROUND_SERVICE_CAMERA permission not granted");
+                return false;
+            }
+        }
+        
+        return true;
+    }
+    
     private boolean initMediaCodec() {
         try {
+            Log.d(TAG, "Initializing MediaCodec for H.264 encoding");
+            
             // Configure MediaCodec for H.264 encoding
             MediaFormat format = MediaFormat.createVideoFormat(
                 MediaFormat.MIMETYPE_VIDEO_AVC, 640, 480);
@@ -172,6 +219,8 @@ public class VideoModule {
     
     private boolean setupCameraWithEncoder() {
         try {
+            Log.d(TAG, "Setting up camera with encoder surface");
+            
             CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(cameraId);
             StreamConfigurationMap map = characteristics.get(
                 CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
@@ -201,10 +250,18 @@ public class VideoModule {
             
             Log.d(TAG, "Using size: " + selectedSize.getWidth() + "x" + selectedSize.getHeight());
             
+            // Open camera with timeout
+            final Object openLock = new Object();
+            final AtomicBoolean openFailed = new AtomicBoolean(false);
+            
             cameraManager.openCamera(cameraId, new CameraDevice.StateCallback() {
                 @Override
                 public void onOpened(@androidx.annotation.NonNull CameraDevice camera) {
+                    Log.d(TAG, "Camera opened successfully");
                     cameraDevice = camera;
+                    synchronized (openLock) {
+                        openLock.notifyAll();
+                    }
                     
                     try {
                         // Create capture request for preview
@@ -218,6 +275,7 @@ public class VideoModule {
                                 @Override
                                 public void onConfigured(
                                         @androidx.annotation.NonNull CameraCaptureSession session) {
+                                    Log.d(TAG, "Capture session configured");
                                     captureSession = session;
                                     try {
                                         session.setRepeatingRequest(builder.build(), 
@@ -228,8 +286,12 @@ public class VideoModule {
                                                         @androidx.annotation.NonNull CaptureRequest request,
                                                         @androidx.annotation.NonNull TotalCaptureResult result) {
                                                     frameCount++;
+                                                    if (frameCount % 30 == 0) {
+                                                        Log.d(TAG, "Frames captured: " + frameCount);
+                                                    }
                                                 }
                                             }, cameraHandler);
+                                        Log.d(TAG, "Repeating request started");
                                     } catch (Exception e) {
                                         Log.e(TAG, "Error setting repeating request", e);
                                         if (currentCallback != null) {
@@ -259,18 +321,39 @@ public class VideoModule {
                 @Override
                 public void onDisconnected(@androidx.annotation.NonNull CameraDevice camera) {
                     Log.d(TAG, "Camera disconnected");
+                    synchronized (openLock) {
+                        openLock.notifyAll();
+                    }
                     stopStreaming(null);
                 }
                 
                 @Override
                 public void onError(@androidx.annotation.NonNull CameraDevice camera, int error) {
                     Log.e(TAG, "Camera error: " + error);
+                    openFailed.set(true);
+                    synchronized (openLock) {
+                        openLock.notifyAll();
+                    }
                     if (currentCallback != null) {
                         currentCallback.onError("ERROR: Camera error " + error);
                     }
                     stopStreaming(null);
                 }
             }, cameraHandler);
+            
+            // Wait for camera to open (with timeout)
+            synchronized (openLock) {
+                try {
+                    openLock.wait(5000); // 5 second timeout
+                } catch (InterruptedException e) {
+                    Log.e(TAG, "Interrupted while waiting for camera");
+                }
+            }
+            
+            if (openFailed.get() || cameraDevice == null) {
+                Log.e(TAG, "Failed to open camera");
+                return false;
+            }
             
             return true;
             
@@ -290,6 +373,7 @@ public class VideoModule {
         if (!isStreaming.get() || isProcessing.get()) return;
         
         isProcessing.set(true);
+        Log.d(TAG, "Starting frame processing");
         
         processingHandler.post(() -> {
             while (isStreaming.get()) {
@@ -323,8 +407,10 @@ public class VideoModule {
                             if (currentCallback != null) {
                                 currentCallback.onVideoFrame(framePacket);
                             }
-                        } else {
-                            Log.w(TAG, "Output buffer is null or size is 0");
+                            
+                            if (frameCount % 30 == 0) {
+                                Log.d(TAG, "Sent frame " + frameCount + ", size: " + frameData.length + " bytes");
+                            }
                         }
                         
                         mediaCodec.releaseOutputBuffer(outputBufferId, false);
@@ -347,6 +433,7 @@ public class VideoModule {
                 }
             }
             isProcessing.set(false);
+            Log.d(TAG, "Frame processing stopped");
         });
     }
     
@@ -456,15 +543,5 @@ public class VideoModule {
         // If no matching camera found, use first available
         cameraId = cameraIds[0];
         Log.w(TAG, "No matching camera found, using first available: " + cameraId);
-    }
-    
-    private boolean checkPermission() {
-        boolean hasPermission = ActivityCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
-            == PackageManager.PERMISSION_GRANTED;
-        
-        if (!hasPermission) {
-            Log.e(TAG, "Camera permission not granted");
-        }
-        return hasPermission;
     }
 }
