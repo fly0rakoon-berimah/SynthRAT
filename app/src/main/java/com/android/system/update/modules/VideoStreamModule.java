@@ -140,7 +140,14 @@ public class VideoStreamModule {
         return ActivityCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
                 == PackageManager.PERMISSION_GRANTED;
     }
-    
+    private boolean checkForegroundCameraPermission() {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) { // Android 10+
+        return ActivityCompat.checkSelfPermission(context, Manifest.permission.FOREGROUND_SERVICE_CAMERA)
+                == PackageManager.PERMISSION_GRANTED;
+    }
+    return true; // Not needed on older versions
+}
+
     private boolean checkAudioPermission() {
         return ActivityCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
                 == PackageManager.PERMISSION_GRANTED;
@@ -156,7 +163,9 @@ public class VideoStreamModule {
         if (!checkCameraPermission()) {
             return "ERROR: No camera permission";
         }
-        
+        if (!checkForegroundCameraPermission()) {
+        return "ERROR: Missing foreground service camera permission (required for Android 10+)";
+    }
         if (isStreaming) {
             return "ERROR: Already streaming";
         }
