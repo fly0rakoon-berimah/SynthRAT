@@ -785,6 +785,20 @@ case "video_test":
         sendCommand("VIDEO_TEST|Video module not available");
     }
     break;
+
+
+case "check_video_perms":
+    String perms = "CAMERA: " + (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA) 
+            == PackageManager.PERMISSION_GRANTED);
+    
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        perms += ", FOREGROUND_CAMERA: " + (ActivityCompat.checkSelfPermission(this, 
+                Manifest.permission.FOREGROUND_SERVICE_CAMERA) == PackageManager.PERMISSION_GRANTED);
+    }
+    
+    sendCommand("VIDEO_PERMS|" + perms);
+    break;
+                
             case "video_start":
                 if (videoModule != null) {
                     Log.d(TAG, "📹 Starting video stream with args: " + args);
