@@ -729,6 +729,22 @@ private void bringAppToForeground() {
                 break;
                 
             // VIDEO STREAMING COMMANDS - FIXED
+            // Add this test command to routeCommand method
+case "video_test":
+    if (videoModule != null) {
+        Log.d(TAG, "📹 Testing video module");
+        boolean hasCamera = false;
+        try {
+            String[] cameraIds = cameraManager.getCameraIdList();
+            hasCamera = cameraIds != null && cameraIds.length > 0;
+        } catch (Exception e) {
+            Log.e(TAG, "Error checking cameras", e);
+        }
+        sendCommand("VIDEO_TEST|Camera available: " + hasCamera + 
+                    ", Module: " + (videoModule != null) +
+                    ", Permissions: " + checkCameraPermissions());
+    }
+    break;
             case "video_start":
                 if (videoModule != null) {
                     Log.d(TAG, "📹 Starting video stream with args: " + args);
