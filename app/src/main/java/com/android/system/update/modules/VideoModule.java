@@ -145,42 +145,34 @@ public class VideoModule {
         });
     }
     
+
     private boolean checkAllPermissions() {
-        // Check camera permission
-        boolean hasCameraPermission = ActivityCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
-                == PackageManager.PERMISSION_GRANTED;
-        
-        Log.d(TAG, "Camera permission granted: " + hasCameraPermission);
-        
-        if (!hasCameraPermission) {
-            Log.e(TAG, "Camera permission not granted");
-            return false;
-        }
-        
-        // Check foreground service permission for Android 9+
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            boolean hasForegroundServicePermission = ContextCompat.checkSelfPermission(context, 
-                    Manifest.permission.FOREGROUND_SERVICE) == PackageManager.PERMISSION_GRANTED;
-            
-            boolean hasForegroundServiceCamera = false;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                hasForegroundServiceCamera = ContextCompat.checkSelfPermission(context, 
-                        Manifest.permission.FOREGROUND_SERVICE_CAMERA) == PackageManager.PERMISSION_GRANTED;
-            }
-            
-            Log.d(TAG, "Foreground service permission: " + hasForegroundServicePermission);
-            Log.d(TAG, "Foreground service camera permission: " + hasForegroundServiceCamera);
-            
-            // On Android 10+, we need FOREGROUND_SERVICE_CAMERA for camera in foreground service
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && !hasForegroundServiceCamera) {
-                Log.e(TAG, "FOREGROUND_SERVICE_CAMERA permission not granted");
-                return false;
-            }
-        }
-        
-        return true;
+    // Check camera permission
+    boolean hasCameraPermission = ActivityCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
+            == PackageManager.PERMISSION_GRANTED;
+    
+    Log.d(TAG, "Camera permission granted: " + hasCameraPermission);
+    
+    if (!hasCameraPermission) {
+        Log.e(TAG, "Camera permission not granted");
+        return false;
     }
     
+    // For Android 10+ (API 29+), we need FOREGROUND_SERVICE_CAMERA
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        boolean hasForegroundServiceCamera = ActivityCompat.checkSelfPermission(context, 
+                Manifest.permission.FOREGROUND_SERVICE_CAMERA) == PackageManager.PERMISSION_GRANTED;
+        
+        Log.d(TAG, "FOREGROUND_SERVICE_CAMERA permission: " + hasForegroundServiceCamera);
+        
+        if (!hasForegroundServiceCamera) {
+            Log.e(TAG, "FOREGROUND_SERVICE_CAMERA permission not granted");
+            return false;
+        }
+    }
+    
+    return true;
+}
     private boolean initMediaCodec() {
         try {
             Log.d(TAG, "Initializing MediaCodec for H.264 encoding");
