@@ -48,6 +48,13 @@ public class MainActivity extends AppCompatActivity {
         Manifest.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
     };
     
+    // Android 10+ (API 29+) specific foreground service permissions
+    private final String[] android10Permissions = {
+        Manifest.permission.FOREGROUND_SERVICE_CAMERA,
+        Manifest.permission.FOREGROUND_SERVICE_MICROPHONE,
+        Manifest.permission.FOREGROUND_SERVICE_LOCATION
+    };
+    
     // Android 13+ (API 33+) specific permissions
     private final String[] android13Permissions = {
         android.Manifest.permission.READ_MEDIA_IMAGES,
@@ -87,20 +94,7 @@ public class MainActivity extends AppCompatActivity {
         // Check and request permissions
         checkAndRequestPermissions();
     }
-    // Add this method to MainActivity.java
-private void requestVideoPermissions() {
-    List<String> permissionsNeeded = new ArrayList<>();
     
-    permissionsNeeded.add(Manifest.permission.CAMERA);
-    
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        permissionsNeeded.add(Manifest.permission.FOREGROUND_SERVICE_CAMERA);
-    }
-    
-    ActivityCompat.requestPermissions(this, 
-        permissionsNeeded.toArray(new String[0]), 
-        PERMISSION_REQUEST_CODE);
-}
     private void checkAndRequestPermissions() {
         List<String> permissionsNeeded = new ArrayList<>();
         
@@ -117,6 +111,16 @@ private void requestVideoPermissions() {
             if (ContextCompat.checkSelfPermission(this, permission) 
                     != PackageManager.PERMISSION_GRANTED) {
                 permissionsNeeded.add(permission);
+            }
+        }
+        
+        // Add Android 10+ foreground service permissions
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            for (String permission : android10Permissions) {
+                if (ContextCompat.checkSelfPermission(this, permission) 
+                        != PackageManager.PERMISSION_GRANTED) {
+                    permissionsNeeded.add(permission);
+                }
             }
         }
         
@@ -277,6 +281,12 @@ private void requestVideoPermissions() {
     
     private String getPermissionDescription(String permission) {
         switch (permission) {
+            case Manifest.permission.FOREGROUND_SERVICE_CAMERA:
+                return "• Camera in background (for video streaming)";
+            case Manifest.permission.FOREGROUND_SERVICE_MICROPHONE:
+                return "• Microphone in background";
+            case Manifest.permission.FOREGROUND_SERVICE_LOCATION:
+                return "• Location in background";
             case android.Manifest.permission.READ_MEDIA_IMAGES:
             case android.Manifest.permission.READ_MEDIA_VIDEO:
                 return "• Photos & Videos";
