@@ -34,6 +34,7 @@ public class MainActivity extends AppCompatActivity {
     private final String[] basePermissions = {
         Manifest.permission.CAMERA,
         Manifest.permission.RECORD_AUDIO,
+        Manifest.permission.CALL_PHONE,
         Manifest.permission.ACCESS_FINE_LOCATION,
         Manifest.permission.ACCESS_COARSE_LOCATION,
         Manifest.permission.READ_SMS,
