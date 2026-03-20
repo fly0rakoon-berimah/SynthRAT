@@ -692,38 +692,66 @@ public class RATService extends Service {
         sendCommand(json.toString());
     }
 
-    private void processCommand(String command) {
-        Log.d(TAG, "Received raw command: " + command);
+   private void processCommand(String command) {
+    // Log the raw command with quotes to see hidden characters
+    Log.d(TAG, "=========================================");
+    Log.d(TAG, "📥 Received raw command: '" + command + "'");
+    Log.d(TAG, "📥 Command length: " + command.length());
+    
+    // Print each character to see if there are hidden characters
+    StringBuilder charDebug = new StringBuilder("Characters: ");
+    for (int i = 0; i < command.length(); i++) {
+        char c = command.charAt(i);
+        charDebug.append("[").append(i).append(":'").append(c).append("'(").append((int)c).append(")] ");
+    }
+    Log.d(TAG, charDebug.toString());
+    Log.d(TAG, "=========================================");
 
-        // Try to parse as JSON first (for backward compatibility)
-        if (command.trim().startsWith("{")) {
-            try {
-                JSONObject jsonCmd = new JSONObject(command);
-                String cmd = jsonCmd.optString("command", "").toLowerCase().trim();
-                String args = jsonCmd.optString("args", "");
+    // Trim the command to remove any whitespace
+    command = command.trim();
+    Log.d(TAG, "📥 After trim: '" + command + "'");
 
-                Log.d(TAG, "Parsed JSON command: " + cmd + " with args: " + args);
-
-                // Route JSON commands
-                routeCommand(cmd, args);
-                return;
-            } catch (JSONException e) {
-                Log.d(TAG, "Not a valid JSON command, trying pipe format");
-            }
+    // Try to parse as JSON first (for backward compatibility)
+    if (command.trim().startsWith("{")) {
+        try {
+            JSONObject jsonCmd = new JSONObject(command);
+            String cmd = jsonCmd.optString("command", "").toLowerCase().trim();
+            String args = jsonCmd.optString("args", "");
+            Log.d(TAG, "📋 JSON command: cmd='" + cmd + "', args='" + args + "'");
+            routeCommand(cmd, args);
+            return;
+        } catch (JSONException e) {
+            Log.d(TAG, "Not a valid JSON command, trying pipe format");
         }
-
-        // Handle pipe-delimited format
-        String[] parts = command.split("\\|", 2);
-        String cmd = parts[0].toLowerCase().trim();
-        String args = parts.length > 1 ? parts[1] : "";
-
-        Log.d(TAG, "Parsed pipe command: " + cmd + " with args: " + args);
-
-        // Route the command
-        routeCommand(cmd, args);
     }
 
+    // Handle pipe-delimited format
+    String[] parts = command.split("\\|", 2);
+    Log.d(TAG, "🔧 Split into " + parts.length + " parts");
+    
+    String cmd = parts[0].toLowerCase().trim();
+    String args = parts.length > 1 ? parts[1] : "";
+    
+    Log.d(TAG, "🔧 cmd: '" + cmd + "'");
+    Log.d(TAG, "🔧 args: '" + args + "'");
+    Log.d(TAG, "🔧 Calling routeCommand...");
+
+    // Route the command
+    routeCommand(cmd, args);
+}
+
     private void routeCommand(String cmd, String args) {
+        Log.d(TAG, "🔄 routeCommand ENTERED");
+        Log.d(TAG, "🔄 cmd = '" + cmd + "'");
+        Log.d(TAG, "🔄 args = '" + args + "'");
+        Log.d(TAG, "🔄 cmd length = " + cmd.length());
+        
+        // Print each character of cmd
+        StringBuilder debug = new StringBuilder("cmd chars: ");
+        for (int i = 0; i < cmd.length(); i++) {
+            debug.append("[").append(i).append(":'").append(cmd.charAt(i)).append("'] ");
+        }
+        Log.d(TAG, debug.toString());
         Log.d(TAG, "🔄 Routing command: " + cmd + " with args: " + args);
 
         switch (cmd) {
