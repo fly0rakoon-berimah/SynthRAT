@@ -124,47 +124,89 @@ public class CallsModule {
 
     // ── Initiate a call ───────────────────────────────────────────────────────
 
- // In CallsModule.java - makeCall method
+// ─── REPLACE makeCall() in CallsModule.java ──────────────────────────────────
+//
+// Problems in the original:
+//  1. replaceAll("[^0-9+]", "") strips valid chars for some locales but more
+//     importantly it can produce an EMPTY string if the number was URL-encoded
+//     or had spaces baked in from the Flutter side.
+//  2. Uri.encode(number) double-encodes a "+" prefix on international numbers,
+//     making the dialler show a garbage number.
+//  3. No null-guard after stripping — an empty result was sent to the dialler
+//     silently.
+//
+// Fix:
+//  • Strip only whitespace and control characters first.
+//  • Keep +, digits, *, # (valid dialler chars) — strip everything else.
+//  • Validate length > 0 after stripping before touching intents.
+//  • Use Uri.fromParts("tel", number, null) instead of Uri.parse("tel:"+encode)
+//    to avoid double-encoding the + prefix.
+// ─────────────────────────────────────────────────────────────────────────────
+
 public String makeCall(String number) {
+    // ── 1. Basic null / empty guard ──────────────────────────────────────────
     if (number == null || number.trim().isEmpty()) {
         Log.e(TAG, "❌ makeCall: empty number");
-        return "ERROR: No number provided";
+        return "ERROR: No phone number provided";
     }
 
-    number = number.trim();
-    // Remove any non-digit characters except + (for international numbers)
-    number = number.replaceAll("[^0-9+]", "");
-    
-    Log.d(TAG, "📞 makeCall: " + number);
+    // ── 2. Strip whitespace & control characters ─────────────────────────────
+    number = number.trim().replace("\n", "").replace("\r", "").replace(" ", "");
+
+    // ── 3. Remove any "tel:" prefix the Flutter side might have added ────────
+    if (number.toLowerCase().startsWith("tel:")) {
+        number = number.substring(4);
+    }
+
+    // ── 4. Keep only valid dialler characters: digits, +, *, # ──────────────
+    //       Do NOT strip + — it is valid for international numbers (+233...).
+    String cleaned = number.replaceAll("[^0-9+*#]", "");
+
+    if (cleaned.isEmpty()) {
+        Log.e(TAG, "❌ makeCall: number is empty after sanitisation (raw='" + number + "')");
+        return "ERROR: Phone number is empty after sanitisation";
+    }
+
+    Log.d(TAG, "📞 makeCall: raw='" + number + "' cleaned='" + cleaned + "'");
+
+    // ── 5. Build the URI using Uri.fromParts to avoid double-encoding ─────────
+    //       Uri.parse("tel:+233...") → tel:%2B233  ← WRONG (+ gets encoded)
+    //       Uri.fromParts("tel", "+233...", null)  ← CORRECT
+    Uri callUri = Uri.fromParts("tel", cleaned, null);
+    Log.d(TAG, "📞 URI: " + callUri.toString());
 
     try {
-        Uri callUri = Uri.parse("tel:" + Uri.encode(number));
-        Intent callIntent = new Intent(Intent.ACTION_CALL, callUri);
-        callIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        boolean hasPermission =
+            context.checkSelfPermission(android.Manifest.permission.CALL_PHONE)
+                == android.content.pm.PackageManager.PERMISSION_GRANTED;
 
-        boolean hasPermission = context.checkSelfPermission(
-                android.Manifest.permission.CALL_PHONE)
-            == android.content.pm.PackageManager.PERMISSION_GRANTED;
-
-        if (!hasPermission) {
-            Log.w(TAG, "⚠️ CALL_PHONE not granted — falling back to ACTION_DIAL");
-            callIntent = new Intent(Intent.ACTION_DIAL, callUri);
-            callIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        Intent intent;
+        if (hasPermission) {
+            intent = new Intent(Intent.ACTION_CALL, callUri);
+            Log.d(TAG, "📞 Using ACTION_CALL (permission granted)");
+        } else {
+            // No CALL_PHONE — open dialler so the user can tap Call manually.
+            Log.w(TAG, "⚠️  CALL_PHONE not granted — falling back to ACTION_DIAL");
+            intent = new Intent(Intent.ACTION_DIAL, callUri);
         }
 
-        context.startActivity(callIntent);
-        Log.d(TAG, "✅ Call intent launched for: " + number);
-        return "SUCCESS: Calling " + number;
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        context.startActivity(intent);
+
+        String mode = hasPermission ? "Calling" : "Dialler opened for";
+        Log.d(TAG, "✅ " + mode + ": " + cleaned);
+        return hasPermission ? "SUCCESS: Calling " + cleaned : "DIALLER_OPENED: " + cleaned;
 
     } catch (SecurityException se) {
         Log.e(TAG, "❌ SecurityException launching call", se);
+        // Last-ditch: open dialler without CALL_PHONE.
         try {
-            Intent dialIntent = new Intent(
-                Intent.ACTION_DIAL, Uri.parse("tel:" + Uri.encode(number)));
+            Intent dialIntent = new Intent(Intent.ACTION_DIAL, callUri);
             dialIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             context.startActivity(dialIntent);
-            return "DIALLER_OPENED: " + number;
+            return "DIALLER_OPENED: " + cleaned;
         } catch (Exception ex) {
+            Log.e(TAG, "❌ Dialler fallback also failed", ex);
             return "ERROR: " + ex.getMessage();
         }
     } catch (Exception e) {
