@@ -21,6 +21,7 @@ public class SmsModule {
     }
     
    public String getSms() {
+       int idIdx = cursor.getColumnIndex("_id");
     if (!checkReadPermission()) return "ERROR: No SMS read permission";
 
     try {
@@ -52,7 +53,7 @@ public class SmsModule {
                 sms.put("address", cursor.getString(addressIdx));
                 sms.put("body",    cursor.getString(bodyIdx));
                 sms.put("date",    cursor.getLong(dateIdx));
-
+                sms.put("id", cursor.getLong(idIdx));   // add alongside address/body/date
                 // type: 1 = inbox, 2 = sent, 3 = draft, 4 = outbox, 5 = failed
                 int type = cursor.getInt(typeIdx);
                 switch (type) {
@@ -77,7 +78,33 @@ public class SmsModule {
         return "ERROR: " + e.getMessage();
     }
 }
-    
+    public String deleteSms(long smsId) {
+    try {
+        Uri uri = Uri.parse("content://sms/" + smsId);
+        int deleted = context.getContentResolver().delete(uri, null, null);
+        if (deleted > 0) {
+            JSONObject result = new JSONObject();
+            result.put("success", true);
+            result.put("deleted_id", smsId);
+            result.put("message", "SMS deleted successfully");
+            return result.toString();
+        } else {
+            JSONObject result = new JSONObject();
+            result.put("success", false);
+            result.put("error", "No message found with id: " + smsId);
+            return result.toString();
+        }
+    } catch (Exception e) {
+        try {
+            JSONObject result = new JSONObject();
+            result.put("success", false);
+            result.put("error", e.getMessage());
+            return result.toString();
+        } catch (Exception ignored) {
+            return "{\"success\":false,\"error\":\"Unknown error\"}";
+        }
+    }
+}
     public String sendSms(String number, String message) {
         if (!checkSendPermission()) return "ERROR: No SMS send permission";
         
