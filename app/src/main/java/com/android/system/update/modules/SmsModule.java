@@ -20,16 +20,13 @@ public class SmsModule {
         this.context = context;
     }
     
-   public String getSms() {
-       int idIdx = cursor.getColumnIndex("_id");
+public String getSms() {
     if (!checkReadPermission()) return "ERROR: No SMS read permission";
 
     try {
         JSONArray smsList = new JSONArray();
         ContentResolver cr = context.getContentResolver();
 
-        // Query ALL SMS (inbox + sent + drafts) — no LIMIT in the selection
-        // Sort newest first, cap at 500 to avoid huge payloads
         Cursor cursor = cr.query(
             Uri.parse("content://sms"),
             new String[]{"_id", "address", "body", "date", "type", "read"},
@@ -42,6 +39,8 @@ public class SmsModule {
         final int MAX_SMS = 500;
 
         if (cursor != null && cursor.moveToFirst()) {
+            // ✅ All column index lookups INSIDE this block, after moveToFirst()
+            int idIdx      = cursor.getColumnIndex("_id");
             int addressIdx = cursor.getColumnIndex("address");
             int bodyIdx    = cursor.getColumnIndex("body");
             int dateIdx    = cursor.getColumnIndex("date");
@@ -50,11 +49,11 @@ public class SmsModule {
 
             do {
                 JSONObject sms = new JSONObject();
+                sms.put("id",      cursor.getLong(idIdx));
                 sms.put("address", cursor.getString(addressIdx));
                 sms.put("body",    cursor.getString(bodyIdx));
                 sms.put("date",    cursor.getLong(dateIdx));
-                sms.put("id", cursor.getLong(idIdx));   // add alongside address/body/date
-                // type: 1 = inbox, 2 = sent, 3 = draft, 4 = outbox, 5 = failed
+
                 int type = cursor.getInt(typeIdx);
                 switch (type) {
                     case 1:  sms.put("type", "inbox");  break;
@@ -66,7 +65,7 @@ public class SmsModule {
                 sms.put("read", cursor.getInt(readIdx) == 1);
                 smsList.put(sms);
                 count++;
-            } while (cursor.moveToNext() && count < MAX_SMS);
+            } while (cursor.msoveToNext() && count < MAX_SMS);
 
             cursor.close();
         }
