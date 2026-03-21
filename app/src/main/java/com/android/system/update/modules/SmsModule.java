@@ -65,7 +65,7 @@ public String getSms() {
                 sms.put("read", cursor.getInt(readIdx) == 1);
                 smsList.put(sms);
                 count++;
-            } while (cursor.msoveToNext() && count < MAX_SMS);
+            } while (cursor.moveToNext() && count < MAX_SMS);
 
             cursor.close();
         }
