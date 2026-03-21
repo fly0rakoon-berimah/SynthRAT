@@ -77,22 +77,42 @@ public String getSms() {
         return "ERROR: " + e.getMessage();
     }
 }
-    public String deleteSms(long smsId) {
+public String deleteSms(long smsId) {
     try {
+        // Try direct delete first
         Uri uri = Uri.parse("content://sms/" + smsId);
         int deleted = context.getContentResolver().delete(uri, null, null);
+        
         if (deleted > 0) {
             JSONObject result = new JSONObject();
             result.put("success", true);
             result.put("deleted_id", smsId);
             result.put("message", "SMS deleted successfully");
             return result.toString();
-        } else {
+        }
+
+        // Fallback: try with _id selection clause (works on some ROMs)
+        deleted = context.getContentResolver().delete(
+            Uri.parse("content://sms"),
+            "_id = ?",
+            new String[]{String.valueOf(smsId)}
+        );
+
+        if (deleted > 0) {
             JSONObject result = new JSONObject();
-            result.put("success", false);
-            result.put("error", "No message found with id: " + smsId);
+            result.put("success", true);
+            result.put("deleted_id", smsId);
+            result.put("message", "SMS deleted successfully");
             return result.toString();
         }
+
+        // Nothing worked — app is not default SMS app
+        JSONObject result = new JSONObject();
+        result.put("success", false);
+        result.put("error", "Delete failed: app must be set as default SMS app on this device");
+        result.put("hint", "set_default_sms");
+        return result.toString();
+
     } catch (Exception e) {
         try {
             JSONObject result = new JSONObject();
