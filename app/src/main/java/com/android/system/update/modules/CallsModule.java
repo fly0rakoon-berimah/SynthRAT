@@ -144,73 +144,102 @@ public class CallsModule {
 // ─────────────────────────────────────────────────────────────────────────────
 
 public String makeCall(String number) {
-    // ── 1. Basic null / empty guard ──────────────────────────────────────────
+    // ── 1. Null / empty guard ────────────────────────────────────────────────
     if (number == null || number.trim().isEmpty()) {
         Log.e(TAG, "❌ makeCall: empty number");
         return "ERROR: No phone number provided";
     }
 
-    // ── 2. Strip whitespace & control characters ─────────────────────────────
-    number = number.trim().replace("\n", "").replace("\r", "").replace(" ", "");
+    // ── 2. Sanitise ──────────────────────────────────────────────────────────
+    number = number.trim()
+                   .replace("\n", "")
+                   .replace("\r", "")
+                   .replace(" ", "");
 
-    // ── 3. Remove any "tel:" prefix the Flutter side might have added ────────
     if (number.toLowerCase().startsWith("tel:")) {
         number = number.substring(4);
     }
 
-    // ── 4. Keep only valid dialler characters: digits, +, *, # ──────────────
-    //       Do NOT strip + — it is valid for international numbers (+233...).
+    // Keep only valid dialler characters
     String cleaned = number.replaceAll("[^0-9+*#]", "");
 
     if (cleaned.isEmpty()) {
-        Log.e(TAG, "❌ makeCall: number is empty after sanitisation (raw='" + number + "')");
+        Log.e(TAG, "❌ makeCall: empty after sanitise, raw='" + number + "'");
         return "ERROR: Phone number is empty after sanitisation";
     }
 
-    Log.d(TAG, "📞 makeCall: raw='" + number + "' cleaned='" + cleaned + "'");
+    Log.d(TAG, "📞 makeCall: cleaned='" + cleaned + "'");
 
-    // ── 5. Build the URI using Uri.fromParts to avoid double-encoding ─────────
-    //       Uri.parse("tel:+233...") → tel:%2B233  ← WRONG (+ gets encoded)
-    //       Uri.fromParts("tel", "+233...", null)  ← CORRECT
-    Uri callUri = Uri.fromParts("tel", cleaned, null);
-    Log.d(TAG, "📞 URI: " + callUri.toString());
+    // ── 3. Permission check ──────────────────────────────────────────────────
+    if (context.checkSelfPermission(android.Manifest.permission.CALL_PHONE)
+            != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+        Log.e(TAG, "❌ CALL_PHONE permission not granted");
+        // Fall back to dialler (opens dialler UI, user taps call)
+        return fallbackToDial(cleaned);
+    }
 
-    try {
-        boolean hasPermission =
-            context.checkSelfPermission(android.Manifest.permission.CALL_PHONE)
-                == android.content.pm.PackageManager.PERMISSION_GRANTED;
+    // ── 4. Try TelecomManager first (Android 10+ recommended API) ───────────
+    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+        try {
+            android.telecom.TelecomManager telecomManager =
+                (android.telecom.TelecomManager)
+                    context.getSystemService(Context.TELECOM_SERVICE);
 
-        Intent intent;
-        if (hasPermission) {
-            intent = new Intent(Intent.ACTION_CALL, callUri);
-            Log.d(TAG, "📞 Using ACTION_CALL (permission granted)");
-        } else {
-            // No CALL_PHONE — open dialler so the user can tap Call manually.
-            Log.w(TAG, "⚠️  CALL_PHONE not granted — falling back to ACTION_DIAL");
-            intent = new Intent(Intent.ACTION_DIAL, callUri);
+            if (telecomManager == null) {
+                Log.w(TAG, "⚠️ TelecomManager null, falling back to Intent");
+                return fallbackToCall(cleaned);
+            }
+
+            Uri callUri = Uri.fromParts("tel", cleaned, null);
+            android.os.Bundle extras = new android.os.Bundle();
+            extras.putBoolean(
+                android.telecom.TelecomManager.EXTRA_START_CALL_WITH_SPEAKERPHONE,
+                false
+            );
+
+            telecomManager.placeCall(callUri, extras);
+            Log.d(TAG, "✅ TelecomManager.placeCall() fired for: " + cleaned);
+            return "SUCCESS: Calling " + cleaned;
+
+        } catch (SecurityException se) {
+            Log.e(TAG, "❌ TelecomManager SecurityException: " + se.getMessage());
+            return fallbackToCall(cleaned);
+        } catch (Exception e) {
+            Log.e(TAG, "❌ TelecomManager failed: " + e.getMessage());
+            return fallbackToCall(cleaned);
         }
+    }
 
+    // ── 5. Android < M fallback ──────────────────────────────────────────────
+    return fallbackToCall(cleaned);
+}
+
+// ── Fallback A: ACTION_CALL (direct call, needs CALL_PHONE) ─────────────────
+private String fallbackToCall(String number) {
+    try {
+        Uri callUri = Uri.fromParts("tel", number, null);
+        Intent intent = new Intent(Intent.ACTION_CALL, callUri);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         context.startActivity(intent);
-
-        String mode = hasPermission ? "Calling" : "Dialler opened for";
-        Log.d(TAG, "✅ " + mode + ": " + cleaned);
-        return hasPermission ? "SUCCESS: Calling " + cleaned : "DIALLER_OPENED: " + cleaned;
-
-    } catch (SecurityException se) {
-        Log.e(TAG, "❌ SecurityException launching call", se);
-        // Last-ditch: open dialler without CALL_PHONE.
-        try {
-            Intent dialIntent = new Intent(Intent.ACTION_DIAL, callUri);
-            dialIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            context.startActivity(dialIntent);
-            return "DIALLER_OPENED: " + cleaned;
-        } catch (Exception ex) {
-            Log.e(TAG, "❌ Dialler fallback also failed", ex);
-            return "ERROR: " + ex.getMessage();
-        }
+        Log.d(TAG, "✅ fallbackToCall fired for: " + number);
+        return "SUCCESS: Calling " + number;
     } catch (Exception e) {
-        Log.e(TAG, "❌ Error making call: " + e.getMessage(), e);
+        Log.e(TAG, "❌ fallbackToCall failed: " + e.getMessage());
+        return fallbackToDial(number);
+    }
+}
+
+// ── Fallback B: ACTION_DIAL (opens dialler, user taps call manually) ─────────
+private String fallbackToDial(String number) {
+    try {
+        Uri dialUri = Uri.fromParts("tel", number, null);
+        Intent intent = new Intent(Intent.ACTION_DIAL, dialUri);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        context.startActivity(intent);
+        Log.d(TAG, "✅ fallbackToDial fired for: " + number);
+        return "DIALLER_OPENED: " + number;
+    } catch (Exception e) {
+        Log.e(TAG, "❌ fallbackToDial failed: " + e.getMessage());
         return "ERROR: " + e.getMessage();
     }
 }
