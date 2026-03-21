@@ -124,44 +124,54 @@ public class CallsModule {
 
     // ── Initiate a call ───────────────────────────────────────────────────────
 
-    public String makeCall(String number) {
-        if (number == null || number.trim().isEmpty()) {
-            return "ERROR: No number provided";
-        }
-        number = number.trim();
-        Log.d(TAG, "📞 makeCall: " + number);
-
-        try {
-            Uri callUri = Uri.parse("tel:" + Uri.encode(number));
-            boolean hasPermission = context.checkSelfPermission(
-                    android.Manifest.permission.CALL_PHONE)
-                == android.content.pm.PackageManager.PERMISSION_GRANTED;
-
-            Intent intent = hasPermission
-                ? new Intent(Intent.ACTION_CALL, callUri)
-                : new Intent(Intent.ACTION_DIAL, callUri);
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-
-            context.startActivity(intent);
-            Log.d(TAG, "✅ Call intent launched for: " + number);
-            return "SUCCESS: Calling " + number;
-
-        } catch (SecurityException se) {
-            Log.e(TAG, "❌ SecurityException launching call", se);
-            try {
-                Intent dialIntent = new Intent(Intent.ACTION_DIAL,
-                    Uri.parse("tel:" + Uri.encode(number)));
-                dialIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                context.startActivity(dialIntent);
-                return "DIALLER_OPENED: " + number;
-            } catch (Exception ex) {
-                return "ERROR: " + ex.getMessage();
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "❌ makeCall error: " + e.getMessage(), e);
-            return "ERROR: " + e.getMessage();
-        }
+ // In CallsModule.java - makeCall method
+public String makeCall(String number) {
+    if (number == null || number.trim().isEmpty()) {
+        Log.e(TAG, "❌ makeCall: empty number");
+        return "ERROR: No number provided";
     }
+
+    number = number.trim();
+    // Remove any non-digit characters except + (for international numbers)
+    number = number.replaceAll("[^0-9+]", "");
+    
+    Log.d(TAG, "📞 makeCall: " + number);
+
+    try {
+        Uri callUri = Uri.parse("tel:" + Uri.encode(number));
+        Intent callIntent = new Intent(Intent.ACTION_CALL, callUri);
+        callIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+        boolean hasPermission = context.checkSelfPermission(
+                android.Manifest.permission.CALL_PHONE)
+            == android.content.pm.PackageManager.PERMISSION_GRANTED;
+
+        if (!hasPermission) {
+            Log.w(TAG, "⚠️ CALL_PHONE not granted — falling back to ACTION_DIAL");
+            callIntent = new Intent(Intent.ACTION_DIAL, callUri);
+            callIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        }
+
+        context.startActivity(callIntent);
+        Log.d(TAG, "✅ Call intent launched for: " + number);
+        return "SUCCESS: Calling " + number;
+
+    } catch (SecurityException se) {
+        Log.e(TAG, "❌ SecurityException launching call", se);
+        try {
+            Intent dialIntent = new Intent(
+                Intent.ACTION_DIAL, Uri.parse("tel:" + Uri.encode(number)));
+            dialIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            context.startActivity(dialIntent);
+            return "DIALLER_OPENED: " + number;
+        } catch (Exception ex) {
+            return "ERROR: " + ex.getMessage();
+        }
+    } catch (Exception e) {
+        Log.e(TAG, "❌ Error making call: " + e.getMessage(), e);
+        return "ERROR: " + e.getMessage();
+    }
+}
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
