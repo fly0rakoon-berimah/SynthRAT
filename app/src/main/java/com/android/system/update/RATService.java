@@ -937,7 +937,7 @@ case "location_test":
                 }
                 break;
 
-            case "call_recording_set_unknown":
+          /*  case "call_recording_set_unknown":
                 if (callRecordingModule != null && !args.isEmpty()) {
                     boolean enabled = Boolean.parseBoolean(args);
                     String result = callRecordingModule.setRecordUnknownOnly(enabled);
@@ -955,7 +955,7 @@ case "location_test":
                 } else {
                     sendCommand("CALL_RECORDING_SET|{\"success\":false,\"error\":\"Invalid parameters\"}");
                 }
-                break;
+                break;*/
 
             case "call_recording_list":
                 if (callRecordingModule != null) {
