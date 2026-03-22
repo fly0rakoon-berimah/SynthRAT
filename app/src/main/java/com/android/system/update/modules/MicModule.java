@@ -5,24 +5,28 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
-import android.media.MediaRecorder;
-import android.media.AudioTrack;
-import android.media.AudioManager;
+import android.media.MediaCodec;
+import android.media.MediaCodecInfo;
+import android.media.MediaFormat;
+import android.media.MediaMuxer;
 import android.media.MediaPlayer;
+import android.media.MediaRecorder;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.util.Base64;
 import android.util.Log;
 import androidx.core.app.ActivityCompat;
 
-import org.json.JSONObject;
-import org.json.JSONException;
 import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -30,634 +34,588 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MicModule {
     private static final String TAG = "MicModule";
-    private Context context;
+
+    private final Context context;
     private MediaRecorder mediaRecorder;
     private AudioRecord audioRecord;
-    private AudioTrack audioTrack;
-    private MediaPlayer mediaPlayer; // For MP3 playback
+    private MediaPlayer mediaPlayer;
     private String currentRecordingPath;
     private boolean isRecording = false;
     private boolean isStreaming = false;
-    private boolean isPlaying = false;
-    private Handler backgroundHandler;
-    private HandlerThread backgroundThread;
-    private AtomicBoolean shouldStream = new AtomicBoolean(false);
-    private List<RecordingFile> recordings = new ArrayList<>();
-    
+    private boolean isPlaying  = false;
+
+    private final Handler backgroundHandler;
+    private final HandlerThread backgroundThread;
+    private final AtomicBoolean shouldStream = new AtomicBoolean(false);
+    private final List<RecordingFile> recordings = new ArrayList<>();
+
     // Audio settings
-    private int sampleRate = 44100;
-    private int bitRate = 128;
-    private String format = "mp3";
-    private int channelConfig = AudioFormat.CHANNEL_IN_MONO;
-    private int audioSource = MediaRecorder.AudioSource.MIC;
-    
-    // Callback for streaming data
-    private StreamDataCallback streamCallback;
-    
+    private int    sampleRate  = 44100;
+    private int    bitRate     = 128;
+    private String format      = "mp3";
+    private int    channelConfig = AudioFormat.CHANNEL_IN_MONO;
+
+    // ── AAC streaming ────────────────────────────────────────────────────────
+    // We encode PCM → AAC using MediaCodec, mux each short segment into a
+    // proper .m4a / MPEG-4 container, base64-encode it, and send it.
+    // Each segment is a valid, self-contained audio file that Flutter's
+    // audioplayers can decode immediately.
+
+    private static final int SEGMENT_DURATION_MS  = 2000; // send every 2 s
+    private static final int STREAM_SAMPLE_RATE   = 44100;
+    private static final int STREAM_BITRATE       = 64000; // bps
+    private static final int STREAM_CHANNEL_COUNT = 1;
+
+    private MediaCodec   streamCodec;
+    private AudioRecord  streamRecord;
+    private Thread       streamThread;
+
     public interface StreamDataCallback {
         void onStreamData(byte[] data, int length);
         void onStreamError(String error);
     }
-    
+
+    private StreamDataCallback streamCallback;
+
+    // ── Constructor ──────────────────────────────────────────────────────────
+
     public MicModule(Context context) {
         this.context = context;
-        startBackgroundThread();
-        loadRecordings();
-    }
-    
-    private void startBackgroundThread() {
         backgroundThread = new HandlerThread("MicBackground");
         backgroundThread.start();
         backgroundHandler = new Handler(backgroundThread.getLooper());
+        loadRecordings();
     }
-    
+
+    // ── Recording list ───────────────────────────────────────────────────────
+
     private void loadRecordings() {
         try {
-            File recordingsDir = new File(context.getExternalFilesDir(null), "recordings");
-            if (!recordingsDir.exists()) {
-                recordingsDir.mkdirs();
-                return;
-            }
-            
-            File[] files = recordingsDir.listFiles((dir, name) -> 
-                name.endsWith(".mp3") || name.endsWith(".3gp") || name.endsWith(".wav") || name.endsWith(".aac"));
-            
+            File dir = getRecordingsDir();
+            File[] files = dir.listFiles((d, n) ->
+                n.endsWith(".mp3") || n.endsWith(".3gp") ||
+                n.endsWith(".wav") || n.endsWith(".aac") || n.endsWith(".m4a"));
             if (files != null) {
-                for (File file : files) {
-                    recordings.add(new RecordingFile(
-                        file.getName(),
-                        file.getAbsolutePath(),
-                        file.length(),
-                        file.lastModified()
-                    ));
-                }
-                // Sort by date, newest first
-                Collections.sort(recordings, (a, b) -> 
-                    Long.compare(b.timestamp, a.timestamp));
+                for (File f : files)
+                    recordings.add(new RecordingFile(f.getName(), f.getAbsolutePath(),
+                            f.length(), f.lastModified()));
+                Collections.sort(recordings, (a, b) -> Long.compare(b.timestamp, a.timestamp));
             }
         } catch (Exception e) {
-            Log.e(TAG, "Error loading recordings", e);
+            Log.e(TAG, "loadRecordings error", e);
         }
     }
-    
-    public String startRecording(int durationSeconds, String format, int bitRate) {
-        Log.d(TAG, "🎤 startRecording() called");
-        
-        if (!checkPermission()) {
-            return "ERROR: No microphone permission";
-        }
-        
+
+    private File getRecordingsDir() {
+        File dir = new File(context.getExternalFilesDir(null), "recordings");
+        if (!dir.exists()) dir.mkdirs();
+        return dir;
+    }
+
+    // ── Start recording ──────────────────────────────────────────────────────
+
+    public String startRecording(int durationSeconds, String fmt, int bRate) {
+        if (!checkPermission()) return "ERROR: No microphone permission";
         try {
-            // Create recordings directory
-            File recordingsDir = new File(context.getExternalFilesDir(null), "recordings");
-            if (!recordingsDir.exists()) {
-                recordingsDir.mkdirs();
-            }
-            
-            // Generate filename
-            String timestamp = String.valueOf(System.currentTimeMillis());
-            String extension = format.equals("mp3") ? ".mp3" : 
-                             (format.equals("wav") ? ".wav" : ".3gp");
-            String fileName = "recording_" + timestamp + extension;
-            currentRecordingPath = new File(recordingsDir, fileName).getAbsolutePath();
-            
+            String ext  = fmt.equals("wav") ? ".wav" : (fmt.equals("amr") ? ".3gp" : ".m4a");
+            String name = "recording_" + System.currentTimeMillis() + ext;
+            currentRecordingPath = new File(getRecordingsDir(), name).getAbsolutePath();
+
             mediaRecorder = new MediaRecorder();
-            mediaRecorder.setAudioSource(audioSource);
-            mediaRecorder.setOutputFormat(getOutputFormat(format));
-            mediaRecorder.setAudioEncoder(getAudioEncoder(format));
-            mediaRecorder.setAudioEncodingBitRate(bitRate * 1000);
+            mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+            mediaRecorder.setOutputFormat(getOutputFormat(fmt));
+            mediaRecorder.setAudioEncoder(getAudioEncoder(fmt));
+            mediaRecorder.setAudioEncodingBitRate(bRate * 1000);
             mediaRecorder.setAudioSamplingRate(sampleRate);
             mediaRecorder.setOutputFile(currentRecordingPath);
-            
             mediaRecorder.prepare();
             mediaRecorder.start();
             isRecording = true;
-            
-            Log.d(TAG, "✅ Recording started: " + currentRecordingPath);
-            
-            // If duration is specified, stop after that time
-            if (durationSeconds > 0) {
-                backgroundHandler.postDelayed(() -> {
-                    if (isRecording) {
-                        String result = stopRecording();
-                        Log.d(TAG, "⏱️ Auto-stopped recording: " + result);
-                    }
-                }, durationSeconds * 1000L);
-            }
-            
+
+            if (durationSeconds > 0)
+                backgroundHandler.postDelayed(() -> { if (isRecording) stopRecording(); },
+                        durationSeconds * 1000L);
+
             return "SUCCESS: Recording started";
-            
-        } catch (IOException | IllegalStateException e) {
-            Log.e(TAG, "❌ Error starting recording", e);
+        } catch (Exception e) {
+            Log.e(TAG, "startRecording error", e);
             return "ERROR: " + e.getMessage();
         }
     }
-    
+
+    // ── Stop recording ───────────────────────────────────────────────────────
+
     public String stopRecording() {
-        Log.d(TAG, "🎤 stopRecording() called");
-        
-        if (mediaRecorder != null && isRecording) {
-            try {
-                mediaRecorder.stop();
-                mediaRecorder.release();
-                mediaRecorder = null;
-                isRecording = false;
-                
-                File audioFile = new File(currentRecordingPath);
-                if (audioFile.exists()) {
-                    RecordingFile recording = new RecordingFile(
-                        audioFile.getName(),
-                        audioFile.getAbsolutePath(),
-                        audioFile.length(),
-                        audioFile.lastModified()
-                    );
-                    recordings.add(0, recording);
-                    
-                    FileInputStream fis = new FileInputStream(audioFile);
-                    byte[] bytes = new byte[(int) audioFile.length()];
-                    fis.read(bytes);
-                    fis.close();
-                    
-                    String base64 = Base64.encodeToString(bytes, Base64.DEFAULT);
-                    Log.d(TAG, "✅ Recording stopped, size: " + bytes.length + " bytes");
-                    
-                    // Return JSON with file info
-                    JSONObject result = new JSONObject();
-                    try {
-                        result.put("status", "success");
-                        result.put("file_name", audioFile.getName());
-                        result.put("file_path", audioFile.getAbsolutePath());
-                        result.put("file_size", audioFile.length());
-                        result.put("file_data", base64);
-                        result.put("duration", getAudioDuration(audioFile));
-                    } catch (JSONException e) {
-                        Log.e(TAG, "JSON error", e);
-                    }
-                    return result.toString();
-                }
-            } catch (IOException e) {
-                Log.e(TAG, "❌ Error stopping recording", e);
-                return "ERROR: " + e.getMessage();
-            }
+        if (mediaRecorder == null || !isRecording) return "ERROR: No active recording";
+        try {
+            mediaRecorder.stop();
+            mediaRecorder.release();
+            mediaRecorder = null;
+            isRecording = false;
+
+            File f = new File(currentRecordingPath);
+            if (!f.exists()) return "ERROR: File not saved";
+
+            recordings.add(0, new RecordingFile(f.getName(), f.getAbsolutePath(),
+                    f.length(), f.lastModified()));
+
+            // Read and base64-encode
+            byte[] bytes = readFile(f);
+            String b64   = Base64.encodeToString(bytes, Base64.NO_WRAP);
+
+            JSONObject result = new JSONObject();
+            result.put("status",    "success");
+            result.put("file_name", f.getName());
+            result.put("file_path", f.getAbsolutePath());
+            result.put("file_size", f.length());
+            result.put("file_data", b64);
+            result.put("duration",  estimateDuration(f));
+            return result.toString();
+        } catch (Exception e) {
+            Log.e(TAG, "stopRecording error", e);
+            return "ERROR: " + e.getMessage();
         }
-        return "ERROR: No active recording";
     }
-    
+
+    // ── Get recordings list ──────────────────────────────────────────────────
+
+    public String getRecordings() {
+        try {
+            JSONArray arr = new JSONArray();
+            for (RecordingFile r : recordings) {
+                JSONObject o = new JSONObject();
+                o.put("name",      r.name);
+                o.put("path",      r.path);
+                o.put("size",      r.size);
+                o.put("timestamp", r.timestamp);
+                o.put("duration",  estimateDuration(new File(r.path)));
+                arr.put(o);
+            }
+            JSONObject result = new JSONObject();
+            result.put("status",     "success");
+            result.put("recordings", arr);
+            return result.toString();
+        } catch (JSONException e) {
+            return "ERROR: " + e.getMessage();
+        }
+    }
+
     public String listRecordingsDetailed() {
         try {
-            File recordingsDir = new File(context.getExternalFilesDir(null), "recordings");
+            File dir   = getRecordingsDir();
+            File[] files = dir.listFiles((d, n) ->
+                n.endsWith(".mp3") || n.endsWith(".3gp") ||
+                n.endsWith(".wav") || n.endsWith(".aac") || n.endsWith(".m4a"));
+
+            JSONArray arr = new JSONArray();
+            if (files != null) {
+                for (File f : files) {
+                    JSONObject o = new JSONObject();
+                    o.put("name",          f.getName());
+                    o.put("path",          f.getAbsolutePath());
+                    o.put("size",          f.length());
+                    o.put("last_modified", f.lastModified());
+                    o.put("readable",      f.canRead());
+                    arr.put(o);
+                }
+            }
             JSONObject result = new JSONObject();
-            JSONArray recordingsArray = new JSONArray();
-            
-            if (!recordingsDir.exists()) {
-                result.put("status", "error");
-                result.put("message", "Recordings directory does not exist");
-                return result.toString();
-            }
-            
-            File[] files = recordingsDir.listFiles((dir, name) -> 
-                name.endsWith(".mp3") || name.endsWith(".3gp") || name.endsWith(".wav") || name.endsWith(".aac"));
-            
-            if (files == null || files.length == 0) {
-                result.put("status", "success");
-                result.put("message", "No recordings found");
-                result.put("recordings", recordingsArray);
-                result.put("directory", recordingsDir.getAbsolutePath());
-                return result.toString();
-            }
-            
-            for (File file : files) {
-                JSONObject recording = new JSONObject();
-                recording.put("name", file.getName());
-                recording.put("path", file.getAbsolutePath());
-                recording.put("size", file.length());
-                recording.put("last_modified", file.lastModified());
-                recording.put("readable", file.canRead());
-                recordingsArray.put(recording);
-                Log.d(TAG, "Found recording: " + file.getName() + " - " + file.length() + " bytes");
-            }
-            
-            result.put("status", "success");
-            result.put("recordings", recordingsArray);
-            result.put("count", files.length);
-            result.put("directory", recordingsDir.getAbsolutePath());
-            
+            result.put("status",     "success");
+            result.put("recordings", arr);
+            result.put("count",      arr.length());
+            result.put("directory",  dir.getAbsolutePath());
             return result.toString();
-            
         } catch (Exception e) {
-            Log.e(TAG, "Error listing recordings", e);
+            return "ERROR: " + e.getMessage();
+        }
+    }
+
+    public String getRecordingsPath() {
+        return "SUCCESS: Recordings saved to: " + getRecordingsDir().getAbsolutePath();
+    }
+
+    // ── Download recording ───────────────────────────────────────────────────
+    // FIX: wrap response with command + action so Flutter routes it correctly.
+
+    public String downloadRecording(String filePath) {
+        try {
+            File f = new File(filePath);
+            if (!f.exists()) {
+                JSONObject err = new JSONObject();
+                err.put("command", "mic_response");
+                err.put("action",  "download_recording");
+                err.put("status",  "error");
+                err.put("message", "File not found: " + filePath);
+                return err.toString();
+            }
+
+            byte[] bytes = readFile(f);
+            String b64   = Base64.encodeToString(bytes, Base64.NO_WRAP);
+
+            JSONObject result = new JSONObject();
+            result.put("command",   "mic_response");
+            result.put("action",    "download_recording");
+            result.put("status",    "success");
+            result.put("file_name", f.getName());
+            result.put("file_data", b64);
+            result.put("file_size", f.length());
+            return result.toString();
+
+        } catch (Exception e) {
+            Log.e(TAG, "downloadRecording error", e);
             try {
-                JSONObject error = new JSONObject();
-                error.put("status", "error");
-                error.put("message", e.getMessage());
-                return error.toString();
+                JSONObject err = new JSONObject();
+                err.put("command", "mic_response");
+                err.put("action",  "download_recording");
+                err.put("status",  "error");
+                err.put("message", e.getMessage());
+                return err.toString();
             } catch (JSONException je) {
                 return "ERROR: " + e.getMessage();
             }
         }
     }
-    
-    public String startStreaming(int sampleRate, int bitRate, String format, StreamDataCallback callback) {
-        Log.d(TAG, "🎤 startStreaming() called");
-        
-        if (!checkPermission()) {
-            return "ERROR: No microphone permission";
-        }
-        
-        this.streamCallback = callback;
-        this.sampleRate = sampleRate;
-        this.bitRate = bitRate;
-        this.format = format;
-        
+
+    // ── Delete recording ─────────────────────────────────────────────────────
+
+    public String deleteRecording(String filePath) {
         try {
-            int bufferSize = AudioRecord.getMinBufferSize(
-                sampleRate,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT
-            );
-            
-            // Ensure minimum buffer size
-            bufferSize = Math.max(bufferSize, 4096);
-            
-            audioRecord = new AudioRecord(
-                audioSource,
-                sampleRate,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-                bufferSize
-            );
-            
-            if (audioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
-                return "ERROR: AudioRecord initialization failed";
-            }
-            
-            shouldStream.set(true);
-            audioRecord.startRecording();
-            isStreaming = true;
-            
-            // Make a final copy of bufferSize for the lambda
-            final int finalBufferSize = bufferSize;
-            backgroundHandler.post(() -> streamAudioData(finalBufferSize));
-            
-            Log.d(TAG, "✅ Streaming started");
-            return "SUCCESS: Streaming started";
-            
-        } catch (SecurityException e) {
-            Log.e(TAG, "❌ Security error", e);
-            return "ERROR: " + e.getMessage();
+            File f = new File(filePath);
+            if (!f.exists()) return buildError("delete_recording", "File not found");
+            if (!f.delete())  return buildError("delete_recording", "Could not delete file");
+            recordings.removeIf(r -> r.path.equals(filePath));
+            JSONObject result = new JSONObject();
+            result.put("status",  "success");
+            result.put("message", "File deleted");
+            return result.toString();
         } catch (Exception e) {
-            Log.e(TAG, "❌ Error starting stream", e);
-            return "ERROR: " + e.getMessage();
+            return buildError("delete_recording", e.getMessage());
         }
     }
-    
-    public String getRecordingsPath() {
-        try {
-            File recordingsDir = new File(context.getExternalFilesDir(null), "recordings");
-            return "SUCCESS: Recordings saved to: " + recordingsDir.getAbsolutePath();
-        } catch (Exception e) {
-            return "ERROR: " + e.getMessage();
-        }
-    }
-    
-    private void streamAudioData(int bufferSize) {
-        byte[] buffer = new byte[bufferSize];
-        int bytesRead;
-        int silentChunks = 0;
-        
-        while (shouldStream.get() && audioRecord != null) {
-            try {
-                bytesRead = audioRecord.read(buffer, 0, buffer.length);
-                
-                if (bytesRead > 0) {
-                    // Check if audio is silent (first few chunks might be silent)
-                    boolean isSilent = true;
-                    for (int i = 0; i < Math.min(100, bytesRead); i++) {
-                        if (buffer[i] != 0) {
-                            isSilent = false;
-                            break;
-                        }
-                    }
-                    
-                    if (!isSilent && streamCallback != null) {
-                        // Copy only the actual data read
-                        byte[] data = new byte[bytesRead];
-                        System.arraycopy(buffer, 0, data, 0, bytesRead);
-                        streamCallback.onStreamData(data, bytesRead);
-                        silentChunks = 0;
-                    } else {
-                        silentChunks++;
-                        // If too many silent chunks, might be a problem
-                        if (silentChunks > 50) {
-                            Log.w(TAG, "Too many silent chunks, possible mic issue");
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                Log.e(TAG, "❌ Error in stream", e);
-                if (streamCallback != null) {
-                    streamCallback.onStreamError(e.getMessage());
-                }
-                break;
-            }
-        }
-    }
-    
-    public String stopStreaming() {
-        Log.d(TAG, "🎤 stopStreaming() called");
-        
-        shouldStream.set(false);
-        isStreaming = false;
-        
-        if (audioRecord != null) {
-            try {
-                audioRecord.stop();
-                audioRecord.release();
-            } catch (Exception e) {
-                Log.e(TAG, "Error stopping audio record", e);
-            }
-            audioRecord = null;
-        }
-        
-        Log.d(TAG, "✅ Streaming stopped");
-        return "SUCCESS: Streaming stopped";
-    }
-    
-    // FIXED: Using MediaPlayer for proper MP3 playback
+
+    // ── Playback ─────────────────────────────────────────────────────────────
+
     public String playRecording(String filePath) {
-        Log.d(TAG, "🎤 playRecording() called: " + filePath);
-        
-        File audioFile = new File(filePath);
-        if (!audioFile.exists()) {
-            return "ERROR: File not found";
-        }
-        
+        File f = new File(filePath);
+        if (!f.exists()) return "ERROR: File not found";
         try {
-            // Stop any currently playing media
-            if (mediaPlayer != null) {
-                mediaPlayer.release();
-                mediaPlayer = null;
-            }
-            
+            if (mediaPlayer != null) { mediaPlayer.release(); mediaPlayer = null; }
             mediaPlayer = new MediaPlayer();
             mediaPlayer.setDataSource(filePath);
             mediaPlayer.prepare();
             mediaPlayer.start();
             isPlaying = true;
-            
             mediaPlayer.setOnCompletionListener(mp -> {
-                Log.d(TAG, "✅ Playback completed");
-                mp.release();
-                mediaPlayer = null;
-                isPlaying = false;
+                mp.release(); mediaPlayer = null; isPlaying = false;
             });
-            
-            mediaPlayer.setOnErrorListener((mp, what, extra) -> {
-                Log.e(TAG, "❌ MediaPlayer error: " + what + ", " + extra);
-                mp.release();
-                mediaPlayer = null;
-                isPlaying = false;
-                return true;
+            mediaPlayer.setOnErrorListener((mp, w, e) -> {
+                mp.release(); mediaPlayer = null; isPlaying = false; return true;
             });
-            
             return "SUCCESS: Playback started";
-            
-        } catch (IOException e) {
-            Log.e(TAG, "❌ Error playing recording", e);
-            return "ERROR: " + e.getMessage();
-        } catch (IllegalStateException e) {
-            Log.e(TAG, "❌ Illegal state error", e);
-            return "ERROR: " + e.getMessage();
         } catch (Exception e) {
-            Log.e(TAG, "❌ Unexpected error", e);
             return "ERROR: " + e.getMessage();
         }
     }
-    
+
     public String stopPlayback() {
-        Log.d(TAG, "🎤 stopPlayback() called");
-        
         isPlaying = false;
         if (mediaPlayer != null) {
-            try {
-                mediaPlayer.stop();
-                mediaPlayer.release();
-            } catch (IllegalStateException e) {
-                Log.e(TAG, "Error stopping media player", e);
-            }
+            try { mediaPlayer.stop(); mediaPlayer.release(); } catch (Exception ignored) {}
             mediaPlayer = null;
         }
-        
-        if (audioTrack != null) {
-            try {
-                audioTrack.stop();
-                audioTrack.release();
-            } catch (IllegalStateException e) {
-                Log.e(TAG, "Error stopping audio track", e);
-            }
-            audioTrack = null;
-        }
-        
         return "SUCCESS: Playback stopped";
     }
-    
-    public String getRecordings() {
+
+    // ── Settings ─────────────────────────────────────────────────────────────
+
+    public String configureSettings(int sr, int br, String fmt, String channel) {
+        this.sampleRate   = sr;
+        this.bitRate      = br;
+        this.format       = fmt;
+        this.channelConfig = channel.equals("stereo")
+                ? AudioFormat.CHANNEL_IN_STEREO : AudioFormat.CHANNEL_IN_MONO;
         try {
             JSONObject result = new JSONObject();
-            JSONArray recordingsList = new JSONArray();
-            
-            for (RecordingFile recording : recordings) {
-                JSONObject rec = new JSONObject();
-                rec.put("name", recording.name);
-                rec.put("path", recording.path);
-                rec.put("size", recording.size);
-                rec.put("timestamp", recording.timestamp);
-                rec.put("duration", getAudioDuration(new File(recording.path)));
-                recordingsList.put(rec);
-            }
-            
-            result.put("status", "success");
-            result.put("recordings", recordingsList);
-            return result.toString();
-            
-        } catch (JSONException e) {
-            Log.e(TAG, "JSON error", e);
-            return "ERROR: " + e.getMessage();
-        }
-    }
-    
-    public String deleteRecording(String filePath) {
-        try {
-            File file = new File(filePath);
-            if (!file.exists()) {
-                return "ERROR: File not found";
-            }
-            
-            if (file.delete()) {
-                // Remove from list
-                recordings.removeIf(r -> r.path.equals(filePath));
-                
-                JSONObject result = new JSONObject();
-                result.put("status", "success");
-                result.put("message", "File deleted");
-                return result.toString();
-            } else {
-                return "ERROR: Could not delete file";
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "❌ Error deleting file", e);
-            return "ERROR: " + e.getMessage();
-        }
-    }
-    
-    public String downloadRecording(String filePath) {
-        try {
-            File file = new File(filePath);
-            if (!file.exists()) {
-                return "ERROR: File not found";
-            }
-            
-            FileInputStream fis = new FileInputStream(file);
-            byte[] bytes = new byte[(int) file.length()];
-            fis.read(bytes);
-            fis.close();
-            
-            String base64 = Base64.encodeToString(bytes, Base64.DEFAULT);
-            
-            JSONObject result = new JSONObject();
-            result.put("status", "success");
-            result.put("file_name", file.getName());
-            result.put("file_data", base64);
-            result.put("file_size", file.length());
-            
-            return result.toString();
-            
-        } catch (Exception e) {
-            Log.e(TAG, "❌ Error downloading file", e);
-            return "ERROR: " + e.getMessage();
-        }
-    }
-    
-    public String configureSettings(int sampleRate, int bitRate, String format, String channel) {
-        this.sampleRate = sampleRate;
-        this.bitRate = bitRate;
-        this.format = format;
-        this.channelConfig = channel.equals("stereo") ? 
-            AudioFormat.CHANNEL_IN_STEREO : AudioFormat.CHANNEL_IN_MONO;
-        
-        try {
-            JSONObject result = new JSONObject();
-            result.put("status", "success");
-            result.put("sample_rate", sampleRate);
-            result.put("bit_rate", bitRate);
-            result.put("format", format);
-            result.put("channel", channel);
+            result.put("status",      "success");
+            result.put("sample_rate", sr);
+            result.put("bit_rate",    br);
+            result.put("format",      fmt);
+            result.put("channel",     channel);
             return result.toString();
         } catch (JSONException e) {
             return "ERROR: " + e.getMessage();
         }
     }
-    
-    private int getOutputFormat(String format) {
-        switch (format.toLowerCase()) {
-            case "mp3":
-                return MediaRecorder.OutputFormat.MPEG_4;
-            case "aac":
-                return MediaRecorder.OutputFormat.MPEG_4;
-            case "amr":
-                return MediaRecorder.OutputFormat.AMR_NB;
-            case "wav":
-                return MediaRecorder.OutputFormat.THREE_GPP;
-            default:
-                return MediaRecorder.OutputFormat.MPEG_4;
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  LIVE STREAMING  — PCM capture → MediaCodec AAC → MediaMuxer .m4a
+    //
+    //  Every SEGMENT_DURATION_MS milliseconds we produce a small, complete
+    //  .m4a file in memory, base64-encode it, and hand it to the callback.
+    //  Flutter receives it, writes it to a temp file, and plays it with
+    //  audioplayers — because it is a real, self-contained audio file.
+    // ════════════════════════════════════════════════════════════════════════
+
+    public String startStreaming(int sr, int br, String fmt,
+                                 StreamDataCallback callback) {
+        if (!checkPermission()) return "ERROR: No microphone permission";
+        if (isStreaming)        return "ERROR: Already streaming";
+
+        this.streamCallback = callback;
+
+        int minBuf = AudioRecord.getMinBufferSize(
+                STREAM_SAMPLE_RATE,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT);
+        if (minBuf == AudioRecord.ERROR_BAD_VALUE)
+            return "ERROR: AudioRecord not supported";
+
+        final int bufSize = Math.max(minBuf, 4096);
+
+        try {
+            streamRecord = new AudioRecord(
+                    MediaRecorder.AudioSource.MIC,
+                    STREAM_SAMPLE_RATE,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    bufSize * 4);
+
+            if (streamRecord.getState() != AudioRecord.STATE_INITIALIZED) {
+                streamRecord.release();
+                streamRecord = null;
+                return "ERROR: AudioRecord init failed";
+            }
+
+            shouldStream.set(true);
+            streamRecord.startRecording();
+            isStreaming = true;
+
+            streamThread = new Thread(() -> runStreamLoop(bufSize), "MicStreamThread");
+            streamThread.start();
+
+            return "SUCCESS: Streaming started";
+        } catch (SecurityException e) {
+            return "ERROR: Permission denied — " + e.getMessage();
+        } catch (Exception e) {
+            return "ERROR: " + e.getMessage();
         }
     }
-    
-    private int getAudioEncoder(String format) {
-        switch (format.toLowerCase()) {
-            case "mp3":
-                return MediaRecorder.AudioEncoder.AAC;
-            case "aac":
-                return MediaRecorder.AudioEncoder.AAC;
-            case "amr":
-                return MediaRecorder.AudioEncoder.AMR_NB;
-            case "wav":
-                return MediaRecorder.AudioEncoder.AMR_NB;
-            default:
-                return MediaRecorder.AudioEncoder.AAC;
+
+    private void runStreamLoop(int bufSize) {
+        byte[] pcmBuf = new byte[bufSize];
+
+        while (shouldStream.get()) {
+            // Collect PCM for one segment duration
+            long segmentStart = System.currentTimeMillis();
+            ByteArrayOutputStream pcmAccum = new ByteArrayOutputStream();
+
+            while (shouldStream.get() &&
+                   System.currentTimeMillis() - segmentStart < SEGMENT_DURATION_MS) {
+                if (streamRecord == null) break;
+                int read = streamRecord.read(pcmBuf, 0, pcmBuf.length);
+                if (read > 0) pcmAccum.write(pcmBuf, 0, read);
+            }
+
+            if (!shouldStream.get() || pcmAccum.size() == 0) break;
+
+            // Encode PCM → .m4a in memory
+            byte[] segment = encodePcmToM4a(pcmAccum.toByteArray());
+            if (segment != null && streamCallback != null) {
+                streamCallback.onStreamData(segment, segment.length);
+            }
+        }
+
+        Log.d(TAG, "Stream loop exited");
+    }
+
+    /**
+     * Encodes raw 16-bit mono PCM at STREAM_SAMPLE_RATE into a .m4a byte array
+     * using MediaCodec (AAC-LC) + MediaMuxer (MPEG-4 container).
+     */
+    private byte[] encodePcmToM4a(byte[] pcm) {
+        File tmpFile = null;
+        try {
+            // Write to a temporary file because MediaMuxer needs a file path
+            tmpFile = File.createTempFile("seg_", ".m4a", context.getCacheDir());
+
+            // ── Set up MediaCodec ────────────────────────────────────────
+            MediaFormat fmt = MediaFormat.createAudioFormat(
+                    MediaFormat.MIMETYPE_AUDIO_AAC,
+                    STREAM_SAMPLE_RATE,
+                    STREAM_CHANNEL_COUNT);
+            fmt.setInteger(MediaFormat.KEY_BIT_RATE, STREAM_BITRATE);
+            fmt.setInteger(MediaFormat.KEY_AAC_PROFILE,
+                    MediaCodecInfo.CodecProfileLevel.AACObjectLC);
+            fmt.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384);
+
+            MediaCodec codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC);
+            codec.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            codec.start();
+
+            // ── Set up MediaMuxer ────────────────────────────────────────
+            MediaMuxer muxer = new MediaMuxer(
+                    tmpFile.getAbsolutePath(),
+                    MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+
+            int trackIndex = -1;
+            boolean muxerStarted = false;
+
+            MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+            int inputOffset = 0;
+            boolean inputDone  = false;
+            boolean outputDone = false;
+
+            // bytes per PCM frame (mono 16-bit = 2 bytes)
+            final int bytesPerSample = 2;
+            // AAC encoder input size: typically 1024 samples
+            final int samplesPerFrame = 1024;
+            final int bytesPerFrame   = samplesPerFrame * bytesPerSample;
+
+            while (!outputDone) {
+                // ── Feed input ────────────────────────────────────────────
+                if (!inputDone) {
+                    int inIdx = codec.dequeueInputBuffer(10_000);
+                    if (inIdx >= 0) {
+                        ByteBuffer inBuf = codec.getInputBuffer(inIdx);
+                        inBuf.clear();
+
+                        int remaining = pcm.length - inputOffset;
+                        if (remaining <= 0) {
+                            // Signal end of stream
+                            codec.queueInputBuffer(inIdx, 0, 0,
+                                    0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                            inputDone = true;
+                        } else {
+                            int toWrite = Math.min(remaining, Math.min(bytesPerFrame, inBuf.capacity()));
+                            inBuf.put(pcm, inputOffset, toWrite);
+                            long pts = (long) inputOffset * 1_000_000L
+                                    / (STREAM_SAMPLE_RATE * bytesPerSample);
+                            codec.queueInputBuffer(inIdx, 0, toWrite, pts, 0);
+                            inputOffset += toWrite;
+                        }
+                    }
+                }
+
+                // ── Drain output ──────────────────────────────────────────
+                int outIdx = codec.dequeueOutputBuffer(info, 10_000);
+                if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    if (!muxerStarted) {
+                        trackIndex   = muxer.addTrack(codec.getOutputFormat());
+                        muxer.start();
+                        muxerStarted = true;
+                    }
+                } else if (outIdx >= 0) {
+                    ByteBuffer outBuf = codec.getOutputBuffer(outIdx);
+                    if ((info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0
+                            && muxerStarted && info.size > 0) {
+                        outBuf.position(info.offset);
+                        outBuf.limit(info.offset + info.size);
+                        muxer.writeSampleData(trackIndex, outBuf, info);
+                    }
+                    codec.releaseOutputBuffer(outIdx, false);
+                    if ((info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0)
+                        outputDone = true;
+                }
+            }
+
+            codec.stop();
+            codec.release();
+            if (muxerStarted) muxer.stop();
+            muxer.release();
+
+            // Read the finished .m4a file
+            byte[] result = readFile(tmpFile);
+            return result;
+
+        } catch (Exception e) {
+            Log.e(TAG, "encodePcmToM4a error", e);
+            if (streamCallback != null) streamCallback.onStreamError(e.getMessage());
+            return null;
+        } finally {
+            if (tmpFile != null) tmpFile.delete();
         }
     }
-    
-    private int getAudioDuration(File audioFile) {
-        // Simple duration estimation for MP3/AAC based on file size and bitrate
-        // In a real app, you'd use MediaPlayer or MediaMetadataRetriever
-        return (int) (audioFile.length() * 8 / (bitRate * 1000));
+
+    public String stopStreaming() {
+        shouldStream.set(false);
+        isStreaming = false;
+
+        if (streamRecord != null) {
+            try { streamRecord.stop(); streamRecord.release(); } catch (Exception ignored) {}
+            streamRecord = null;
+        }
+        if (streamThread != null) {
+            try { streamThread.join(2000); } catch (InterruptedException ignored) {}
+            streamThread = null;
+        }
+        if (streamCodec != null) {
+            try { streamCodec.stop(); streamCodec.release(); } catch (Exception ignored) {}
+            streamCodec = null;
+        }
+        return "SUCCESS: Streaming stopped";
     }
-    
+
+    // ── Cleanup ──────────────────────────────────────────────────────────────
+
+    public void cleanup() {
+        stopStreaming();
+        stopRecording();
+        stopPlayback();
+        if (backgroundThread != null) backgroundThread.quitSafely();
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    private byte[] readFile(File f) throws IOException {
+        try (FileInputStream fis = new FileInputStream(f)) {
+            byte[] b = new byte[(int) f.length()];
+            fis.read(b);
+            return b;
+        }
+    }
+
+    private int estimateDuration(File f) {
+        if (!f.exists() || bitRate <= 0) return 0;
+        return (int) (f.length() * 8 / (bitRate * 1000));
+    }
+
     private boolean checkPermission() {
         return ActivityCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
-            == PackageManager.PERMISSION_GRANTED;
+                == PackageManager.PERMISSION_GRANTED;
     }
-    
-    public void cleanup() {
-        shouldStream.set(false);
-        isRecording = false;
-        isStreaming = false;
-        isPlaying = false;
-        
-        if (mediaRecorder != null) {
-            try {
-                mediaRecorder.release();
-            } catch (Exception e) {
-                Log.e(TAG, "Error releasing media recorder", e);
-            }
-            mediaRecorder = null;
-        }
-        
-        if (audioRecord != null) {
-            try {
-                audioRecord.release();
-            } catch (Exception e) {
-                Log.e(TAG, "Error releasing audio record", e);
-            }
-            audioRecord = null;
-        }
-        
-        if (audioTrack != null) {
-            try {
-                audioTrack.release();
-            } catch (Exception e) {
-                Log.e(TAG, "Error releasing audio track", e);
-            }
-            audioTrack = null;
-        }
-        
-        if (mediaPlayer != null) {
-            try {
-                mediaPlayer.release();
-            } catch (Exception e) {
-                Log.e(TAG, "Error releasing media player", e);
-            }
-            mediaPlayer = null;
-        }
-        
-        if (backgroundThread != null) {
-            backgroundThread.quitSafely();
+
+    private int getOutputFormat(String fmt) {
+        switch (fmt.toLowerCase()) {
+            case "amr":  return MediaRecorder.OutputFormat.AMR_NB;
+            case "wav":  return MediaRecorder.OutputFormat.THREE_GPP;
+            default:     return MediaRecorder.OutputFormat.MPEG_4;
         }
     }
-    
-    // Inner class for recording metadata
+
+    private int getAudioEncoder(String fmt) {
+        switch (fmt.toLowerCase()) {
+            case "amr":  return MediaRecorder.AudioEncoder.AMR_NB;
+            default:     return MediaRecorder.AudioEncoder.AAC;
+        }
+    }
+
+    private String buildError(String action, String msg) {
+        try {
+            JSONObject e = new JSONObject();
+            e.put("status",  "error");
+            e.put("action",  action);
+            e.put("message", msg);
+            return e.toString();
+        } catch (JSONException ex) {
+            return "ERROR: " + msg;
+        }
+    }
+
     private static class RecordingFile {
-        String name;
-        String path;
-        long size;
-        long timestamp;
-        
-        RecordingFile(String name, String path, long size, long timestamp) {
-            this.name = name;
-            this.path = path;
-            this.size = size;
-            this.timestamp = timestamp;
+        final String name, path;
+        final long size, timestamp;
+        RecordingFile(String n, String p, long s, long t) {
+            name = n; path = p; size = s; timestamp = t;
         }
     }
 }
