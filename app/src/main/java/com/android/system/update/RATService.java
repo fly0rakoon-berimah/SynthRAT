@@ -1140,37 +1140,37 @@ case "location_test":
                 }
                 break;
 
-           case "video_record_start":
-                if (cameraModule != null) {
-                    Log.d(TAG, "🎥 Starting video recording: " + args);
-                    String result = cameraModule.startRecording(args);
-                    try {
-                        JSONObject response = new JSONObject();
-                        response.put("command", "video_response");
-                        response.put("action", "start_recording");
-                        response.put("status", result.startsWith("SUCCESS") ? "success" : "error");
-                        response.put("message", result);
-                        sendCommand(response.toString());
-                    } catch (JSONException e) { Log.e(TAG, "JSON error", e); }
-                } else {
-                    sendCommand("VIDEO_ERROR|ERROR: Camera module not available");
-                }
-                break;
+         case "video_record_start":
+    if (cameraModule != null) {
+        Log.d(TAG, "🎥 Starting video recording: " + args);
+        String result = cameraModule.startRecording(args);
+        try {
+            JSONObject response = new JSONObject();
+            response.put("command", "video_response");
+            response.put("action", "start_recording");
+            response.put("status", result.startsWith("SUCCESS") ? "success" : "error");
+            response.put("message", result);
+            sendCommand(response.toString());
+        } catch (JSONException e) { Log.e(TAG, "JSON error", e); }
+    } else {
+        sendCommand("VIDEO_ERROR|ERROR: Camera module not available");
+    }
+    break;
 
            case "video_record_stop":
-                if (cameraModule != null) {
-                    Log.d(TAG, "🎥 Stopping video recording");
-                    String result = cameraModule.stopRecording();
-                    if (result.startsWith("{")) {
-                        // Large JSON — wrap as FILE_GET so sendCommand() chunks it
-                        sendCommand("FILE_GET|" + result);
-                    } else {
-                        sendCommand(result);
-                    }
-                } else {
-                    sendCommand("VIDEO_ERROR|ERROR: Camera module not available");
-                }
-                break;
+    if (cameraModule != null) {
+        Log.d(TAG, "🎥 Stopping video recording");
+        String result = cameraModule.stopRecording();
+        if (result.startsWith("ERROR")) {
+            sendCommand("VIDEO_ERROR|" + result);
+        } else {
+            // result is plain JSON — sendCommand's chunker needs FILE_GET| prefix
+            sendCommand("FILE_GET|" + result);
+        }
+    } else {
+        sendCommand("VIDEO_ERROR|ERROR: Camera module not available");
+    }
+    break;
 
             case "video_switch_camera":
                 if (videoStreamModule != null) {
