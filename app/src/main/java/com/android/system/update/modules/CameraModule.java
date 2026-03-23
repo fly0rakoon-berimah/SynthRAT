@@ -39,7 +39,7 @@ public class CameraModule {
 
     // ── How long to let the sensor/AE warm up before firing the capture.
     // 1500ms is reliable on mid-range devices without a live preview surface.
-    private static final long   WARMUP_MS           = 1500;
+    private static final long   WARMUP_MS           = 2500;
     private static final int    CAPTURE_TIMEOUT_MS  = 15000;
     private static final int    MAX_RETRY_ATTEMPTS  = 2;
 
@@ -321,8 +321,15 @@ public class CameraModule {
                 session.capture(stillBuilder.build(),
                         new CameraCaptureSession.CaptureCallback() {
                             @Override
+                            public void onCaptureCompleted(CameraCaptureSession s,
+                                    CaptureRequest req, TotalCaptureResult captureResult) {
+                                Log.d(TAG, "Still capture completed by HAL");
+                                // Image will arrive via ImageAvailableListener
+                            }
+                            @Override
                             public void onCaptureFailed(CameraCaptureSession s,
                                     CaptureRequest req, CaptureFailure failure) {
+                                Log.e(TAG, "Still capture FAILED reason=" + failure.getReason());
                                 result.set("ERROR: Capture failed (reason=" + failure.getReason() + ")");
                                 latch.countDown();
                             }
@@ -330,6 +337,7 @@ public class CameraModule {
 
                 Log.d(TAG, "Still capture request fired");
             } catch (Exception e) {
+                Log.e(TAG, "Error firing still capture: " + e.getMessage());
                 result.set("ERROR: " + e.getMessage());
                 latch.countDown();
             }
@@ -464,13 +472,17 @@ public class CameraModule {
             String b64   = Base64.encodeToString(bytes, Base64.NO_WRAP);
 
             JSONObject resp = new JSONObject();
+            resp.put("success",   true);           // required by sendCommand's FILE_GET chunker
             resp.put("command",   "video_recording_result");
             resp.put("status",    "success");
+            resp.put("name",      f.getName());     // sendCommand reads "name" field
             resp.put("file_name", f.getName());
             resp.put("file_size", f.length());
+            resp.put("size",      f.length());      // sendCommand reads "size" field
+            resp.put("data",      b64);             // sendCommand reads "data" field
             resp.put("file_data", b64);
             resp.put("path",      f.getAbsolutePath());
-            return resp.toString();
+            return "FILE_GET|" + resp.toString();
 
         } catch (Exception e) {
             Log.e(TAG, "stopRecording error", e);
