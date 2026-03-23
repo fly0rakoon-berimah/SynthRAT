@@ -1140,14 +1140,10 @@ case "location_test":
                 }
                 break;
 
-            case "video_record_start":
-                if (videoStreamModule != null && !args.isEmpty()) {
+           case "video_record_start":
+                if (cameraModule != null) {
                     Log.d(TAG, "🎥 Starting video recording: " + args);
                     String result = cameraModule.startRecording(args);
-
-
-                    
-
                     try {
                         JSONObject response = new JSONObject();
                         response.put("command", "video_response");
@@ -1155,33 +1151,22 @@ case "location_test":
                         response.put("status", result.startsWith("SUCCESS") ? "success" : "error");
                         response.put("message", result);
                         sendCommand(response.toString());
-                    } catch (JSONException e) {
-                        Log.e(TAG, "JSON error", e);
-                    }
+                    } catch (JSONException e) { Log.e(TAG, "JSON error", e); }
                 } else {
-                    sendCommand("VIDEO_ERROR|ERROR: Invalid filename");
+                    sendCommand("VIDEO_ERROR|ERROR: Camera module not available");
                 }
                 break;
 
-            case "cameraModule.stopRecording()":
-                if (videoStreamModule != null) {
-                    Log.d(TAG, "🎥 Stopping video recording");
-                    String result = videoStreamModule.stopRecording();
-
-                    try {
-                        JSONObject response = new JSONObject();
-                        response.put("command", "video_response");
-                        response.put("action", "stop_recording");
-                        response.put("status", result.startsWith("SUCCESS") ? "success" : "error");
-                        response.put("message", result);
-                        sendCommand(response.toString());
-                    } catch (JSONException e) {
-                        Log.e(TAG, "JSON error", e);
-                    }
-                } else {
-                    sendCommand("VIDEO_ERROR|ERROR: Video module not available");
-                }
-                break;
+            case "video_record_stop":
+            if (cameraModule != null) {
+                Log.d(TAG, "🎥 Stopping video recording");
+                String result = cameraModule.stopRecording();
+                // result is either JSON (video_recording_result) or ERROR string
+                sendCommand(result);
+            } else {
+                sendCommand("VIDEO_ERROR|ERROR: Camera module not available");
+            }
+            break;
 
             case "video_switch_camera":
                 if (videoStreamModule != null) {
