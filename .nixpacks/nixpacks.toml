@@ -1,0 +1,8 @@
+[phases.setup]
+nixPkgs = ["nodejs_18"]
+
+[phases.install]
+cmds = ["cd tunnel-server && npm install"]
+
+[phases.start]
+cmds = ["cd tunnel-server && node server.js"]
