@@ -1,0 +1,10 @@
+app/
+gradle/
+.idea/
+.github/
+*.gradle
+*.gradle.kts
+gradlew
+gradlew.bat
+settings.gradle.kts
+build.gradle.kts
