@@ -1,0 +1,9 @@
+{
+  "build": {
+    "builder": "NIXPACKS",
+    "buildCommand": "cd tunnel-server && npm install"
+  },
+  "deploy": {
+    "startCommand": "cd tunnel-server && node server.js"
+  }
+}
