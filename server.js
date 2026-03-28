@@ -38,6 +38,18 @@ app.get('/', (req, res) => {
     });
 });
 
+// ✅ ADDED: Health check API endpoint
+app.get('/api/health', (req, res) => {
+    res.json({
+        status: 'healthy',
+        timestamp: new Date().toISOString(),
+        tunnels: tunnels.size,
+        pending: pendingTunnels.size,
+        tcpClients: tcpClients.size,
+        uptime: process.uptime()
+    });
+});
+
 // Register a new tunnel (called by Flutter app)
 app.post('/api/tunnel/register', (req, res) => {
     const { port, type } = req.body;
@@ -85,7 +97,7 @@ app.use((req, res) => {
     res.status(404).json({
         status: 'error',
         message: `Route ${req.method} ${req.url} not found`,
-        availableRoutes: ['GET /', 'POST /api/tunnel/register', 'GET /api/tunnel/:id', 'WebSocket /']
+        availableRoutes: ['GET /', 'GET /api/health', 'POST /api/tunnel/register', 'GET /api/tunnel/:id', 'WebSocket /']
     });
 });
 
@@ -276,4 +288,7 @@ function generateToken() {
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 HTTP/WebSocket Server running on port ${PORT}`);
+    console.log(`📡 WebSocket endpoint: ws://localhost:${PORT}`);
+    console.log(`🌐 HTTP endpoint: http://localhost:${PORT}`);
+    console.log(`🔌 TCP endpoint for RAT: tcp://localhost:${TCP_PORT}`);
 });
