@@ -14,6 +14,12 @@ const payloads = new Map();
 app.use(cors());
 app.use(express.json());
 
+// Add request logger for debugging
+app.use((req, res, next) => {
+    console.log(`[${new Date().toISOString()}] Request: ${req.method} ${req.url}`);
+    next();
+});
+
 // Health check endpoint
 app.get('/', (req, res) => {
     res.json({
@@ -22,6 +28,15 @@ app.get('/', (req, res) => {
         tunnels: tunnels.size,
         payloads: payloads.size,
         timestamp: new Date().toISOString()
+    });
+});
+
+// Catch-all for undefined routes
+app.use((req, res) => {
+    res.status(404).json({
+        status: 'error',
+        message: `Route ${req.method} ${req.url} not found`,
+        availableRoutes: ['GET /', 'GET /api/tunnel/:id', 'WebSocket /']
     });
 });
 
