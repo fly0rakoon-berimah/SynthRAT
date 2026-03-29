@@ -5,6 +5,36 @@ const net = require('net');
 const cors = require('cors');
 
 const app = express();
+// ==================== PASSWORD CHECKER ====================
+// This is like a bouncer at a club - only people with the password get in!
+
+// The valid passwords (you can add more later for friends)
+const VALID_API_KEYS = new Set([
+    process.env.API_KEY || 'fly0rakoon-secret-key-2024',  // Your main password
+    // Add more passwords here for your friends:
+    // 'friend1-secret-key',
+    // 'friend2-secret-key',
+]);
+
+// This function checks if someone has the password
+const checkPassword = (req, res, next) => {
+    // Look for the password in the request headers
+    const password = req.headers['x-api-key'];
+    
+    // If no password or wrong password
+    if (!password || !VALID_API_KEYS.has(password)) {
+        return res.status(401).json({ 
+            error: 'Unauthorized', 
+            message: 'You need the secret password to use this server!' 
+        });
+    }
+    
+    // Password is correct! Let them in.
+    next();
+};
+
+// Apply password check to ALL API routes
+app.use('/api', checkPassword);
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
