@@ -234,7 +234,7 @@ wss.on('connection', (ws, req) => {
     const pathname = url.pathname;
     
     // ===== ADD THIS GCP BRIDGE HANDLER FIRST =====
-    if (pathname === '/ws/gcp-bridge') {
+    if (pathname === '/bridge') {
         const apiKey = url.searchParams.get('key');
         
         if (apiKey !== 'fly0rakoon-bridge-key-2024') {
