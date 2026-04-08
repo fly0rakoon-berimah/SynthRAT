@@ -6,22 +6,43 @@ const cors = require('cors');
 const admin = require('firebase-admin');
 
 // ==================== FIREBASE INITIALIZATION ====================
-// Initialize Firebase Admin SDK
-// You'll need to download your service account key from Firebase Console
-// Project Settings → Service Accounts → Generate New Private Key
-const serviceAccount = require('./firebase-service-account-key.json');
+let db = null;
+let firebaseAvailable = false;
 
-admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-});
-
-const db = admin.firestore();
+try {
+    // Check if environment variable exists
+    if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
+        console.error('❌ FIREBASE_SERVICE_ACCOUNT environment variable not set!');
+        console.log('   Please add it in Railway Dashboard → Variables tab');
+        console.log('   Running without Firebase validation...');
+    } else {
+        // Load Firebase credentials from environment variable
+        const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+        
+        admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount)
+        });
+        
+        db = admin.firestore();
+        firebaseAvailable = true;
+        console.log('✅ Firebase Firestore connected successfully');
+        console.log(`   Project: ${serviceAccount.project_id}`);
+    }
+} catch (error) {
+    console.error('❌ Failed to initialize Firebase:', error.message);
+    console.log('   Running without Firebase validation...');
+}
 
 const app = express();
 
 // ==================== CONFIGURATION ====================
 // Master API key for server-to-server communication (keep this)
 const MASTER_API_KEY = process.env.MASTER_API_KEY || 'fly0rakoon-bridge-key-2024';
+
+// Fallback hardcoded API keys for legacy mode (when Firebase is not available)
+const LEGACY_API_KEYS = new Set([
+    process.env.API_KEY || 'fly0rakoon-secret-key-2024',
+]);
 
 // Store active data
 const tunnels = new Map();
@@ -36,8 +57,6 @@ function generateToken() {
 }
 
 // ==================== AUTHENTICATION MIDDLEWARE ====================
-// Only master API key is hardcoded (for bridge connections)
-// Subscription keys are validated against Firestore
 const checkPassword = async (req, res, next) => {
     const apiKey = req.headers['x-api-key'];
     
@@ -53,64 +72,67 @@ const checkPassword = async (req, res, next) => {
         return next();
     }
     
-    // ✅ NEW: Validate subscription key against Firestore
-    try {
-        // Query Firestore for this subscription key
-        // Using collection group query to search all tunnels
-        const tunnelsSnapshot = await db.collectionGroup('tunnels')
-            .where('apiKey', '==', apiKey)
-            .where('enabled', '==', true)
-            .get();
-        
-        if (!tunnelsSnapshot.empty) {
-            const tunnelData = tunnelsSnapshot.docs[0].data();
-            const expiresAt = tunnelData.expiresAt?.toDate();
+    // If Firebase is available, validate against Firestore
+    if (firebaseAvailable && db) {
+        try {
+            // Query Firestore for this subscription key
+            const tunnelsSnapshot = await db.collectionGroup('tunnels')
+                .where('apiKey', '==', apiKey)
+                .where('enabled', '==', true)
+                .get();
             
-            // Check if not expired
-            if (!expiresAt || expiresAt > new Date()) {
-                // Attach subscription info to request for later use
-                req.subscription = {
-                    tunnelType: tunnelsSnapshot.docs[0].ref.path.split('/')[1].split('.')[1],
-                    capabilities: tunnelData.capabilities || [],
-                    userId: tunnelsSnapshot.docs[0].ref.path.split('/')[1],
-                    expiresAt: expiresAt
-                };
-                return next();
+            if (!tunnelsSnapshot.empty) {
+                const tunnelData = tunnelsSnapshot.docs[0].data();
+                const expiresAt = tunnelData.expiresAt?.toDate();
+                
+                // Check if not expired
+                if (!expiresAt || expiresAt > new Date()) {
+                    req.subscription = {
+                        tunnelType: tunnelsSnapshot.docs[0].ref.path.split('/')[1].split('.')[1],
+                        capabilities: tunnelData.capabilities || [],
+                        userId: tunnelsSnapshot.docs[0].ref.path.split('/')[1],
+                        expiresAt: expiresAt
+                    };
+                    return next();
+                }
             }
-        }
-        
-        // Also check legacy subscription field
-        const userSnapshot = await db.collection('users')
-            .where('subscription.apiKey', '==', apiKey)
-            .where('subscription.status', '==', 'active')
-            .get();
-        
-        if (!userSnapshot.empty) {
-            const userData = userSnapshot.docs[0].data();
-            const expiresAt = userData.subscription?.expiresAt?.toDate();
             
-            if (!expiresAt || expiresAt > new Date()) {
-                req.subscription = {
-                    tunnelType: userData.subscription?.tunnelType,
-                    capabilities: userData.subscription?.purchasedCapabilities || [],
-                    userId: userSnapshot.docs[0].id,
-                    expiresAt: expiresAt
-                };
-                return next();
+            // Check legacy subscription field
+            const userSnapshot = await db.collection('users')
+                .where('subscription.apiKey', '==', apiKey)
+                .where('subscription.status', '==', 'active')
+                .get();
+            
+            if (!userSnapshot.empty) {
+                const userData = userSnapshot.docs[0].data();
+                const expiresAt = userData.subscription?.expiresAt?.toDate();
+                
+                if (!expiresAt || expiresAt > new Date()) {
+                    req.subscription = {
+                        tunnelType: userData.subscription?.tunnelType,
+                        capabilities: userData.subscription?.purchasedCapabilities || [],
+                        userId: userSnapshot.docs[0].id,
+                        expiresAt: expiresAt
+                    };
+                    return next();
+                }
             }
+        } catch (error) {
+            console.error('Firestore validation error:', error);
+            // Fall through to legacy validation
         }
-        
-        return res.status(401).json({ 
-            error: 'Unauthorized', 
-            message: 'Invalid or expired subscription key' 
-        });
-    } catch (error) {
-        console.error('Firestore validation error:', error);
-        return res.status(500).json({ 
-            error: 'Internal Server Error', 
-            message: 'Could not validate API key' 
-        });
     }
+    
+    // Fallback to legacy hardcoded API keys
+    if (LEGACY_API_KEYS.has(apiKey)) {
+        console.log(`⚠️ Using legacy API key validation for: ${apiKey.substring(0, 10)}...`);
+        return next();
+    }
+    
+    return res.status(401).json({ 
+        error: 'Unauthorized', 
+        message: 'Invalid or expired subscription key' 
+    });
 };
 
 app.use(cors());
@@ -129,6 +151,7 @@ app.get('/', (req, res) => {
     res.json({
         status: 'online',
         version: '1.0.0',
+        firebaseEnabled: firebaseAvailable,
         tunnels: tunnels.size,
         payloads: payloads.size,
         tcpClients: tcpClients.size,
@@ -141,6 +164,7 @@ app.get('/', (req, res) => {
 app.get('/api/health', (req, res) => {
     res.json({
         status: 'healthy',
+        firebaseEnabled: firebaseAvailable,
         timestamp: new Date().toISOString(),
         tunnels: tunnels.size,
         pending: pendingTunnels.size,
@@ -155,7 +179,7 @@ app.post('/api/tunnel/register', async (req, res) => {
     const { port, type, subscriptionApiKey, userId, capabilities } = req.body;
     
     // If subscriptionApiKey provided, verify it exists in Firestore
-    if (subscriptionApiKey) {
+    if (subscriptionApiKey && firebaseAvailable && db) {
         try {
             const tunnelsSnapshot = await db.collectionGroup('tunnels')
                 .where('apiKey', '==', subscriptionApiKey)
@@ -267,6 +291,24 @@ app.post('/api/validate-key', async (req, res) => {
     
     console.log(`[${new Date().toISOString()}] 🔐 Validating API key for ${tunnelType} tunnel`);
     
+    // If Firebase is not available, use legacy validation
+    if (!firebaseAvailable || !db) {
+        console.log(`⚠️ Firebase not available, using legacy validation`);
+        // Accept any non-empty key in legacy mode
+        if (apiKey && apiKey.length > 5) {
+            return res.json({
+                valid: true,
+                tunnelType: tunnelType,
+                message: 'Legacy mode: Key accepted'
+            });
+        } else {
+            return res.status(401).json({
+                valid: false,
+                message: 'Invalid API key'
+            });
+        }
+    }
+    
     try {
         // Query Firestore for this subscription key
         const tunnelsSnapshot = await db.collectionGroup('tunnels')
@@ -339,12 +381,10 @@ app.post('/api/validate-key', async (req, res) => {
 app.get('/api/user/keys', async (req, res) => {
     console.log(`[${new Date().toISOString()}] 🔑 Fetching user API keys`);
     
-    // This endpoint should only be accessible with a user-specific token
-    // For now, return placeholder - implement proper user auth
     res.json({
-        railway: { apiKey: null, enabled: false, message: 'Login required' },
-        kami: { apiKey: null, enabled: false, message: 'Login required' },
-        gotunnel: { apiKey: null, enabled: false, message: 'Login required' },
+        railway: { apiKey: null, enabled: false, message: 'Configure in app' },
+        kami: { apiKey: null, enabled: false, message: 'Configure in app' },
+        gotunnel: { apiKey: null, enabled: false, message: 'Configure in app' },
         custom: { apiKey: null, enabled: true, message: 'No key required' }
     });
 });
@@ -355,13 +395,11 @@ app.get('/api/tunnel-key', async (req, res) => {
     
     console.log(`[${new Date().toISOString()}] 🔑 Fetching API key for ${type}`);
     
-    // This should return the user's actual subscription key from Firestore
-    // For now, return placeholder
     res.json({
         apiKey: null,
         tunnelType: type,
         expiresAt: null,
-        message: 'Login required to view keys'
+        message: 'Configure in app settings'
     });
 });
 
@@ -377,6 +415,16 @@ app.get('/api/has-access', async (req, res) => {
             hasAccess: false,
             tunnelType: type,
             message: 'No API key provided'
+        });
+    }
+    
+    // If Firebase is not available, grant access in legacy mode
+    if (!firebaseAvailable || !db) {
+        console.log(`⚠️ Firebase not available, granting access in legacy mode`);
+        return res.json({
+            hasAccess: true,
+            tunnelType: type,
+            message: 'Legacy mode: Access granted'
         });
     }
     
@@ -668,10 +716,17 @@ wss.on('connection', (ws, req) => {
 // ==================== START SERVER ====================
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 HTTP/WebSocket Server running on port ${PORT}`);
-    console.log(`📡 WebSocket endpoint: ws://localhost:${PORT}`);
-    console.log(`🌐 HTTP endpoint: http://localhost:${PORT}`);
-    console.log(`🔌 TCP endpoint for RAT: tcp://localhost:${TCP_PORT}`);
+    console.log(`\n${'='.repeat(50)}`);
+    console.log(`🚀 Fly0Rakoon Tunnel Server`);
+    console.log(`${'='.repeat(50)}`);
+    console.log(`📡 HTTP/WebSocket Server: http://localhost:${PORT}`);
+    console.log(`🔌 TCP Endpoint: tcp://localhost:${TCP_PORT}`);
     console.log(`🔐 Master API Key: ${MASTER_API_KEY}`);
-    console.log(`🔥 Firebase Firestore connected for subscription validation`);
+    console.log(`🔥 Firebase Status: ${firebaseAvailable ? 'CONNECTED ✅' : 'DISABLED ⚠️'}`);
+    if (!firebaseAvailable) {
+        console.log(`\n⚠️  WARNING: Firebase is not configured!`);
+        console.log(`   Add FIREBASE_SERVICE_ACCOUNT environment variable to enable validation.`);
+        console.log(`   Currently running in legacy mode with hardcoded API keys.`);
+    }
+    console.log(`${'='.repeat(50)}\n`);
 });
