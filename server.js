@@ -3,14 +3,25 @@ const WebSocket = require('ws');
 const http = require('http');
 const net = require('net');
 const cors = require('cors');
+const admin = require('firebase-admin');
+
+// ==================== FIREBASE INITIALIZATION ====================
+// Initialize Firebase Admin SDK
+// You'll need to download your service account key from Firebase Console
+// Project Settings → Service Accounts → Generate New Private Key
+const serviceAccount = require('./firebase-service-account-key.json');
+
+admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
+});
+
+const db = admin.firestore();
 
 const app = express();
 
 // ==================== CONFIGURATION ====================
-// The valid API keys for authenticating with this server
-const VALID_API_KEYS = new Set([
-    process.env.API_KEY || 'fly0rakoon-secret-key-2024',
-]);
+// Master API key for server-to-server communication (keep this)
+const MASTER_API_KEY = process.env.MASTER_API_KEY || 'fly0rakoon-bridge-key-2024';
 
 // Store active data
 const tunnels = new Map();
@@ -25,26 +36,91 @@ function generateToken() {
 }
 
 // ==================== AUTHENTICATION MIDDLEWARE ====================
-const checkPassword = (req, res, next) => {
-    const password = req.headers['x-api-key'];
+// Only master API key is hardcoded (for bridge connections)
+// Subscription keys are validated against Firestore
+const checkPassword = async (req, res, next) => {
+    const apiKey = req.headers['x-api-key'];
     
-    if (!password || !VALID_API_KEYS.has(password)) {
+    if (!apiKey) {
         return res.status(401).json({ 
             error: 'Unauthorized', 
-            message: 'You need the secret password to use this server!' 
+            message: 'API key is required' 
         });
     }
-    next();
+    
+    // Check if this is the master bridge key
+    if (apiKey === MASTER_API_KEY) {
+        return next();
+    }
+    
+    // ✅ NEW: Validate subscription key against Firestore
+    try {
+        // Query Firestore for this subscription key
+        // Using collection group query to search all tunnels
+        const tunnelsSnapshot = await db.collectionGroup('tunnels')
+            .where('apiKey', '==', apiKey)
+            .where('enabled', '==', true)
+            .get();
+        
+        if (!tunnelsSnapshot.empty) {
+            const tunnelData = tunnelsSnapshot.docs[0].data();
+            const expiresAt = tunnelData.expiresAt?.toDate();
+            
+            // Check if not expired
+            if (!expiresAt || expiresAt > new Date()) {
+                // Attach subscription info to request for later use
+                req.subscription = {
+                    tunnelType: tunnelsSnapshot.docs[0].ref.path.split('/')[1].split('.')[1],
+                    capabilities: tunnelData.capabilities || [],
+                    userId: tunnelsSnapshot.docs[0].ref.path.split('/')[1],
+                    expiresAt: expiresAt
+                };
+                return next();
+            }
+        }
+        
+        // Also check legacy subscription field
+        const userSnapshot = await db.collection('users')
+            .where('subscription.apiKey', '==', apiKey)
+            .where('subscription.status', '==', 'active')
+            .get();
+        
+        if (!userSnapshot.empty) {
+            const userData = userSnapshot.docs[0].data();
+            const expiresAt = userData.subscription?.expiresAt?.toDate();
+            
+            if (!expiresAt || expiresAt > new Date()) {
+                req.subscription = {
+                    tunnelType: userData.subscription?.tunnelType,
+                    capabilities: userData.subscription?.purchasedCapabilities || [],
+                    userId: userSnapshot.docs[0].id,
+                    expiresAt: expiresAt
+                };
+                return next();
+            }
+        }
+        
+        return res.status(401).json({ 
+            error: 'Unauthorized', 
+            message: 'Invalid or expired subscription key' 
+        });
+    } catch (error) {
+        console.error('Firestore validation error:', error);
+        return res.status(500).json({ 
+            error: 'Internal Server Error', 
+            message: 'Could not validate API key' 
+        });
+    }
 };
 
-// ==================== MIDDLEWARE ====================
 app.use(cors());
 app.use(express.json());
 app.use('/api', checkPassword);
 
 // Request logger
 app.use((req, res, next) => {
-    console.log(`[${new Date().toISOString()}] HTTP: ${req.method} ${req.url}`);
+    const subInfo = req.subscription ? ` (${req.subscription.tunnelType})` : '';
+    console.log(`[${new Date().toISOString()}] HTTP: ${req.method} ${req.url}${subInfo}`);
     next();
 });
 
@@ -75,8 +151,27 @@ app.get('/api/health', (req, res) => {
 });
 
 // ==================== TUNNEL REGISTRATION ====================
-app.post('/api/tunnel/register', (req, res) => {
-    const { port, type } = req.body;
+app.post('/api/tunnel/register', async (req, res) => {
+    const { port, type, subscriptionApiKey, userId, capabilities } = req.body;
+    
+    // If subscriptionApiKey provided, verify it exists in Firestore
+    if (subscriptionApiKey) {
+        try {
+            const tunnelsSnapshot = await db.collectionGroup('tunnels')
+                .where('apiKey', '==', subscriptionApiKey)
+                .get();
+            
+            if (tunnelsSnapshot.empty) {
+                return res.status(401).json({ 
+                    error: 'Invalid subscription', 
+                    message: 'Subscription key not found' 
+                });
+            }
+        } catch (error) {
+            console.error('Error verifying subscription:', error);
+        }
+    }
+    
     const token = generateToken();
     
     console.log(`[${new Date().toISOString()}] Registering tunnel: port=${port}, type=${type}, token=${token}`);
@@ -172,74 +267,85 @@ app.post('/api/validate-key', async (req, res) => {
     
     console.log(`[${new Date().toISOString()}] 🔐 Validating API key for ${tunnelType} tunnel`);
     
-    // In production, validate against your database/Firestore
-    // For now, accept any non-empty key that matches expected format
-    
-    let isValid = false;
-    let expiresAt = null;
-    let message = '';
-    
-    // Basic validation logic - replace with your database check
-    if (apiKey && apiKey.length > 10) {
-        // Check if the key follows expected pattern
-        const expectedPattern = new RegExp(`^${tunnelType.toUpperCase()}_[A-Za-z0-9_]+$`, 'i');
+    try {
+        // Query Firestore for this subscription key
+        const tunnelsSnapshot = await db.collectionGroup('tunnels')
+            .where('apiKey', '==', apiKey)
+            .where('enabled', '==', true)
+            .get();
         
-        if (expectedPattern.test(apiKey) || apiKey.length > 20) {
-            isValid = true;
-            expiresAt = new Date();
-            expiresAt.setDate(expiresAt.getDate() + 30); // 30 days from now
-            message = 'API key is valid';
-            console.log(`✅ API key validated for ${tunnelType}`);
-        } else {
-            message = 'Invalid API key format';
-            console.log(`❌ Invalid API key format for ${tunnelType}`);
+        if (!tunnelsSnapshot.empty) {
+            const tunnelData = tunnelsSnapshot.docs[0].data();
+            const expiresAt = tunnelData.expiresAt?.toDate();
+            
+            // Check if not expired
+            if (!expiresAt || expiresAt > new Date()) {
+                console.log(`✅ Valid subscription key for ${tunnelType}`);
+                return res.json({
+                    valid: true,
+                    expiresAt: expiresAt ? expiresAt.toISOString() : null,
+                    tunnelType: tunnelType,
+                    capabilities: tunnelData.capabilities || [],
+                    message: 'Subscription is valid'
+                });
+            } else {
+                console.log(`❌ Subscription expired for ${tunnelType}`);
+                return res.status(401).json({
+                    valid: false,
+                    message: 'Subscription has expired',
+                    expiresAt: expiresAt.toISOString()
+                });
+            }
         }
-    } else {
-        message = 'API key is required';
-        console.log(`❌ Missing API key for ${tunnelType}`);
+        
+        // Check legacy subscription field
+        const userSnapshot = await db.collection('users')
+            .where('subscription.apiKey', '==', apiKey)
+            .where('subscription.status', '==', 'active')
+            .get();
+        
+        if (!userSnapshot.empty) {
+            const userData = userSnapshot.docs[0].data();
+            const expiresAt = userData.subscription?.expiresAt?.toDate();
+            
+            if (!expiresAt || expiresAt > new Date()) {
+                console.log(`✅ Valid legacy subscription for ${tunnelType}`);
+                return res.json({
+                    valid: true,
+                    expiresAt: expiresAt ? expiresAt.toISOString() : null,
+                    tunnelType: tunnelType,
+                    capabilities: userData.subscription?.purchasedCapabilities || [],
+                    message: 'Subscription is valid'
+                });
+            }
+        }
+        
+        console.log(`❌ Invalid subscription key for ${tunnelType}`);
+        return res.status(401).json({
+            valid: false,
+            message: 'Invalid or expired subscription key'
+        });
+        
+    } catch (error) {
+        console.error('Validation error:', error);
+        return res.status(500).json({
+            valid: false,
+            message: 'Internal server error during validation'
+        });
     }
-    
-    res.json({
-        valid: isValid,
-        expiresAt: expiresAt ? expiresAt.toISOString() : null,
-        tunnelType: tunnelType,
-        message: message
-    });
 });
 
 // Get user's API keys for all tunnels (for Settings screen)
 app.get('/api/user/keys', async (req, res) => {
     console.log(`[${new Date().toISOString()}] 🔑 Fetching user API keys`);
     
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 30);
-    
-    // In production, fetch from your database/Firestore based on authenticated user
+    // This endpoint should only be accessible with a user-specific token
+    // For now, return placeholder - implement proper user auth
     res.json({
-        railway: {
-            apiKey: 'RAILWAY_' + generateToken().toUpperCase(),
-            enabled: true,
-            expiresAt: expiresAt.toISOString(),
-            endpoint: 'gondola.proxy.rlwy.net:30225'
-        },
-        kami: {
-            apiKey: 'KAMI_' + generateToken().toUpperCase(),
-            enabled: true,
-            expiresAt: expiresAt.toISOString(),
-            endpoint: '103.78.0.204:30003'
-        },
-        gotunnel: {
-            apiKey: 'GOTUNNEL_' + generateToken().toUpperCase(),
-            enabled: true,
-            expiresAt: expiresAt.toISOString(),
-            endpoint: '34.10.87.145:9000'
-        },
-        custom: {
-            apiKey: null,
-            enabled: true,
-            expiresAt: null,
-            endpoint: null
-        }
+        railway: { apiKey: null, enabled: false, message: 'Login required' },
+        kami: { apiKey: null, enabled: false, message: 'Login required' },
+        gotunnel: { apiKey: null, enabled: false, message: 'Login required' },
+        custom: { apiKey: null, enabled: true, message: 'No key required' }
     });
 });
 
@@ -249,67 +355,68 @@ app.get('/api/tunnel-key', async (req, res) => {
     
     console.log(`[${new Date().toISOString()}] 🔑 Fetching API key for ${type}`);
     
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 30);
-    
-    const keys = {
-        railway: {
-            apiKey: 'RAILWAY_' + generateToken().toUpperCase(),
-            expiresAt: expiresAt.toISOString()
-        },
-        kami: {
-            apiKey: 'KAMI_' + generateToken().toUpperCase(),
-            expiresAt: expiresAt.toISOString()
-        },
-        gotunnel: {
-            apiKey: 'GOTUNNEL_' + generateToken().toUpperCase(),
-            expiresAt: expiresAt.toISOString()
-        },
-        custom: {
-            apiKey: null,
-            expiresAt: null
-        }
-    };
-    
-    const result = keys[type] || { apiKey: null, expiresAt: null };
-    
+    // This should return the user's actual subscription key from Firestore
+    // For now, return placeholder
     res.json({
-        apiKey: result.apiKey,
+        apiKey: null,
         tunnelType: type,
-        expiresAt: result.expiresAt
+        expiresAt: null,
+        message: 'Login required to view keys'
     });
 });
 
 // Check if user has access to a specific tunnel type based on subscription
 app.get('/api/has-access', async (req, res) => {
     const { type } = req.query;
+    const apiKey = req.headers['x-api-key'];
     
     console.log(`[${new Date().toISOString()}] 🔍 Checking access for ${type}`);
     
-    // In production, check user's subscription plan from database
-    // For now, all users have access to all tunnels for testing
+    if (!apiKey) {
+        return res.json({
+            hasAccess: false,
+            tunnelType: type,
+            message: 'No API key provided'
+        });
+    }
     
-    // Define which plans have access to which tunnels
-    const planAccess = {
-        basic: ['railway', 'custom'],
-        pro: ['railway', 'kami', 'custom'],
-        elite: ['railway', 'kami', 'gotunnel', 'custom'],
-        kami_plan: ['kami'],
-        railway_plan: ['railway'],
-        gotunnel_plan: ['gotunnel']
-    };
-    
-    // TODO: Get user's actual plan from database
-    // For testing, assume user has Elite plan
-    const userPlan = 'elite';
-    const hasAccess = planAccess[userPlan]?.includes(type) ?? false;
-    
-    res.json({
-        hasAccess: hasAccess,
-        tunnelType: type,
-        plan: userPlan,
-        message: hasAccess ? 'Access granted' : 'Upgrade your plan to access this tunnel'
-    });
+    try {
+        // Check if user has a subscription for this tunnel type
+        const tunnelsSnapshot = await db.collectionGroup('tunnels')
+            .where('apiKey', '==', apiKey)
+            .where('enabled', '==', true)
+            .get();
+        
+        if (!tunnelsSnapshot.empty) {
+            const tunnelData = tunnelsSnapshot.docs[0].data();
+            const tunnelKey = tunnelsSnapshot.docs[0].ref.path.split('/')[1].split('.')[1];
+            const expiresAt = tunnelData.expiresAt?.toDate();
+            
+            if (tunnelKey === type && (!expiresAt || expiresAt > new Date())) {
+                return res.json({
+                    hasAccess: true,
+                    tunnelType: type,
+                    message: 'Access granted',
+                    expiresAt: expiresAt ? expiresAt.toISOString() : null,
+                    remainingBuilds: (tunnelData.maxBuilds || 10) - (tunnelData.buildsUsed || 0)
+                });
+            }
+        }
+        
+        return res.json({
+            hasAccess: false,
+            tunnelType: type,
+            message: `No active subscription for ${type} tunnel`
+        });
+        
+    } catch (error) {
+        console.error('Access check error:', error);
+        return res.json({
+            hasAccess: false,
+            tunnelType: type,
+            message: 'Error checking access'
+        });
+    }
 });
 
 // ==================== CATCH-ALL ROUTE ====================
@@ -410,7 +517,7 @@ wss.on('connection', (ws, req) => {
     if (pathname === '/bridge') {
         const apiKey = url.searchParams.get('key');
         
-        if (apiKey !== 'fly0rakoon-bridge-key-2024') {
+        if (apiKey !== MASTER_API_KEY) {
             ws.send(JSON.stringify({ error: 'Invalid API key' }));
             ws.close();
             return;
@@ -565,5 +672,6 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`📡 WebSocket endpoint: ws://localhost:${PORT}`);
     console.log(`🌐 HTTP endpoint: http://localhost:${PORT}`);
     console.log(`🔌 TCP endpoint for RAT: tcp://localhost:${TCP_PORT}`);
-    console.log(`🔐 API Key: ${Array.from(VALID_API_KEYS)[0]}`);
+    console.log(`🔐 Master API Key: ${MASTER_API_KEY}`);
+    console.log(`🔥 Firebase Firestore connected for subscription validation`);
 });
