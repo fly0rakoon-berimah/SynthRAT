@@ -83,11 +83,51 @@ app.get('/api/health', (req, res) => {
     });
 });
 
+// Debug endpoint to test Firestore connection
+app.get('/api/debug/firestore', async (req, res) => {
+    try {
+        if (!firebaseAvailable || !db) {
+            return res.json({
+                firebaseAvailable: false,
+                message: 'Firebase not available'
+            });
+        }
+        
+        // Try to read from Firestore
+        const usersSnapshot = await db.collection('users').limit(10).get();
+        const users = [];
+        
+        usersSnapshot.forEach(doc => {
+            const data = doc.data();
+            users.push({
+                id: doc.id,
+                hasTunnels: !!data.tunnels,
+                hasSubscription: !!data.subscription,
+                tunnelKeys: data.tunnels ? Object.keys(data.tunnels) : [],
+                subscriptionTunnelType: data.subscription?.tunnelType || null
+            });
+        });
+        
+        res.json({
+            firebaseAvailable: true,
+            userCount: usersSnapshot.size,
+            users: users
+        });
+    } catch (error) {
+        console.error('Debug error:', error);
+        res.status(500).json({
+            error: error.message,
+            stack: error.stack
+        });
+    }
+});
+
 // Public validate-key endpoint (called by Flutter app before building payload)
 app.post('/api/validate-key', async (req, res) => {
     const { apiKey, tunnelType } = req.body;
     
     console.log(`[${new Date().toISOString()}] 🔐 Validating API key for ${tunnelType} tunnel`);
+    console.log(`   API Key provided: ${apiKey ? apiKey.substring(0, 20) + '...' : 'null'}`);
     
     // If Firebase is not available, use legacy validation
     if (!firebaseAvailable || !db) {
@@ -107,23 +147,72 @@ app.post('/api/validate-key', async (req, res) => {
     }
     
     try {
-        // Query Firestore for this subscription key
-        const tunnelsSnapshot = await db.collectionGroup('tunnels')
-            .where('apiKey', '==', apiKey)
-            .where('enabled', '==', true)
-            .get();
+        let foundSubscription = null;
+        let foundTunnelType = null;
         
-        if (!tunnelsSnapshot.empty) {
-            const tunnelData = tunnelsSnapshot.docs[0].data();
-            const expiresAt = tunnelData.expiresAt?.toDate();
+        // Method 1: Try collection group query
+        console.log('   Attempting collection group query...');
+        try {
+            const tunnelsSnapshot = await db.collectionGroup('tunnels')
+                .where('apiKey', '==', apiKey)
+                .where('enabled', '==', true)
+                .get();
+            
+            if (!tunnelsSnapshot.empty) {
+                const doc = tunnelsSnapshot.docs[0];
+                const tunnelData = doc.data();
+                const pathParts = doc.ref.path.split('/');
+                foundTunnelType = pathParts[pathParts.length - 1];
+                foundSubscription = tunnelData;
+                console.log(`   Found via collection group: ${foundTunnelType}`);
+            }
+        } catch (collectionError) {
+            console.log(`   Collection group query failed: ${collectionError.message}`);
+            console.log('   Falling back to user iteration...');
+        }
+        
+        // Method 2: Iterate through users if collection group failed
+        if (!foundSubscription) {
+            const usersSnapshot = await db.collection('users').get();
+            
+            for (const userDoc of usersSnapshot.docs) {
+                const userData = userDoc.data();
+                
+                // Check tunnels map
+                if (userData.tunnels) {
+                    for (const [tKey, tunnelData] of Object.entries(userData.tunnels)) {
+                        if (tunnelData && tunnelData.apiKey === apiKey && tunnelData.enabled === true) {
+                            foundSubscription = tunnelData;
+                            foundTunnelType = tKey;
+                            console.log(`   Found in tunnels.${tKey} for user ${userDoc.id}`);
+                            break;
+                        }
+                    }
+                }
+                
+                // Check legacy subscription
+                if (!foundSubscription && userData.subscription && userData.subscription.apiKey === apiKey) {
+                    foundSubscription = userData.subscription;
+                    foundTunnelType = userData.subscription.tunnelType;
+                    console.log(`   Found legacy subscription for user ${userDoc.id}`);
+                    break;
+                }
+            }
+        }
+        
+        if (foundSubscription) {
+            let expiresAt = foundSubscription.expiresAt;
+            if (expiresAt && typeof expiresAt.toDate === 'function') {
+                expiresAt = expiresAt.toDate();
+            }
             
             if (!expiresAt || expiresAt > new Date()) {
                 console.log(`✅ Valid subscription key for ${tunnelType}`);
                 return res.json({
                     valid: true,
                     expiresAt: expiresAt ? expiresAt.toISOString() : null,
-                    tunnelType: tunnelType,
-                    capabilities: tunnelData.capabilities || [],
+                    tunnelType: foundTunnelType || tunnelType,
+                    capabilities: foundSubscription.capabilities || [],
                     message: 'Subscription is valid'
                 });
             } else {
@@ -136,39 +225,19 @@ app.post('/api/validate-key', async (req, res) => {
             }
         }
         
-        // Check legacy subscription field
-        const userSnapshot = await db.collection('users')
-            .where('subscription.apiKey', '==', apiKey)
-            .where('subscription.status', '==', 'active')
-            .get();
-        
-        if (!userSnapshot.empty) {
-            const userData = userSnapshot.docs[0].data();
-            const expiresAt = userData.subscription?.expiresAt?.toDate();
-            
-            if (!expiresAt || expiresAt > new Date()) {
-                console.log(`✅ Valid legacy subscription for ${tunnelType}`);
-                return res.json({
-                    valid: true,
-                    expiresAt: expiresAt ? expiresAt.toISOString() : null,
-                    tunnelType: tunnelType,
-                    capabilities: userData.subscription?.purchasedCapabilities || [],
-                    message: 'Subscription is valid'
-                });
-            }
-        }
-        
-        console.log(`❌ Invalid subscription key for ${tunnelType}`);
+        console.log(`❌ No subscription found for key: ${apiKey ? apiKey.substring(0, 20) + '...' : 'null'}`);
         return res.status(401).json({
             valid: false,
             message: 'Invalid or expired subscription key'
         });
         
     } catch (error) {
-        console.error('Validation error:', error);
+        console.error('❌ Validation error:', error);
+        console.error('   Error stack:', error.stack);
         return res.status(500).json({
             valid: false,
-            message: 'Internal server error during validation'
+            message: 'Internal server error during validation',
+            error: error.message
         });
     }
 });
@@ -484,6 +553,7 @@ app.use((req, res) => {
         availableRoutes: [
             'GET /',
             'GET /api/health',
+            'GET /api/debug/firestore',
             'POST /api/validate-key',
             'POST /api/tunnel/register',
             'GET /api/tunnel/:id',
@@ -734,6 +804,7 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`🔥 Firebase Status: ${firebaseAvailable ? 'CONNECTED ✅' : 'DISABLED ⚠️'}`);
     console.log(`\n📋 Public Endpoints (no auth required):`);
     console.log(`   GET  /api/health`);
+    console.log(`   GET  /api/debug/firestore`);
     console.log(`   POST /api/validate-key`);
     console.log(`\n🔒 Protected Endpoints (require x-api-key header):`);
     console.log(`   POST /api/tunnel/register`);
