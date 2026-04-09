@@ -56,111 +56,20 @@ function generateToken() {
     return Math.random().toString(36).substring(2, 15);
 }
 
-// ==================== AUTHENTICATION MIDDLEWARE ====================
-const checkPassword = async (req, res, next) => {
-    const apiKey = req.headers['x-api-key'];
-    
-    if (!apiKey) {
-        return res.status(401).json({ 
-            error: 'Unauthorized', 
-            message: 'API key is required' 
-        });
-    }
-    
-    // Check if this is the master bridge key
-    if (apiKey === MASTER_API_KEY) {
-        return next();
-    }
-    
-    // If Firebase is available, validate against Firestore
-    if (firebaseAvailable && db) {
-        try {
-            // Query Firestore for this subscription key
-            const tunnelsSnapshot = await db.collectionGroup('tunnels')
-                .where('apiKey', '==', apiKey)
-                .where('enabled', '==', true)
-                .get();
-            
-            if (!tunnelsSnapshot.empty) {
-                const tunnelData = tunnelsSnapshot.docs[0].data();
-                const expiresAt = tunnelData.expiresAt?.toDate();
-                
-                // Check if not expired
-                if (!expiresAt || expiresAt > new Date()) {
-                    req.subscription = {
-                        tunnelType: tunnelsSnapshot.docs[0].ref.path.split('/')[1].split('.')[1],
-                        capabilities: tunnelData.capabilities || [],
-                        userId: tunnelsSnapshot.docs[0].ref.path.split('/')[1],
-                        expiresAt: expiresAt
-                    };
-                    return next();
-                }
-            }
-            
-            // Check legacy subscription field
-            const userSnapshot = await db.collection('users')
-                .where('subscription.apiKey', '==', apiKey)
-                .where('subscription.status', '==', 'active')
-                .get();
-            
-            if (!userSnapshot.empty) {
-                const userData = userSnapshot.docs[0].data();
-                const expiresAt = userData.subscription?.expiresAt?.toDate();
-                
-                if (!expiresAt || expiresAt > new Date()) {
-                    req.subscription = {
-                        tunnelType: userData.subscription?.tunnelType,
-                        capabilities: userData.subscription?.purchasedCapabilities || [],
-                        userId: userSnapshot.docs[0].id,
-                        expiresAt: expiresAt
-                    };
-                    return next();
-                }
-            }
-        } catch (error) {
-            console.error('Firestore validation error:', error);
-            // Fall through to legacy validation
-        }
-    }
-    
-    // Fallback to legacy hardcoded API keys
-    if (LEGACY_API_KEYS.has(apiKey)) {
-        console.log(`⚠️ Using legacy API key validation for: ${apiKey.substring(0, 10)}...`);
-        return next();
-    }
-    
-    return res.status(401).json({ 
-        error: 'Unauthorized', 
-        message: 'Invalid or expired subscription key' 
-    });
-};
-
+// ==================== MIDDLEWARE ====================
 app.use(cors());
 app.use(express.json());
-app.use('/api', checkPassword);
 
-// Request logger
-app.use((req, res, next) => {
+// Request logger (will be used after auth for protected routes)
+const requestLogger = (req, res, next) => {
     const subInfo = req.subscription ? ` (${req.subscription.tunnelType})` : '';
     console.log(`[${new Date().toISOString()}] HTTP: ${req.method} ${req.url}${subInfo}`);
     next();
-});
+};
 
-// ==================== BASIC ENDPOINTS ====================
-app.get('/', (req, res) => {
-    res.json({
-        status: 'online',
-        version: '1.0.0',
-        firebaseEnabled: firebaseAvailable,
-        tunnels: tunnels.size,
-        payloads: payloads.size,
-        tcpClients: tcpClients.size,
-        pending: pendingTunnels.size,
-        gcpBridges: gcpBridges.size,
-        timestamp: new Date().toISOString()
-    });
-});
+// ==================== PUBLIC ENDPOINTS (NO API KEY REQUIRED) ====================
 
+// Public health check
 app.get('/api/health', (req, res) => {
     res.json({
         status: 'healthy',
@@ -174,118 +83,7 @@ app.get('/api/health', (req, res) => {
     });
 });
 
-// ==================== TUNNEL REGISTRATION ====================
-app.post('/api/tunnel/register', async (req, res) => {
-    const { port, type, subscriptionApiKey, userId, capabilities } = req.body;
-    
-    // If subscriptionApiKey provided, verify it exists in Firestore
-    if (subscriptionApiKey && firebaseAvailable && db) {
-        try {
-            const tunnelsSnapshot = await db.collectionGroup('tunnels')
-                .where('apiKey', '==', subscriptionApiKey)
-                .get();
-            
-            if (tunnelsSnapshot.empty) {
-                return res.status(401).json({ 
-                    error: 'Invalid subscription', 
-                    message: 'Subscription key not found' 
-                });
-            }
-        } catch (error) {
-            console.error('Error verifying subscription:', error);
-        }
-    }
-    
-    const token = generateToken();
-    
-    console.log(`[${new Date().toISOString()}] Registering tunnel: port=${port}, type=${type}, token=${token}`);
-    
-    const tunnelInfo = {
-        token: token,
-        port: port,
-        type: type,
-        registeredAt: new Date(),
-        public_url: `https://${req.headers.host}/${token}`
-    };
-    
-    pendingTunnels.set(token, tunnelInfo);
-    
-    res.json({
-        success: true,
-        token: token,
-        public_url: tunnelInfo.public_url,
-        tcp_port: 30225,
-        tcp_host: 'gondola.proxy.rlwy.net',
-        message: 'Tunnel registered. Connect via WebSocket to activate.'
-    });
-});
-
-app.get('/api/tunnel/:id', (req, res) => {
-    const tunnel = tunnels.get(req.params.id);
-    if (tunnel) {
-        res.json({ url: tunnel.url, port: tunnel.port, status: 'active' });
-    } else {
-        const pending = pendingTunnels.get(req.params.id);
-        if (pending) {
-            res.json({ url: pending.public_url, port: pending.port, status: 'pending' });
-        } else {
-            res.status(404).json({ error: 'Tunnel not found' });
-        }
-    }
-});
-
-// ==================== GCP TUNNEL MANAGEMENT ====================
-app.post('/api/tunnel/start', (req, res) => {
-    const { tunnelId, service, port, apiKey } = req.body;
-    
-    console.log(`[${new Date().toISOString()}] 🚀 Starting tunnel: ${tunnelId}, service=${service}, port=${port}`);
-    
-    if (gcpBridges.size === 0) {
-        return res.status(503).json({ 
-            error: 'No GCP VM available. Please try again later.' 
-        });
-    }
-    
-    const [bridgeId, bridge] = gcpBridges.entries().next().value;
-    
-    bridge.ws.send(JSON.stringify({
-        type: `start_${service}`,
-        tunnelId: tunnelId,
-        port: port,
-        apiKey: apiKey
-    }));
-    
-    res.json({
-        success: true,
-        message: `Starting ${service} tunnel...`,
-        bridgeId: bridgeId
-    });
-});
-
-app.post('/api/tunnel/stop', (req, res) => {
-    const { tunnelId } = req.body;
-    
-    console.log(`[${new Date().toISOString()}] 🛑 Stopping tunnel: ${tunnelId}`);
-    
-    let stopped = false;
-    for (const [bridgeId, bridge] of gcpBridges) {
-        bridge.ws.send(JSON.stringify({
-            type: 'stop_tunnel',
-            tunnelId: tunnelId
-        }));
-        stopped = true;
-    }
-    
-    res.json({
-        success: true,
-        message: stopped ? 'Stop command sent' : 'No bridges available',
-        tunnelId: tunnelId
-    });
-});
-
-// ==================== API KEY VALIDATION ENDPOINTS ====================
-
-// Validate a tunnel API key (called by Flutter app before building payload)
+// Public validate-key endpoint (called by Flutter app before building payload)
 app.post('/api/validate-key', async (req, res) => {
     const { apiKey, tunnelType } = req.body;
     
@@ -294,7 +92,6 @@ app.post('/api/validate-key', async (req, res) => {
     // If Firebase is not available, use legacy validation
     if (!firebaseAvailable || !db) {
         console.log(`⚠️ Firebase not available, using legacy validation`);
-        // Accept any non-empty key in legacy mode
         if (apiKey && apiKey.length > 5) {
             return res.json({
                 valid: true,
@@ -320,7 +117,6 @@ app.post('/api/validate-key', async (req, res) => {
             const tunnelData = tunnelsSnapshot.docs[0].data();
             const expiresAt = tunnelData.expiresAt?.toDate();
             
-            // Check if not expired
             if (!expiresAt || expiresAt > new Date()) {
                 console.log(`✅ Valid subscription key for ${tunnelType}`);
                 return res.json({
@@ -377,7 +173,222 @@ app.post('/api/validate-key', async (req, res) => {
     }
 });
 
-// Get user's API keys for all tunnels (for Settings screen)
+// ==================== AUTHENTICATION MIDDLEWARE ====================
+// This applies to ALL routes defined AFTER this point
+const checkPassword = async (req, res, next) => {
+    const apiKey = req.headers['x-api-key'];
+    
+    if (!apiKey) {
+        return res.status(401).json({ 
+            error: 'Unauthorized', 
+            message: 'API key is required' 
+        });
+    }
+    
+    // Check if this is the master bridge key
+    if (apiKey === MASTER_API_KEY) {
+        return next();
+    }
+    
+    // If Firebase is available, validate against Firestore
+    if (firebaseAvailable && db) {
+        try {
+            const tunnelsSnapshot = await db.collectionGroup('tunnels')
+                .where('apiKey', '==', apiKey)
+                .where('enabled', '==', true)
+                .get();
+            
+            if (!tunnelsSnapshot.empty) {
+                const tunnelData = tunnelsSnapshot.docs[0].data();
+                const expiresAt = tunnelData.expiresAt?.toDate();
+                
+                if (!expiresAt || expiresAt > new Date()) {
+                    req.subscription = {
+                        tunnelType: tunnelsSnapshot.docs[0].ref.path.split('/')[1].split('.')[1],
+                        capabilities: tunnelData.capabilities || [],
+                        userId: tunnelsSnapshot.docs[0].ref.path.split('/')[1],
+                        expiresAt: expiresAt
+                    };
+                    return next();
+                }
+            }
+            
+            const userSnapshot = await db.collection('users')
+                .where('subscription.apiKey', '==', apiKey)
+                .where('subscription.status', '==', 'active')
+                .get();
+            
+            if (!userSnapshot.empty) {
+                const userData = userSnapshot.docs[0].data();
+                const expiresAt = userData.subscription?.expiresAt?.toDate();
+                
+                if (!expiresAt || expiresAt > new Date()) {
+                    req.subscription = {
+                        tunnelType: userData.subscription?.tunnelType,
+                        capabilities: userData.subscription?.purchasedCapabilities || [],
+                        userId: userSnapshot.docs[0].id,
+                        expiresAt: expiresAt
+                    };
+                    return next();
+                }
+            }
+        } catch (error) {
+            console.error('Firestore validation error:', error);
+        }
+    }
+    
+    // Fallback to legacy hardcoded API keys
+    if (LEGACY_API_KEYS.has(apiKey)) {
+        console.log(`⚠️ Using legacy API key validation for: ${apiKey.substring(0, 10)}...`);
+        return next();
+    }
+    
+    return res.status(401).json({ 
+        error: 'Unauthorized', 
+        message: 'Invalid or expired subscription key' 
+    });
+};
+
+// Apply authentication middleware to ALL PROTECTED routes
+app.use('/api/tunnel', checkPassword);
+app.use('/api/user', checkPassword);
+app.use('/api/has-access', checkPassword);
+app.use('/api/tunnel-key', checkPassword);
+
+// Also apply request logger to protected routes
+app.use('/api/tunnel', requestLogger);
+app.use('/api/user', requestLogger);
+
+// ==================== BASIC ENDPOINTS (Public) ====================
+app.get('/', (req, res) => {
+    res.json({
+        status: 'online',
+        version: '1.0.0',
+        firebaseEnabled: firebaseAvailable,
+        tunnels: tunnels.size,
+        payloads: payloads.size,
+        tcpClients: tcpClients.size,
+        pending: pendingTunnels.size,
+        gcpBridges: gcpBridges.size,
+        timestamp: new Date().toISOString()
+    });
+});
+
+// ==================== PROTECTED TUNNEL ENDPOINTS ====================
+
+// Tunnel registration (requires auth)
+app.post('/api/tunnel/register', async (req, res) => {
+    const { port, type, subscriptionApiKey, userId, capabilities } = req.body;
+    
+    if (subscriptionApiKey && firebaseAvailable && db) {
+        try {
+            const tunnelsSnapshot = await db.collectionGroup('tunnels')
+                .where('apiKey', '==', subscriptionApiKey)
+                .get();
+            
+            if (tunnelsSnapshot.empty) {
+                return res.status(401).json({ 
+                    error: 'Invalid subscription', 
+                    message: 'Subscription key not found' 
+                });
+            }
+        } catch (error) {
+            console.error('Error verifying subscription:', error);
+        }
+    }
+    
+    const token = generateToken();
+    
+    console.log(`[${new Date().toISOString()}] Registering tunnel: port=${port}, type=${type}, token=${token}`);
+    
+    const tunnelInfo = {
+        token: token,
+        port: port,
+        type: type,
+        registeredAt: new Date(),
+        public_url: `https://${req.headers.host}/${token}`
+    };
+    
+    pendingTunnels.set(token, tunnelInfo);
+    
+    res.json({
+        success: true,
+        token: token,
+        public_url: tunnelInfo.public_url,
+        tcp_port: 30225,
+        tcp_host: 'gondola.proxy.rlwy.net',
+        message: 'Tunnel registered. Connect via WebSocket to activate.'
+    });
+});
+
+// Get tunnel info (requires auth)
+app.get('/api/tunnel/:id', (req, res) => {
+    const tunnel = tunnels.get(req.params.id);
+    if (tunnel) {
+        res.json({ url: tunnel.url, port: tunnel.port, status: 'active' });
+    } else {
+        const pending = pendingTunnels.get(req.params.id);
+        if (pending) {
+            res.json({ url: pending.public_url, port: pending.port, status: 'pending' });
+        } else {
+            res.status(404).json({ error: 'Tunnel not found' });
+        }
+    }
+});
+
+// Start tunnel (requires auth)
+app.post('/api/tunnel/start', (req, res) => {
+    const { tunnelId, service, port, apiKey } = req.body;
+    
+    console.log(`[${new Date().toISOString()}] 🚀 Starting tunnel: ${tunnelId}, service=${service}, port=${port}`);
+    
+    if (gcpBridges.size === 0) {
+        return res.status(503).json({ 
+            error: 'No GCP VM available. Please try again later.' 
+        });
+    }
+    
+    const [bridgeId, bridge] = gcpBridges.entries().next().value;
+    
+    bridge.ws.send(JSON.stringify({
+        type: `start_${service}`,
+        tunnelId: tunnelId,
+        port: port,
+        apiKey: apiKey
+    }));
+    
+    res.json({
+        success: true,
+        message: `Starting ${service} tunnel...`,
+        bridgeId: bridgeId
+    });
+});
+
+// Stop tunnel (requires auth)
+app.post('/api/tunnel/stop', (req, res) => {
+    const { tunnelId } = req.body;
+    
+    console.log(`[${new Date().toISOString()}] 🛑 Stopping tunnel: ${tunnelId}`);
+    
+    let stopped = false;
+    for (const [bridgeId, bridge] of gcpBridges) {
+        bridge.ws.send(JSON.stringify({
+            type: 'stop_tunnel',
+            tunnelId: tunnelId
+        }));
+        stopped = true;
+    }
+    
+    res.json({
+        success: true,
+        message: stopped ? 'Stop command sent' : 'No bridges available',
+        tunnelId: tunnelId
+    });
+});
+
+// ==================== PROTECTED USER ENDPOINTS ====================
+
+// Get user's API keys (requires auth)
 app.get('/api/user/keys', async (req, res) => {
     console.log(`[${new Date().toISOString()}] 🔑 Fetching user API keys`);
     
@@ -389,7 +400,7 @@ app.get('/api/user/keys', async (req, res) => {
     });
 });
 
-// Get specific tunnel API key
+// Get specific tunnel API key (requires auth)
 app.get('/api/tunnel-key', async (req, res) => {
     const { type } = req.query;
     
@@ -403,7 +414,7 @@ app.get('/api/tunnel-key', async (req, res) => {
     });
 });
 
-// Check if user has access to a specific tunnel type based on subscription
+// Check if user has access (requires auth)
 app.get('/api/has-access', async (req, res) => {
     const { type } = req.query;
     const apiKey = req.headers['x-api-key'];
@@ -418,7 +429,6 @@ app.get('/api/has-access', async (req, res) => {
         });
     }
     
-    // If Firebase is not available, grant access in legacy mode
     if (!firebaseAvailable || !db) {
         console.log(`⚠️ Firebase not available, granting access in legacy mode`);
         return res.json({
@@ -429,7 +439,6 @@ app.get('/api/has-access', async (req, res) => {
     }
     
     try {
-        // Check if user has a subscription for this tunnel type
         const tunnelsSnapshot = await db.collectionGroup('tunnels')
             .where('apiKey', '==', apiKey)
             .where('enabled', '==', true)
@@ -475,11 +484,11 @@ app.use((req, res) => {
         availableRoutes: [
             'GET /',
             'GET /api/health',
+            'POST /api/validate-key',
             'POST /api/tunnel/register',
             'GET /api/tunnel/:id',
             'POST /api/tunnel/start',
             'POST /api/tunnel/stop',
-            'POST /api/validate-key',
             'GET /api/user/keys',
             'GET /api/tunnel-key',
             'GET /api/has-access',
@@ -723,6 +732,16 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`🔌 TCP Endpoint: tcp://localhost:${TCP_PORT}`);
     console.log(`🔐 Master API Key: ${MASTER_API_KEY}`);
     console.log(`🔥 Firebase Status: ${firebaseAvailable ? 'CONNECTED ✅' : 'DISABLED ⚠️'}`);
+    console.log(`\n📋 Public Endpoints (no auth required):`);
+    console.log(`   GET  /api/health`);
+    console.log(`   POST /api/validate-key`);
+    console.log(`\n🔒 Protected Endpoints (require x-api-key header):`);
+    console.log(`   POST /api/tunnel/register`);
+    console.log(`   POST /api/tunnel/start`);
+    console.log(`   POST /api/tunnel/stop`);
+    console.log(`   GET  /api/has-access`);
+    console.log(`   GET  /api/user/keys`);
+    console.log(`   GET  /api/tunnel-key`);
     if (!firebaseAvailable) {
         console.log(`\n⚠️  WARNING: Firebase is not configured!`);
         console.log(`   Add FIREBASE_SERVICE_ACCOUNT environment variable to enable validation.`);
