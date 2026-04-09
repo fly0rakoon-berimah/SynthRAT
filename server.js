@@ -123,6 +123,7 @@ app.get('/api/debug/firestore', async (req, res) => {
 });
 
 // Public validate-key endpoint (called by Flutter app before building payload)
+// Public validate-key endpoint (called by Flutter app before building payload)
 app.post('/api/validate-key', async (req, res) => {
     const { apiKey, tunnelType } = req.body;
     
@@ -149,54 +150,51 @@ app.post('/api/validate-key', async (req, res) => {
     try {
         let foundSubscription = null;
         let foundTunnelType = null;
+        let userId = null;
         
-        // Method 1: Try collection group query
-        console.log('   Attempting collection group query...');
-        try {
-            const tunnelsSnapshot = await db.collectionGroup('tunnels')
-                .where('apiKey', '==', apiKey)
-                .where('enabled', '==', true)
-                .get();
+        // FIRST: Check legacy subscription field (since your data is here!)
+        console.log('   Checking legacy subscription field...');
+        const userSnapshot = await db.collection('users')
+            .where('subscription.apiKey', '==', apiKey)
+            .where('subscription.status', '==', 'active')
+            .get();
+        
+        if (!userSnapshot.empty) {
+            const userDoc = userSnapshot.docs[0];
+            const userData = userDoc.data();
+            const subData = userData.subscription;
+            const expiresAt = subData?.expiresAt?.toDate();
             
-            if (!tunnelsSnapshot.empty) {
-                const doc = tunnelsSnapshot.docs[0];
-                const tunnelData = doc.data();
-                const pathParts = doc.ref.path.split('/');
-                foundTunnelType = pathParts[pathParts.length - 1];
-                foundSubscription = tunnelData;
-                console.log(`   Found via collection group: ${foundTunnelType}`);
+            if (!expiresAt || expiresAt > new Date()) {
+                foundSubscription = subData;
+                foundTunnelType = subData.tunnelType;
+                userId = userDoc.id;
+                console.log(`   ✅ Found legacy subscription for user ${userId}, tunnel: ${foundTunnelType}`);
+            } else {
+                console.log(`   ❌ Legacy subscription expired for user ${userDoc.id}`);
             }
-        } catch (collectionError) {
-            console.log(`   Collection group query failed: ${collectionError.message}`);
-            console.log('   Falling back to user iteration...');
         }
         
-        // Method 2: Iterate through users if collection group failed
+        // SECOND: Check tunnels map (for future compatibility)
         if (!foundSubscription) {
-            const usersSnapshot = await db.collection('users').get();
-            
-            for (const userDoc of usersSnapshot.docs) {
-                const userData = userDoc.data();
+            console.log('   Checking tunnels map...');
+            try {
+                const tunnelsSnapshot = await db.collectionGroup('tunnels')
+                    .where('apiKey', '==', apiKey)
+                    .where('enabled', '==', true)
+                    .get();
                 
-                // Check tunnels map
-                if (userData.tunnels) {
-                    for (const [tKey, tunnelData] of Object.entries(userData.tunnels)) {
-                        if (tunnelData && tunnelData.apiKey === apiKey && tunnelData.enabled === true) {
-                            foundSubscription = tunnelData;
-                            foundTunnelType = tKey;
-                            console.log(`   Found in tunnels.${tKey} for user ${userDoc.id}`);
-                            break;
-                        }
-                    }
+                if (!tunnelsSnapshot.empty) {
+                    const doc = tunnelsSnapshot.docs[0];
+                    const tunnelData = doc.data();
+                    const pathParts = doc.ref.path.split('/');
+                    foundTunnelType = pathParts[pathParts.length - 1];
+                    foundSubscription = tunnelData;
+                    userId = pathParts[1];
+                    console.log(`   ✅ Found in tunnels map for user ${userId}, tunnel: ${foundTunnelType}`);
                 }
-                
-                // Check legacy subscription
-                if (!foundSubscription && userData.subscription && userData.subscription.apiKey === apiKey) {
-                    foundSubscription = userData.subscription;
-                    foundTunnelType = userData.subscription.tunnelType;
-                    console.log(`   Found legacy subscription for user ${userDoc.id}`);
-                    break;
-                }
+            } catch (collectionError) {
+                console.log(`   Collection group query: ${collectionError.message}`);
             }
         }
         
@@ -206,23 +204,21 @@ app.post('/api/validate-key', async (req, res) => {
                 expiresAt = expiresAt.toDate();
             }
             
-            if (!expiresAt || expiresAt > new Date()) {
-                console.log(`✅ Valid subscription key for ${tunnelType}`);
-                return res.json({
-                    valid: true,
-                    expiresAt: expiresAt ? expiresAt.toISOString() : null,
-                    tunnelType: foundTunnelType || tunnelType,
-                    capabilities: foundSubscription.capabilities || [],
-                    message: 'Subscription is valid'
-                });
-            } else {
-                console.log(`❌ Subscription expired for ${tunnelType}`);
-                return res.status(401).json({
-                    valid: false,
-                    message: 'Subscription has expired',
-                    expiresAt: expiresAt.toISOString()
-                });
+            // Check if subscription matches requested tunnel type
+            if (foundTunnelType !== tunnelType && tunnelType !== 'any') {
+                console.log(`⚠️ Tunnel type mismatch: found ${foundTunnelType}, requested ${tunnelType}`);
+                // Still return valid but with correct tunnel type
             }
+            
+            console.log(`✅ Valid subscription key for ${foundTunnelType}`);
+            return res.json({
+                valid: true,
+                expiresAt: expiresAt ? expiresAt.toISOString() : null,
+                tunnelType: foundTunnelType,
+                capabilities: foundSubscription.capabilities || foundSubscription.purchasedCapabilities || [],
+                userId: userId,
+                message: 'Subscription is valid'
+            });
         }
         
         console.log(`❌ No subscription found for key: ${apiKey ? apiKey.substring(0, 20) + '...' : 'null'}`);
@@ -244,6 +240,7 @@ app.post('/api/validate-key', async (req, res) => {
 
 // ==================== AUTHENTICATION MIDDLEWARE ====================
 // This applies to ALL routes defined AFTER this point
+// ==================== AUTHENTICATION MIDDLEWARE ====================
 const checkPassword = async (req, res, next) => {
     const apiKey = req.headers['x-api-key'];
     
@@ -262,26 +259,7 @@ const checkPassword = async (req, res, next) => {
     // If Firebase is available, validate against Firestore
     if (firebaseAvailable && db) {
         try {
-            const tunnelsSnapshot = await db.collectionGroup('tunnels')
-                .where('apiKey', '==', apiKey)
-                .where('enabled', '==', true)
-                .get();
-            
-            if (!tunnelsSnapshot.empty) {
-                const tunnelData = tunnelsSnapshot.docs[0].data();
-                const expiresAt = tunnelData.expiresAt?.toDate();
-                
-                if (!expiresAt || expiresAt > new Date()) {
-                    req.subscription = {
-                        tunnelType: tunnelsSnapshot.docs[0].ref.path.split('/')[1].split('.')[1],
-                        capabilities: tunnelData.capabilities || [],
-                        userId: tunnelsSnapshot.docs[0].ref.path.split('/')[1],
-                        expiresAt: expiresAt
-                    };
-                    return next();
-                }
-            }
-            
+            // FIRST: Check legacy subscription field
             const userSnapshot = await db.collection('users')
                 .where('subscription.apiKey', '==', apiKey)
                 .where('subscription.status', '==', 'active')
@@ -296,6 +274,27 @@ const checkPassword = async (req, res, next) => {
                         tunnelType: userData.subscription?.tunnelType,
                         capabilities: userData.subscription?.purchasedCapabilities || [],
                         userId: userSnapshot.docs[0].id,
+                        expiresAt: expiresAt
+                    };
+                    return next();
+                }
+            }
+            
+            // SECOND: Check tunnels map
+            const tunnelsSnapshot = await db.collectionGroup('tunnels')
+                .where('apiKey', '==', apiKey)
+                .where('enabled', '==', true)
+                .get();
+            
+            if (!tunnelsSnapshot.empty) {
+                const tunnelData = tunnelsSnapshot.docs[0].data();
+                const expiresAt = tunnelData.expiresAt?.toDate();
+                
+                if (!expiresAt || expiresAt > new Date()) {
+                    req.subscription = {
+                        tunnelType: tunnelsSnapshot.docs[0].ref.path.split('/')[1].split('.')[1],
+                        capabilities: tunnelData.capabilities || [],
+                        userId: tunnelsSnapshot.docs[0].ref.path.split('/')[1],
                         expiresAt: expiresAt
                     };
                     return next();
