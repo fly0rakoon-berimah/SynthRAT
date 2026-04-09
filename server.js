@@ -60,6 +60,7 @@ app.get('/api/kami/tunnel', async (req, res) => {
     const apiKey = req.headers['x-api-key'];
     
     console.log(`[${new Date().toISOString()}] 🔐 Kami tunnel request`);
+    console.log(`   API Key: ${apiKey ? apiKey.substring(0, 20) + '...' : 'null'}`);
     
     if (!apiKey) {
         return res.status(401).json({ 
@@ -68,59 +69,93 @@ app.get('/api/kami/tunnel', async (req, res) => {
         });
     }
     
+    // Check if Firebase is available
+    if (!firebaseAvailable || !db) {
+        console.log('⚠️ Firebase not available, cannot validate Kami subscription');
+        return res.status(503).json({
+            success: false,
+            message: 'Service temporarily unavailable. Please try again later.'
+        });
+    }
+    
     try {
-        // Check Firestore for Kami subscription
+        let hasAccess = false;
+        let userId = null;
+        
+        // FIRST: Check legacy subscription field
+        console.log('   Checking legacy subscription field...');
         const userSnapshot = await db.collection('users')
             .where('subscription.apiKey', '==', apiKey)
             .where('subscription.status', '==', 'active')
             .get();
         
-        let hasAccess = false;
-        
         if (!userSnapshot.empty) {
-            const userData = userSnapshot.docs[0].data();
-            const expiresAt = userData.subscription?.expiresAt?.toDate();
+            const userDoc = userSnapshot.docs[0];
+            const userData = userDoc.data();
+            const subData = userData.subscription;
+            const expiresAt = subData?.expiresAt?.toDate ? subData.expiresAt.toDate() : subData?.expiresAt;
             
-            if (userData.subscription?.tunnelType === 'kami' && 
-                (!expiresAt || expiresAt > new Date())) {
+            console.log(`   Found user: ${userDoc.id}, tunnelType: ${subData?.tunnelType}, expiresAt: ${expiresAt}`);
+            
+            if (subData?.tunnelType === 'kami' && (!expiresAt || expiresAt > new Date())) {
                 hasAccess = true;
+                userId = userDoc.id;
+                console.log(`   ✅ Valid Kami subscription found`);
+            } else {
+                console.log(`   ❌ Not a Kami subscription or expired`);
             }
         }
         
+        // SECOND: Check tunnels map (for future compatibility)
         if (!hasAccess) {
-            const tunnelsSnapshot = await db.collectionGroup('tunnels')
-                .where('apiKey', '==', apiKey)
-                .where('enabled', '==', true)
-                .get();
-            
-            if (!tunnelsSnapshot.empty) {
-                const tunnelKey = tunnelsSnapshot.docs[0].ref.path.split('/')[1].split('.')[1];
-                const expiresAt = tunnelsSnapshot.docs[0].data().expiresAt?.toDate();
+            console.log('   Checking tunnels map...');
+            try {
+                const tunnelsSnapshot = await db.collectionGroup('tunnels')
+                    .where('apiKey', '==', apiKey)
+                    .where('enabled', '==', true)
+                    .get();
                 
-                if (tunnelKey === 'kami' && (!expiresAt || expiresAt > new Date())) {
-                    hasAccess = true;
+                if (!tunnelsSnapshot.empty) {
+                    const doc = tunnelsSnapshot.docs[0];
+                    const tunnelData = doc.data();
+                    const pathParts = doc.ref.path.split('/');
+                    const tunnelKey = pathParts[pathParts.length - 1];
+                    const expiresAt = tunnelData.expiresAt?.toDate ? tunnelData.expiresAt.toDate() : tunnelData.expiresAt;
+                    
+                    console.log(`   Found tunnel: ${tunnelKey}, expiresAt: ${expiresAt}`);
+                    
+                    if (tunnelKey === 'kami' && (!expiresAt || expiresAt > new Date())) {
+                        hasAccess = true;
+                        userId = pathParts[1];
+                        console.log(`   ✅ Valid Kami tunnel found in tunnels map`);
+                    }
                 }
+            } catch (collectionError) {
+                console.log(`   Collection group query error: ${collectionError.message}`);
             }
         }
         
         if (hasAccess) {
-            // Return the Kami tunnel URL
+            console.log(`✅ Access granted for user ${userId}`);
             return res.json({
                 success: true,
                 url: '103.78.0.204:30003',
                 message: 'Access granted'
             });
         } else {
+            console.log(`❌ Access denied - no valid Kami subscription for key: ${apiKey.substring(0, 20)}...`);
             return res.status(403).json({
                 success: false,
                 message: 'KAMI tunnel not purchased. Please purchase access first.'
             });
         }
     } catch (error) {
-        console.error('Kami validation error:', error);
+        console.error('❌ Kami validation error:', error);
+        console.error('   Error stack:', error.stack);
         return res.status(500).json({
             success: false,
-            message: 'Internal server error'
+            message: 'Internal server error',
+            error: error.message
         });
     }
 });
