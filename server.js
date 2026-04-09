@@ -278,6 +278,14 @@ app.post('/api/tunnel/register', async (req, res) => {
     });
 });
 
+
+// ✅ ADD THIS NEW HEALTH ENDPOINT RIGHT HERE
+app.get('/health', (req, res) => {
+    res.status(200).json({ 
+        status: 'ok', 
+        timestamp: new Date().toISOString() 
+    });
+});
 // ==================== AUTHENTICATION MIDDLEWARE ====================
 const checkPassword = async (req, res, next) => {
     const apiKey = req.headers['x-api-key'];
