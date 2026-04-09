@@ -687,37 +687,37 @@ wss.on('connection', (ws, req) => {
 
     console.log(`[${new Date().toISOString()}] WebSocket connection: ${type}, port: ${port}, token: ${token}`);
 
-    if (type === 'app') {
-        const pending = pendingTunnels.get(token);
-        
-        const tunnel = {
-            ws,
-            port,
-            type: 'app',
-            url: `https://${req.headers.host}/${token}`,
-            connectedAt: new Date()
-        };
-        
-        if (pending) {
-            tunnel.registeredAt = pending.registeredAt;
-            pendingTunnels.delete(token);
-            console.log(`✅ App tunnel activated (pre-registered): ${token}`);
-        }
-        
-        tunnels.set(token, tunnel);
-
-        ws.send(JSON.stringify({
-            type: 'registered',
-            token: token,
-            url: tunnel.url,
-            tcpPort: TCP_PORT,
-            tcpHost: 'gondola.proxy.rlwy.net',
-            message: 'Tunnel created! Your payload can connect via TCP'
-        }));
-
-        console.log(`✅ App tunnel created: ${token}`);
-
-    } else if (type === 'payload') {
+    // In server.js - WebSocket handler for app connections
+if (type === 'app') {
+    const pending = pendingTunnels.get(token);
+    
+    const tunnel = {
+        ws,
+        port,
+        type: 'app',
+        url: `https://${req.headers.host}/${token}`,
+        connectedAt: new Date()
+    };
+    
+    if (pending) {
+        tunnel.registeredAt = pending.registeredAt;
+        pendingTunnels.delete(token);
+        console.log(`✅ App tunnel activated (pre-registered): ${token}`);
+    }
+    
+    tunnels.set(token, tunnel);
+    
+    ws.send(JSON.stringify({
+        type: 'registered',
+        token: token,
+        url: tunnel.url,
+        tcpPort: TCP_PORT,
+        tcpHost: 'gondola.proxy.rlwy.net',
+        message: 'Tunnel created! Your payload can connect via TCP'
+    }));
+    
+    console.log(`✅ App tunnel created: ${token}`);
+} else if (type === 'payload') {
         const tunnelToken = url.searchParams.get('tunnel');
         const tunnel = tunnels.get(tunnelToken);
 
