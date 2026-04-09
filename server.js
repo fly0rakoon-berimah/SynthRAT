@@ -55,7 +55,75 @@ const gcpBridges = new Map();
 function generateToken() {
     return Math.random().toString(36).substring(2, 15);
 }
-
+// Add this BEFORE the authentication middleware (in public endpoints section)
+app.get('/api/kami/tunnel', async (req, res) => {
+    const apiKey = req.headers['x-api-key'];
+    
+    console.log(`[${new Date().toISOString()}] 🔐 Kami tunnel request`);
+    
+    if (!apiKey) {
+        return res.status(401).json({ 
+            success: false, 
+            message: 'API key required' 
+        });
+    }
+    
+    try {
+        // Check Firestore for Kami subscription
+        const userSnapshot = await db.collection('users')
+            .where('subscription.apiKey', '==', apiKey)
+            .where('subscription.status', '==', 'active')
+            .get();
+        
+        let hasAccess = false;
+        
+        if (!userSnapshot.empty) {
+            const userData = userSnapshot.docs[0].data();
+            const expiresAt = userData.subscription?.expiresAt?.toDate();
+            
+            if (userData.subscription?.tunnelType === 'kami' && 
+                (!expiresAt || expiresAt > new Date())) {
+                hasAccess = true;
+            }
+        }
+        
+        if (!hasAccess) {
+            const tunnelsSnapshot = await db.collectionGroup('tunnels')
+                .where('apiKey', '==', apiKey)
+                .where('enabled', '==', true)
+                .get();
+            
+            if (!tunnelsSnapshot.empty) {
+                const tunnelKey = tunnelsSnapshot.docs[0].ref.path.split('/')[1].split('.')[1];
+                const expiresAt = tunnelsSnapshot.docs[0].data().expiresAt?.toDate();
+                
+                if (tunnelKey === 'kami' && (!expiresAt || expiresAt > new Date())) {
+                    hasAccess = true;
+                }
+            }
+        }
+        
+        if (hasAccess) {
+            // Return the Kami tunnel URL
+            return res.json({
+                success: true,
+                url: '103.78.0.204:30003',
+                message: 'Access granted'
+            });
+        } else {
+            return res.status(403).json({
+                success: false,
+                message: 'KAMI tunnel not purchased. Please purchase access first.'
+            });
+        }
+    } catch (error) {
+        console.error('Kami validation error:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Internal server error'
+        });
+    }
+});
 // ==================== MIDDLEWARE ====================
 app.use(cors());
 app.use(express.json());
