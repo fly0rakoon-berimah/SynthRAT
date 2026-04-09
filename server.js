@@ -93,7 +93,6 @@ app.get('/api/debug/firestore', async (req, res) => {
             });
         }
         
-        // Try to read from Firestore
         const usersSnapshot = await db.collection('users').limit(10).get();
         const users = [];
         
@@ -123,14 +122,12 @@ app.get('/api/debug/firestore', async (req, res) => {
 });
 
 // Public validate-key endpoint (called by Flutter app before building payload)
-// Public validate-key endpoint (called by Flutter app before building payload)
 app.post('/api/validate-key', async (req, res) => {
     const { apiKey, tunnelType } = req.body;
     
     console.log(`[${new Date().toISOString()}] 🔐 Validating API key for ${tunnelType} tunnel`);
     console.log(`   API Key provided: ${apiKey ? apiKey.substring(0, 20) + '...' : 'null'}`);
     
-    // If Firebase is not available, use legacy validation
     if (!firebaseAvailable || !db) {
         console.log(`⚠️ Firebase not available, using legacy validation`);
         if (apiKey && apiKey.length > 5) {
@@ -152,7 +149,6 @@ app.post('/api/validate-key', async (req, res) => {
         let foundTunnelType = null;
         let userId = null;
         
-        // FIRST: Check legacy subscription field (since your data is here!)
         console.log('   Checking legacy subscription field...');
         const userSnapshot = await db.collection('users')
             .where('subscription.apiKey', '==', apiKey)
@@ -175,7 +171,6 @@ app.post('/api/validate-key', async (req, res) => {
             }
         }
         
-        // SECOND: Check tunnels map (for future compatibility)
         if (!foundSubscription) {
             console.log('   Checking tunnels map...');
             try {
@@ -202,12 +197,6 @@ app.post('/api/validate-key', async (req, res) => {
             let expiresAt = foundSubscription.expiresAt;
             if (expiresAt && typeof expiresAt.toDate === 'function') {
                 expiresAt = expiresAt.toDate();
-            }
-            
-            // Check if subscription matches requested tunnel type
-            if (foundTunnelType !== tunnelType && tunnelType !== 'any') {
-                console.log(`⚠️ Tunnel type mismatch: found ${foundTunnelType}, requested ${tunnelType}`);
-                // Still return valid but with correct tunnel type
             }
             
             console.log(`✅ Valid subscription key for ${foundTunnelType}`);
@@ -238,8 +227,57 @@ app.post('/api/validate-key', async (req, res) => {
     }
 });
 
-// ==================== AUTHENTICATION MIDDLEWARE ====================
-// This applies to ALL routes defined AFTER this point
+// ✅ PUBLIC tunnel registration (NO API KEY REQUIRED)
+app.post('/api/tunnel/register', async (req, res) => {
+    const { port, type, subscriptionApiKey, userId, capabilities } = req.body;
+    
+    console.log(`[${new Date().toISOString()}] 📝 Tunnel registration: port=${port}, type=${type}`);
+    
+    // Validate subscription key if provided
+    if (subscriptionApiKey && firebaseAvailable && db) {
+        try {
+            const userSnapshot = await db.collection('users')
+                .where('subscription.apiKey', '==', subscriptionApiKey)
+                .where('subscription.status', '==', 'active')
+                .get();
+            
+            if (userSnapshot.empty) {
+                console.log(`❌ Invalid subscription key: ${subscriptionApiKey.substring(0, 20)}...`);
+                return res.status(401).json({ 
+                    error: 'Invalid subscription', 
+                    message: 'Subscription key not found or inactive' 
+                });
+            }
+            console.log(`✅ Subscription validated for user: ${userSnapshot.docs[0].id}`);
+        } catch (error) {
+            console.error('Error verifying subscription:', error);
+        }
+    }
+    
+    const token = generateToken();
+    
+    console.log(`✅ Tunnel registered: token=${token}, port=${port}`);
+    
+    const tunnelInfo = {
+        token: token,
+        port: port,
+        type: type,
+        registeredAt: new Date(),
+        public_url: `https://${req.headers.host}/${token}`
+    };
+    
+    pendingTunnels.set(token, tunnelInfo);
+    
+    res.json({
+        success: true,
+        token: token,
+        public_url: tunnelInfo.public_url,
+        tcp_port: 30225,
+        tcp_host: 'gondola.proxy.rlwy.net',
+        message: 'Tunnel registered. Connect via WebSocket to activate.'
+    });
+});
+
 // ==================== AUTHENTICATION MIDDLEWARE ====================
 const checkPassword = async (req, res, next) => {
     const apiKey = req.headers['x-api-key'];
@@ -251,15 +289,12 @@ const checkPassword = async (req, res, next) => {
         });
     }
     
-    // Check if this is the master bridge key
     if (apiKey === MASTER_API_KEY) {
         return next();
     }
     
-    // If Firebase is available, validate against Firestore
     if (firebaseAvailable && db) {
         try {
-            // FIRST: Check legacy subscription field
             const userSnapshot = await db.collection('users')
                 .where('subscription.apiKey', '==', apiKey)
                 .where('subscription.status', '==', 'active')
@@ -280,7 +315,6 @@ const checkPassword = async (req, res, next) => {
                 }
             }
             
-            // SECOND: Check tunnels map
             const tunnelsSnapshot = await db.collectionGroup('tunnels')
                 .where('apiKey', '==', apiKey)
                 .where('enabled', '==', true)
@@ -305,7 +339,6 @@ const checkPassword = async (req, res, next) => {
         }
     }
     
-    // Fallback to legacy hardcoded API keys
     if (LEGACY_API_KEYS.has(apiKey)) {
         console.log(`⚠️ Using legacy API key validation for: ${apiKey.substring(0, 10)}...`);
         return next();
@@ -317,14 +350,16 @@ const checkPassword = async (req, res, next) => {
     });
 };
 
-// Apply authentication middleware to ALL PROTECTED routes
-app.use('/api/tunnel', checkPassword);
+// Apply authentication middleware to PROTECTED routes only
+app.use('/api/tunnel/start', checkPassword);
+app.use('/api/tunnel/stop', checkPassword);
 app.use('/api/user', checkPassword);
 app.use('/api/has-access', checkPassword);
 app.use('/api/tunnel-key', checkPassword);
 
-// Also apply request logger to protected routes
-app.use('/api/tunnel', requestLogger);
+// Apply request logger to protected routes
+app.use('/api/tunnel/start', requestLogger);
+app.use('/api/tunnel/stop', requestLogger);
 app.use('/api/user', requestLogger);
 
 // ==================== BASIC ENDPOINTS (Public) ====================
@@ -343,51 +378,6 @@ app.get('/', (req, res) => {
 });
 
 // ==================== PROTECTED TUNNEL ENDPOINTS ====================
-
-// Tunnel registration (requires auth)
-app.post('/api/tunnel/register', async (req, res) => {
-    const { port, type, subscriptionApiKey, userId, capabilities } = req.body;
-    
-    if (subscriptionApiKey && firebaseAvailable && db) {
-        try {
-            const tunnelsSnapshot = await db.collectionGroup('tunnels')
-                .where('apiKey', '==', subscriptionApiKey)
-                .get();
-            
-            if (tunnelsSnapshot.empty) {
-                return res.status(401).json({ 
-                    error: 'Invalid subscription', 
-                    message: 'Subscription key not found' 
-                });
-            }
-        } catch (error) {
-            console.error('Error verifying subscription:', error);
-        }
-    }
-    
-    const token = generateToken();
-    
-    console.log(`[${new Date().toISOString()}] Registering tunnel: port=${port}, type=${type}, token=${token}`);
-    
-    const tunnelInfo = {
-        token: token,
-        port: port,
-        type: type,
-        registeredAt: new Date(),
-        public_url: `https://${req.headers.host}/${token}`
-    };
-    
-    pendingTunnels.set(token, tunnelInfo);
-    
-    res.json({
-        success: true,
-        token: token,
-        public_url: tunnelInfo.public_url,
-        tcp_port: 30225,
-        tcp_host: 'gondola.proxy.rlwy.net',
-        message: 'Tunnel registered. Connect via WebSocket to activate.'
-    });
-});
 
 // Get tunnel info (requires auth)
 app.get('/api/tunnel/:id', (req, res) => {
@@ -687,37 +677,36 @@ wss.on('connection', (ws, req) => {
 
     console.log(`[${new Date().toISOString()}] WebSocket connection: ${type}, port: ${port}, token: ${token}`);
 
-    // In server.js - WebSocket handler for app connections
-if (type === 'app') {
-    const pending = pendingTunnels.get(token);
-    
-    const tunnel = {
-        ws,
-        port,
-        type: 'app',
-        url: `https://${req.headers.host}/${token}`,
-        connectedAt: new Date()
-    };
-    
-    if (pending) {
-        tunnel.registeredAt = pending.registeredAt;
-        pendingTunnels.delete(token);
-        console.log(`✅ App tunnel activated (pre-registered): ${token}`);
-    }
-    
-    tunnels.set(token, tunnel);
-    
-    ws.send(JSON.stringify({
-        type: 'registered',
-        token: token,
-        url: tunnel.url,
-        tcpPort: TCP_PORT,
-        tcpHost: 'gondola.proxy.rlwy.net',
-        message: 'Tunnel created! Your payload can connect via TCP'
-    }));
-    
-    console.log(`✅ App tunnel created: ${token}`);
-} else if (type === 'payload') {
+    if (type === 'app') {
+        const pending = pendingTunnels.get(token);
+        
+        const tunnel = {
+            ws,
+            port,
+            type: 'app',
+            url: `https://${req.headers.host}/${token}`,
+            connectedAt: new Date()
+        };
+        
+        if (pending) {
+            tunnel.registeredAt = pending.registeredAt;
+            pendingTunnels.delete(token);
+            console.log(`✅ App tunnel activated (pre-registered): ${token}`);
+        }
+        
+        tunnels.set(token, tunnel);
+        
+        ws.send(JSON.stringify({
+            type: 'registered',
+            token: token,
+            url: tunnel.url,
+            tcpPort: TCP_PORT,
+            tcpHost: 'gondola.proxy.rlwy.net',
+            message: 'Tunnel created! Your payload can connect via TCP'
+        }));
+        
+        console.log(`✅ App tunnel created: ${token}`);
+    } else if (type === 'payload') {
         const tunnelToken = url.searchParams.get('tunnel');
         const tunnel = tunnels.get(tunnelToken);
 
@@ -805,8 +794,8 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`   GET  /api/health`);
     console.log(`   GET  /api/debug/firestore`);
     console.log(`   POST /api/validate-key`);
-    console.log(`\n🔒 Protected Endpoints (require x-api-key header):`);
     console.log(`   POST /api/tunnel/register`);
+    console.log(`\n🔒 Protected Endpoints (require x-api-key header):`);
     console.log(`   POST /api/tunnel/start`);
     console.log(`   POST /api/tunnel/stop`);
     console.log(`   GET  /api/has-access`);
